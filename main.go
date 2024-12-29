@@ -1,14 +1,24 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"net/http"
 )
 
 func main() {
-	s := "gopher"
-	fmt.Println("Hello and welcome, %s!", s)
+	router := http.NewServeMux()
+	router.HandleFunc("GET /item/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		id := request.PathValue("id")
+		writer.Write([]byte("received request for item: " + id))
+	})
 
-	for i := 1; i <= 5; i++ {
-		fmt.Println("i =", 100/i)
+	server := http.Server{
+		Addr:    ":8080",
+		Handler: router,
+	}
+	log.Println("Starting server on port :8080")
+	err := server.ListenAndServe()
+	if err != nil {
+		return
 	}
 }
