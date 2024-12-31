@@ -1,24 +1,21 @@
 package main
 
 import (
-	"log"
-	"net/http"
+	"github.com/charmbracelet/log"
+	"magpie/routing"
 )
 
 func main() {
-	router := http.NewServeMux()
-	router.HandleFunc("GET /item/{id}", func(writer http.ResponseWriter, request *http.Request) {
-		id := request.PathValue("id")
-		writer.Write([]byte("received request for item: " + id))
-	})
+	//logFile, err := os.OpenFile("output.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	//if err != nil {
+	//	log.Fatalf("Failed to open log file: %v", err)
+	//}
+	//defer logFile.Close()
+	//
+	//multiWriter := io.MultiWriter(os.Stdout, logFile)
+	//log.SetOutput(multiWriter)
 
-	server := http.Server{
-		Addr:    ":8080",
-		Handler: router,
-	}
-	log.Println("Starting server on port :8080")
-	err := server.ListenAndServe()
-	if err != nil {
-		return
-	}
+	log.SetLevel(log.DebugLevel)
+
+	routing.OpenRoutes(8080)
 }
