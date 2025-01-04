@@ -14,12 +14,7 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 
 	var fileContent []byte
 
-	if len(textareaContent) != 0 {
-
-		if err != nil {
-			http.Error(writer, "Failed to retrieve file", http.StatusBadRequest)
-			return
-		}
+	if err == nil {
 		defer file.Close()
 
 		log.Debugf("Uploaded file: %s (%d bytes)", fileHeader.Filename, fileHeader.Size)
@@ -29,6 +24,10 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 			http.Error(writer, "Failed to read file", http.StatusInternalServerError)
 			return
 		}
+
+	} else if len(textareaContent) == 0 {
+		http.Error(writer, "Failed to retrieve file", http.StatusBadRequest)
+		return
 	}
 
 	// Merge the file content and the textarea content
