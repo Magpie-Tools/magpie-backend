@@ -3,9 +3,7 @@ package routing
 import (
 	"fmt"
 	"github.com/charmbracelet/log"
-	"io"
 	"net/http"
-	"strings"
 )
 
 func enableCORS(next http.Handler) http.Handler {
@@ -30,29 +28,7 @@ func OpenRoutes(port int) {
 	log.Info("Routes opened")
 
 	router := http.NewServeMux()
-	router.HandleFunc("POST /addProxies", func(writer http.ResponseWriter, request *http.Request) {
-		file, fileHeader, err := request.FormFile("file") // "file" is the key of the form field
-		if err != nil {
-			http.Error(writer, "Failed to retrieve file", http.StatusBadRequest)
-			return
-		}
-		defer file.Close()
-
-		log.Debugf("Uploaded file: %s (%d bytes)", fileHeader.Filename, fileHeader.Size)
-
-		fileContent, err := io.ReadAll(file)
-		if err != nil {
-			http.Error(writer, "Failed to read file", http.StatusInternalServerError)
-			return
-		}
-
-		content := strings.Split(string(fileContent), "\n")
-
-		log.Infof("File content received: %d bytes", len(content))
-
-		writer.WriteHeader(http.StatusOK)
-		writer.Write([]byte(`{"message": "Upload successful"}`))
-	})
+	router.HandleFunc("POST /addProxies", addProxies)
 
 	server := http.Server{
 		Addr:    fmt.Sprintf(":%d", port),

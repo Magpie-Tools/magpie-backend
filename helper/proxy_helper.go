@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func parseTextToProxies(text string) []models.Proxy {
+func ParseTextToProxies(text string) []models.Proxy {
 	text = strings.ReplaceAll(text, "@", ";")
 
 	lines := strings.Split(text, "\n")
