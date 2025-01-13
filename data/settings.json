@@ -1,0 +1,44 @@
+{
+  "protocols": {
+    "http": false,
+    "https": true,
+    "socks4": false,
+    "socks5": false
+  },
+
+  "timer": {
+    "days": 0,
+    "hours": 1,
+    "minutes": 0,
+    "seconds": 0
+  },
+
+  "checker": {
+    "threads": 250,
+    "retries": 2,
+    "timeout": 7500,
+
+    "judges_threads": 3,
+    "judges_timeout": 5000,
+    "judges": [
+      {
+        "url": "https://pool.proxyspace.pro/judge.php",
+        "regex": "default"
+      },
+      {
+        "url": "http://azenv.net",
+        "regex": "default"
+      }
+    ],
+    "blacklist_sources": [
+      "https://www.spamhaus.org/drop/drop.txt",
+      "https://www.spamhaus.org/drop/edrop.txt",
+      "http://myip.ms/files/blacklist/general/latest_blacklist.txt"
+    ]
+  }
+
+
+
+
+
+}

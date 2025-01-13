@@ -25,10 +25,10 @@ func enableCORS(next http.Handler) http.Handler {
 }
 
 func OpenRoutes(port int) {
-	log.Info("Routes opened")
 
 	router := http.NewServeMux()
 	router.HandleFunc("POST /addProxies", addProxies)
+	log.Info("Routes opened")
 
 	server := http.Server{
 		Addr:    fmt.Sprintf(":%d", port),

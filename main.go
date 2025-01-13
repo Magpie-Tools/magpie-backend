@@ -3,6 +3,8 @@ package main
 import (
 	"github.com/charmbracelet/log"
 	"magpie/routing"
+	"magpie/settings"
+	"runtime/debug"
 )
 
 func main() {
@@ -15,7 +17,12 @@ func main() {
 	//multiWriter := io.MultiWriter(os.Stdout, logFile)
 	//log.SetOutput(multiWriter)
 
+	log.Info("Starting Program")
 	log.SetLevel(log.DebugLevel)
+
+	settings.ReadSettings()
+
+	debug.SetMaxThreads(9999999999)
 
 	routing.OpenRoutes(8080)
 }
