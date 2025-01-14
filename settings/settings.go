@@ -1,9 +1,11 @@
 package settings
 
 import (
+	_ "embed"
 	"encoding/json"
 	"github.com/charmbracelet/log"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,16 +40,41 @@ type judge struct {
 	Regex string `json:"regex"`
 }
 
-// Config Global settings variable
-var Config config
+var (
+	//go:embed default_settings.json
+	defaultConfig []byte
 
-var TimeBetweenChecks time.Duration
+	// Config Global settings variable
+	Config            config
+	timeBetweenChecks atomic.Value
+)
 
 func ReadSettings() {
-	data, err := os.ReadFile("data/settings.json")
+	const settingsFilePath = "data/settings.json"
+
+	data, err := os.ReadFile(settingsFilePath)
 	if err != nil {
-		log.Error("Error reading settings file:", err)
-		return
+		if os.IsNotExist(err) {
+			log.Warn("Settings file not found, creating with default configuration")
+
+			err = os.MkdirAll("data", os.ModePerm)
+			if err != nil {
+				log.Error("Error creating directory for settings file:", err)
+				return
+			}
+
+			err = os.WriteFile(settingsFilePath, defaultConfig, os.ModePerm)
+			if err != nil {
+				log.Error("Error writing default settings file:", err)
+				return
+			}
+
+			data = defaultConfig
+		} else {
+			log.Error("Error reading settings file:", err)
+			return
+		}
+
 	}
 
 	// Unmarshal the JSON data into the config struct
@@ -64,10 +91,11 @@ func SetThreads(threads uint32) {
 	Config.Checker.Threads = threads
 }
 
-func calculateTime(proxyCount uint64) {
-	TimeBetweenChecks = time.Duration(calculateMilliseconds() /
+// This calculates how many milliseconds a thread should wait before checking a new proxy
+func calculateBetweenTime(proxyCount uint64) {
+	timeBetweenChecks.Store(time.Duration(calculateMilliseconds() /
 		proxyCount * (uint64(Config.Checker.Retries) + 1) / uint64(Config.Checker.Threads) *
-		uint64(Config.Checker.Timeout))
+		uint64(Config.Checker.Timeout)))
 }
 
 func calculateMilliseconds() uint64 {
@@ -76,6 +104,10 @@ func calculateMilliseconds() uint64 {
 		uint64(Config.Timer.Hours)*60*60*1000 +
 		uint64(Config.Timer.Minutes)*60*1000 +
 		uint64(Config.Timer.Seconds)*1000
+}
+
+func GetTimeBetweenChecks() time.Duration {
+	return timeBetweenChecks.Load().(time.Duration)
 }
 
 /* TODO

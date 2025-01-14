@@ -45,7 +45,7 @@ func work() {
 			}
 
 			// Perform proxy checking or other tasks
-			time.Sleep(1 * time.Second)
+			time.Sleep(settings.GetTimeBetweenChecks())
 		}
 	}
 }
