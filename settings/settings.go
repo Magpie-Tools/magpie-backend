@@ -25,13 +25,15 @@ type config struct {
 	} `json:"timer"`
 
 	Checker struct {
-		Threads          uint32   `json:"threads"`
-		Retries          uint32   `json:"retries"`
-		Timeout          uint32   `json:"timeout"`
-		JudgesThreads    uint32   `json:"judges_threads"`
-		JudgesTimeout    uint32   `json:"judges_timeout"`
-		Judges           []judge  `json:"judges"`
-		BlacklistSources []string `json:"blacklist_sources"`
+		Threads          uint32    `json:"threads"`
+		Retries          uint32    `json:"retries"`
+		Timeout          uint32    `json:"timeout"`
+		JudgesThreads    uint32    `json:"judges_threads"`
+		JudgesTimeout    uint32    `json:"judges_timeout"`
+		Judges           []judge   `json:"judges"`
+		BlacklistSources []string  `json:"blacklist_sources"`
+		StandardHeader   []string  `json:"standardHeader"`
+		Transport        transport `json:"transport"`
 	} `json:"checker"`
 }
 
@@ -40,14 +42,29 @@ type judge struct {
 	Regex string `json:"regex"`
 }
 
+type transport struct {
+	KeepAlive             bool `json:"KeepAlive"`
+	KeepAliveSeconds      int  `json:"KeepAliveSeconds"`
+	MaxIdleConns          int  `json:"MaxIdleConns"`
+	MaxIdleConnsPerHost   int  `json:"MaxIdleConnsPerHost"`
+	IdleConnTimeout       int  `json:"IdleConnTimeout"`
+	TLSHandshakeTimeout   int  `json:"TLSHandshakeTimeout"`
+	ExpectContinueTimeout int  `json:"ExpectContinueTimeout"`
+}
+
 var (
 	//go:embed default_settings.json
 	defaultConfig []byte
 
-	// Config Global settings variable
-	Config            config
+	// Config is now managed via atomic.Value for thread-safe access.
+	configValue       atomic.Value
 	timeBetweenChecks atomic.Value
 )
+
+func init() {
+	// Initialize configValue with a default config instance
+	configValue.Store(config{})
+}
 
 func ReadSettings() {
 	const settingsFilePath = "data/settings.json"
@@ -74,43 +91,46 @@ func ReadSettings() {
 			log.Error("Error reading settings file:", err)
 			return
 		}
-
 	}
 
-	// Unmarshal the JSON data into the config struct
-	err = json.Unmarshal(data, &Config)
+	var newConfig config
+	err = json.Unmarshal(data, &newConfig)
 	if err != nil {
 		log.Error("Error unmarshalling settings file:", err)
 		return
 	}
 
+	// Store the new configuration atomically
+	configValue.Store(newConfig)
+
 	log.Debug("Settings file loaded successfully")
 }
 
-func SetThreads(threads uint32) {
-	Config.Checker.Threads = threads
+func GetConfig() config {
+	// Get the current config atomically
+	return configValue.Load().(config)
 }
 
-// This calculates how many milliseconds a thread should wait before checking a new proxy
+func SetConfig(newConfig config) {
+	// Update the config atomically
+	configValue.Store(newConfig)
+}
+
 func calculateBetweenTime(proxyCount uint64) {
-	timeBetweenChecks.Store(time.Duration(calculateMilliseconds() /
-		proxyCount * (uint64(Config.Checker.Retries) + 1) / uint64(Config.Checker.Threads) *
-		uint64(Config.Checker.Timeout)))
+	cfg := GetConfig()
+	timeBetweenChecks.Store(time.Duration(calculateMilliseconds(cfg) /
+		proxyCount * (uint64(cfg.Checker.Retries) + 1) / uint64(cfg.Checker.Threads) *
+		uint64(cfg.Checker.Timeout)))
 }
 
-func calculateMilliseconds() uint64 {
+func calculateMilliseconds(cfg config) uint64 {
 	// Calculate total duration in milliseconds
-	return uint64(Config.Timer.Days)*24*60*60*1000 +
-		uint64(Config.Timer.Hours)*60*60*1000 +
-		uint64(Config.Timer.Minutes)*60*1000 +
-		uint64(Config.Timer.Seconds)*1000
+	return uint64(cfg.Timer.Days)*24*60*60*1000 +
+		uint64(cfg.Timer.Hours)*60*60*1000 +
+		uint64(cfg.Timer.Minutes)*60*1000 +
+		uint64(cfg.Timer.Seconds)*1000
 }
 
 func GetTimeBetweenChecks() time.Duration {
 	return timeBetweenChecks.Load().(time.Duration)
 }
-
-/* TODO
-Embed an default_settings.json file that when data/settings.json is not found it gets automatically created
-also clear the embed after that
-*/

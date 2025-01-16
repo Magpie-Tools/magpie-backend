@@ -35,7 +35,7 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 
 	log.Infof("File content received: %d bytes", len(mergedContent))
 
-	err = checker.PublicProxyQueue.AddToQueue(helper.ParseTextToProxies(mergedContent))
+	checker.PublicProxyQueue.AddToQueue(helper.ParseTextToProxies(mergedContent))
 
 	if err != nil {
 		http.Error(writer, "The program is stopping at the moment", http.StatusInternalServerError)

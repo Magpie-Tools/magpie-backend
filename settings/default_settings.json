@@ -34,6 +34,23 @@
       "https://www.spamhaus.org/drop/drop.txt",
       "https://www.spamhaus.org/drop/edrop.txt",
       "http://myip.ms/files/blacklist/general/latest_blacklist.txt"
-    ]
+    ],
+
+    "standardHeader": [
+      "USER-AGENT",
+      "HOST",
+      "ACCEPT",
+      "ACCEPT-ENCODING"
+    ],
+
+    "transport": {
+      "KeepAlive": false,
+      "KeepAliveSeconds": 15,
+      "MaxIdleConns": 500,
+      "MaxIdleConnsPerHost": 100,
+      "IdleConnTimeout": 20,
+      "TLSHandshakeTimeout": 5,
+      "ExpectContinueTimeout": 1
+    }
   }
 }

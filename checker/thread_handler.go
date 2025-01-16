@@ -13,7 +13,7 @@ var (
 
 func Dispatcher() {
 	for {
-		targetThreads := settings.Config.Checker.Threads
+		targetThreads := settings.GetConfig().Checker.Threads
 
 		// Start threads if currentThreads is less than targetThreads
 		for currentThreads.Load() < targetThreads {
@@ -38,11 +38,11 @@ func work() {
 			// Exit the work loop if a stop signal is received
 			return
 		default:
-			_, err := PublicProxyQueue.GetNextProxy()
-			if err != nil {
-				//TODO dispatcher will automatically launch new threads when the queue is stopping. Make it not do that
-				return
-			}
+			proxy := PublicProxyQueue.GetNextProxy()
+
+			tmp := settings.GetConfig()
+			tmp.Checker.Threads = 3
+			settings.SetConfig(tmp)
 
 			// Perform proxy checking or other tasks
 			time.Sleep(settings.GetTimeBetweenChecks())
