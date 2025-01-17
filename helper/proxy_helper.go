@@ -2,7 +2,9 @@ package helper
 
 import (
 	"magpie/models"
+	"magpie/settings"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -45,4 +47,31 @@ func ParseTextToProxies(text string) []models.Proxy {
 	}
 
 	return proxies
+}
+
+// FindIP identifies the first IP address (IPv4 or IPv6) in a given string.
+func FindIP(input string) string {
+	// Regular expression for matching IPv4 and IPv6 addresses
+	ipRegex := `\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b|` + // IPv4
+		`\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b` // IPv6
+
+	return regexp.MustCompile(ipRegex).FindString(input)
+}
+
+func GetProxyLevel(html string) int {
+	cfg := settings.GetConfig()
+	//When the headers contain UserIp proxy is transparent
+	if strings.Contains(html, cfg.Checker.CurrentIp) {
+		return 1
+	}
+
+	//When containing one of these headers proxy is anonymous
+	for _, header := range cfg.Checker.ProxyHeader {
+		if strings.Contains(html, header) {
+			return 2
+		}
+	}
+
+	//Proxy is elite
+	return 3
 }

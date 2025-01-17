@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"magpie/helper"
 	"magpie/settings"
 	"sync/atomic"
 	"time"
@@ -39,10 +40,17 @@ func work() {
 			return
 		default:
 			proxy := PublicProxyQueue.GetNextProxy()
+			protocolsToCheck := settings.GetProtocolsToCheck()
 
-			tmp := settings.GetConfig()
-			tmp.Checker.Threads = 3
-			settings.SetConfig(tmp)
+			for _, protocol := range protocolsToCheck {
+				html, _, err := ProxyCheckRequest(proxy, getNextJudge(protocol), protocol)
+				if err != nil {
+					continue
+				}
+
+				lvl := helper.GetProxyLevel(html)
+				//TODO SAFE STUFF
+			}
 
 			// Perform proxy checking or other tasks
 			time.Sleep(settings.GetTimeBetweenChecks())

@@ -30,17 +30,16 @@
         "regex": "default"
       }
     ],
-    "blacklist_sources": [
-      "https://www.spamhaus.org/drop/drop.txt",
-      "https://www.spamhaus.org/drop/edrop.txt",
-      "http://myip.ms/files/blacklist/general/latest_blacklist.txt"
+
+    "ip_lookup": "https://ident.me",
+    "current_ip": "",
+
+    "standard_header": [
+      "USER-AGENT", "HOST", "ACCEPT", "ACCEPT-ENCODING"
     ],
 
-    "standardHeader": [
-      "USER-AGENT",
-      "HOST",
-      "ACCEPT",
-      "ACCEPT-ENCODING"
+    "proxy_header": [
+      "HTTP_X_FORWARDED_FOR", "HTTP_FORWARDED", "HTTP_VIA", "HTTP_X_PROXY_ID"
     ],
 
     "transport": {
@@ -52,5 +51,11 @@
       "TLSHandshakeTimeout": 5,
       "ExpectContinueTimeout": 1
     }
-  }
+  },
+
+  "blacklist_sources": [
+    "https://www.spamhaus.org/drop/drop.txt",
+    "https://www.spamhaus.org/drop/edrop.txt",
+    "http://myip.ms/files/blacklist/general/latest_blacklist.txt"
+  ]
 }

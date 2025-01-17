@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// CheckerRequest makes a request to the provided siteUrl with the provided proxy
-func CheckerRequest(proxyToCheck models.Proxy, targetIp string, siteName *url.URL, regex string, protocol string) (string, int, error) {
+// ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
+func ProxyCheckRequest(proxyToCheck models.Proxy, judge models.Judge, protocol string) (string, int, error) {
 	privateTransport := GetSharedTransport()
 	isAuthProxy := false
 
@@ -42,8 +42,8 @@ func CheckerRequest(proxyToCheck models.Proxy, targetIp string, siteName *url.UR
 		privateTransport.Proxy = http.ProxyURL(proxyUrl)
 
 		privateTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if strings.Contains(addr, siteName.Hostname()) {
-				addr = net.JoinHostPort(targetIp, siteName.Port())
+			if strings.Contains(addr, judge.Url.Hostname()) {
+				addr = net.JoinHostPort(judge.Ip, judge.Url.Port())
 			}
 			return dialer.DialContext(ctx, network, addr)
 		}
@@ -73,14 +73,14 @@ func CheckerRequest(proxyToCheck models.Proxy, targetIp string, siteName *url.UR
 	}
 
 	privateTransport.TLSClientConfig = &tls.Config{
-		ServerName:         siteName.Hostname(),
+		ServerName:         judge.Url.Hostname(),
 		InsecureSkipVerify: false,
 	}
 
 	client := GetClientFromPool()
 	client.Transport = privateTransport
 
-	req, err := http.NewRequest("GET", siteName.String(), nil)
+	req, err := http.NewRequest("GET", judge.Url.String(), nil)
 	if err != nil {
 		ReturnClientToPool(client)
 		return "Error creating HTTP request", -1, err
@@ -103,7 +103,7 @@ func CheckerRequest(proxyToCheck models.Proxy, targetIp string, siteName *url.UR
 
 	html := string(resBody)
 
-	if !CheckForValidResponse(html, regex) {
+	if !CheckForValidResponse(html, judge.Regex) {
 		return "Invalid response", -1, nil
 	}
 
@@ -131,4 +131,18 @@ func CheckForValidResponse(html string, regex string) bool {
 	}
 
 	return re.MatchString(html)
+}
+
+func DefaultRequest(siteName string) (string, error) {
+	response, err := http.Get(siteName)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+
+	return string(body), nil
 }

@@ -2,9 +2,12 @@ package main
 
 import (
 	"github.com/charmbracelet/log"
+	"magpie/checker"
+	"magpie/helper"
 	"magpie/routing"
 	"magpie/settings"
 	"runtime/debug"
+	"time"
 )
 
 func main() {
@@ -20,9 +23,37 @@ func main() {
 	log.Info("Starting Program")
 	log.SetLevel(log.DebugLevel)
 
-	settings.ReadSettings()
-
 	debug.SetMaxThreads(9999999999)
 
+	settings.ReadSettings()
+	setup()
+
 	routing.OpenRoutes(8080)
+}
+
+func setup() {
+	go func() {
+		cfg := settings.GetConfig()
+
+		if cfg.Checker.CurrentIp == "" && cfg.Checker.IpLookup == "" {
+			return
+		}
+
+		for cfg.Checker.CurrentIp == "" {
+			html, err := checker.DefaultRequest(cfg.Checker.IpLookup)
+			if err != nil {
+				log.Error("Error checking IP address:", err)
+			}
+
+			cfg = settings.GetConfig()
+			if cfg.Checker.CurrentIp == "" {
+				cfg.Checker.CurrentIp = helper.FindIP(html)
+				settings.SetConfig(cfg)
+				log.Infof("Found IP! Current IP: %s", cfg.Checker.CurrentIp)
+			}
+
+			time.Sleep(3 * time.Second)
+		}
+
+	}()
 }

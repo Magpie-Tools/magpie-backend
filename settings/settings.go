@@ -25,16 +25,20 @@ type config struct {
 	} `json:"timer"`
 
 	Checker struct {
-		Threads          uint32    `json:"threads"`
-		Retries          uint32    `json:"retries"`
-		Timeout          uint32    `json:"timeout"`
-		JudgesThreads    uint32    `json:"judges_threads"`
-		JudgesTimeout    uint32    `json:"judges_timeout"`
-		Judges           []judge   `json:"judges"`
-		BlacklistSources []string  `json:"blacklist_sources"`
-		StandardHeader   []string  `json:"standardHeader"`
-		Transport        transport `json:"transport"`
+		Threads        uint32    `json:"threads"`
+		Retries        uint32    `json:"retries"`
+		Timeout        uint32    `json:"timeout"`
+		JudgesThreads  uint32    `json:"judges_threads"`
+		JudgesTimeout  uint32    `json:"judges_timeout"`
+		Judges         []judge   `json:"judges"`
+		IpLookup       string    `json:"ip_lookup"`
+		CurrentIp      string    `json:"current_ip"`
+		StandardHeader []string  `json:"standard_header"`
+		ProxyHeader    []string  `json:"proxy_header"`
+		Transport      transport `json:"transport"`
 	} `json:"checker"`
+
+	BlacklistSources []string `json:"blacklist_sources"`
 }
 
 type judge struct {
@@ -52,6 +56,8 @@ type transport struct {
 	ExpectContinueTimeout int  `json:"ExpectContinueTimeout"`
 }
 
+const settingsFilePath = "data/settings.json"
+
 var (
 	//go:embed default_settings.json
 	defaultConfig []byte
@@ -59,15 +65,16 @@ var (
 	// Config is now managed via atomic.Value for thread-safe access.
 	configValue       atomic.Value
 	timeBetweenChecks atomic.Value
+	protocolsToCheck  atomic.Value
 )
 
 func init() {
 	// Initialize configValue with a default config instance
 	configValue.Store(config{})
+	protocolsToCheck.Store(make([]string, 4))
 }
 
 func ReadSettings() {
-	const settingsFilePath = "data/settings.json"
 
 	data, err := os.ReadFile(settingsFilePath)
 	if err != nil {
@@ -102,8 +109,29 @@ func ReadSettings() {
 
 	// Store the new configuration atomically
 	configValue.Store(newConfig)
+	protocolsToCheck.Store(getProtocolsOfConfig(newConfig))
 
 	log.Debug("Settings file loaded successfully")
+}
+
+func SetConfig(newConfig config) {
+	// Update the config atomically
+	configValue.Store(newConfig)
+
+	// Write the new configuration to the file
+	data, err := json.MarshalIndent(newConfig, "", "  ")
+	if err != nil {
+		log.Error("Error marshalling new configuration:", err)
+		return
+	}
+
+	err = os.WriteFile(settingsFilePath, data, os.ModePerm)
+	if err != nil {
+		log.Error("Error writing new configuration to file:", err)
+		return
+	}
+
+	log.Debug("Configuration updated and written to file successfully")
 }
 
 func GetConfig() config {
@@ -111,9 +139,31 @@ func GetConfig() config {
 	return configValue.Load().(config)
 }
 
-func SetConfig(newConfig config) {
-	// Update the config atomically
-	configValue.Store(newConfig)
+func GetTimeBetweenChecks() time.Duration {
+	return timeBetweenChecks.Load().(time.Duration)
+}
+
+func GetProtocolsToCheck() []string {
+	return protocolsToCheck.Load().([]string)
+}
+
+func getProtocolsOfConfig(cfg config) []string {
+	var protocols []string
+
+	if cfg.Protocols.HTTP {
+		protocols = append(protocols, "http")
+	}
+	if cfg.Protocols.HTTPS {
+		protocols = append(protocols, "https")
+	}
+	if cfg.Protocols.Socks4 {
+		protocols = append(protocols, "socks4")
+	}
+	if cfg.Protocols.Socks5 {
+		protocols = append(protocols, "socks5")
+	}
+
+	return protocols
 }
 
 func calculateBetweenTime(proxyCount uint64) {
@@ -129,8 +179,4 @@ func calculateMilliseconds(cfg config) uint64 {
 		uint64(cfg.Timer.Hours)*60*60*1000 +
 		uint64(cfg.Timer.Minutes)*60*1000 +
 		uint64(cfg.Timer.Seconds)*1000
-}
-
-func GetTimeBetweenChecks() time.Duration {
-	return timeBetweenChecks.Load().(time.Duration)
 }
