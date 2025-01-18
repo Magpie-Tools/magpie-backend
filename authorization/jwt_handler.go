@@ -1,0 +1,37 @@
+package authorization
+
+import (
+	"errors"
+	"github.com/golang-jwt/jwt/v5"
+	"magpie/helper"
+	"time"
+)
+
+var jwtKey = []byte(helper.GetEnv("JWT_SECRET", "magpie-secret"))
+
+func GenerateJWT(email, role string) (string, error) {
+	claims := jwt.MapClaims{
+		"email": email,
+		"role":  role,
+		"exp":   time.Now().Add(24 * time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtKey)
+}
+
+func ValidateJWT(tokenString string) (map[string]interface{}, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		return jwtKey, nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		return claims, nil
+	}
+
+	return nil, errors.New("invalid token")
+}

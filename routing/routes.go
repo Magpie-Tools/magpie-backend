@@ -28,7 +28,9 @@ func OpenRoutes(port int) {
 
 	router := http.NewServeMux()
 	router.HandleFunc("POST /addProxies", addProxies)
-	log.Info("Routes opened")
+	router.HandleFunc("POST /register", RegisterUser)
+	router.HandleFunc("POST /login", LoginUser)
+	log.Debug("Routes opened")
 
 	server := http.Server{
 		Addr:    fmt.Sprintf(":%d", port),

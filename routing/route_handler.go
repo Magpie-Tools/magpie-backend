@@ -1,11 +1,18 @@
 package routing
 
 import (
+	"encoding/json"
+	"errors"
 	"github.com/charmbracelet/log"
+	"gorm.io/gorm"
 	"io"
+	"magpie/authorization"
 	"magpie/checker"
+	"magpie/database"
 	"magpie/helper"
+	"magpie/models"
 	"net/http"
+	"strings"
 )
 
 func addProxies(writer http.ResponseWriter, request *http.Request) {
@@ -44,4 +51,78 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 
 	writer.WriteHeader(http.StatusOK)
 	writer.Write([]byte(`{"message": "Added Proxies to Queue"}`))
+}
+
+func RegisterUser(w http.ResponseWriter, r *http.Request) {
+	var user models.User
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Hash the password
+	hashedPassword, err := helper.HashPassword(user.Password)
+	if err != nil {
+		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		return
+	}
+	user.Password = hashedPassword
+
+	// Check if there is any user in the database
+	var existingUser models.User
+	if err := database.DB.Select("id").Take(&existingUser).Error; err != nil {
+		// If no user exists, assign admin role
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			user.Role = "admin"
+		} else {
+			http.Error(w, "Failed to query database", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Save user to the database
+	if err := database.DB.Create(&user).Error; err != nil {
+		if strings.Contains(err.Error(), "unique constraint") {
+			http.Error(w, "Email already in use", http.StatusConflict)
+			return
+		}
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"message": "User created", "role": user.Role})
+}
+
+func LoginUser(w http.ResponseWriter, r *http.Request) {
+	var credentials struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var user models.User
+	if err := database.DB.Where("email = ?", credentials.Email).First(&user).Error; err != nil {
+		http.Error(w, "User not found", http.StatusUnauthorized)
+		return
+	}
+
+	// Compare passwords
+	if !helper.CheckPasswordHash(credentials.Password, user.Password) {
+		http.Error(w, "Invalid password", http.StatusUnauthorized)
+		return
+	}
+
+	// Generate token
+	token, err := authorization.GenerateJWT(user.Email, user.Role)
+	if err != nil {
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"token": token})
 }

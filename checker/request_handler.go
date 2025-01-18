@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"golang.org/x/net/proxy"
 	"io"
+	"magpie/helper"
 	"magpie/models"
 	"magpie/settings"
 	"net"
@@ -17,7 +18,7 @@ import (
 
 // ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
 func ProxyCheckRequest(proxyToCheck models.Proxy, judge models.Judge, protocol string) (string, int, error) {
-	privateTransport := GetSharedTransport()
+	privateTransport := helper.GetSharedTransport()
 	isAuthProxy := false
 
 	if proxyToCheck.Username != "" && proxyToCheck.Password != "" {
@@ -77,19 +78,19 @@ func ProxyCheckRequest(proxyToCheck models.Proxy, judge models.Judge, protocol s
 		InsecureSkipVerify: false,
 	}
 
-	client := GetClientFromPool()
+	client := helper.GetClientFromPool()
 	client.Transport = privateTransport
 
 	req, err := http.NewRequest("GET", judge.Url.String(), nil)
 	if err != nil {
-		ReturnClientToPool(client)
+		helper.ReturnClientToPool(client)
 		return "Error creating HTTP request", -1, err
 	}
 
 	req.Header.Set("Connection", "close")
 
 	resp, err := client.Do(req)
-	ReturnClientToPool(client)
+	helper.ReturnClientToPool(client)
 	if err != nil {
 		return "Error making HTTP request", -1, err
 	}

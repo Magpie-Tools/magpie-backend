@@ -2,13 +2,23 @@ package main
 
 import (
 	"github.com/charmbracelet/log"
+	"github.com/joho/godotenv"
 	"magpie/checker"
+	"magpie/database"
 	"magpie/helper"
 	"magpie/routing"
 	"magpie/settings"
 	"runtime/debug"
 	"time"
 )
+
+func init() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Warn("No .env file found. Falling back to system environment variables.")
+	}
+
+}
 
 func main() {
 	//logFile, err := os.OpenFile("output.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -32,6 +42,8 @@ func main() {
 }
 
 func setup() {
+	database.SetupDB()
+
 	go func() {
 		cfg := settings.GetConfig()
 

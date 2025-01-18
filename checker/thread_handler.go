@@ -48,7 +48,7 @@ func work() {
 					continue
 				}
 
-				lvl := helper.GetProxyLevel(html)
+				_ = helper.GetProxyLevel(html)
 				//TODO SAFE STUFF
 			}
 

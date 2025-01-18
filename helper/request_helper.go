@@ -1,4 +1,4 @@
-package checker
+package helper
 
 import (
 	"magpie/settings"
