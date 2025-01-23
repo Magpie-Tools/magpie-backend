@@ -22,9 +22,12 @@ func GenerateJWT(email, role string) (string, error) {
 
 func ValidateJWT(tokenString string) (map[string]interface{}, error) {
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Validate signing method
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
 		return jwtKey, nil
 	})
-
 	if err != nil {
 		return nil, err
 	}

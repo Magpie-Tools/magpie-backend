@@ -1,54 +1,76 @@
 package helper
 
 import (
+	"context"
+	"crypto/tls"
+	"golang.org/x/net/proxy"
+	"magpie/models"
 	"magpie/settings"
 	"net"
 	"net/http"
-	"sync"
+	"net/url"
+	"strings"
 	"time"
 )
 
-var (
-	clientPool      sync.Pool
-	sharedTransport *http.Transport
-)
-
-func init() {
-	configTransport := settings.GetConfig().Checker.Transport
-
-	sharedTransport = &http.Transport{
+func CreateTransport(proxyToCheck models.Proxy, judge models.Judge, protocol string) (*http.Transport, error) {
+	// Base configuration with keep-alives disabled
+	transport := &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond,
-			KeepAlive: time.Duration(configTransport.KeepAliveSeconds) * time.Second,
+			KeepAlive: 0, // KeepAlive disabled
 		}).DialContext,
-		DisableKeepAlives:     !configTransport.KeepAlive,
-		MaxIdleConns:          configTransport.MaxIdleConns,
-		MaxIdleConnsPerHost:   configTransport.MaxIdleConnsPerHost,
-		IdleConnTimeout:       time.Duration(configTransport.IdleConnTimeout) * time.Second,
-		TLSHandshakeTimeout:   time.Duration(configTransport.TLSHandshakeTimeout) * time.Second,
-		ExpectContinueTimeout: time.Duration(configTransport.ExpectContinueTimeout) * time.Second,
+		DisableKeepAlives:     true,
+		MaxIdleConns:          0,
+		MaxIdleConnsPerHost:   0,
+		IdleConnTimeout:       0,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 
-	clientPool = sync.Pool{
-		New: func() interface{} {
-			return &http.Client{
-				Transport: sharedTransport.Clone(),
-				Timeout:   time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond,
+	switch protocol {
+	case "http", "https":
+		// Configure HTTP/HTTPS proxy
+		proxyURL := &url.URL{
+			Scheme: strings.Replace(protocol, "https", "http", 1),
+			Host:   proxyToCheck.GetFullProxy(),
+		}
+		if proxyToCheck.HasAuth() {
+			proxyURL.User = url.UserPassword(proxyToCheck.Username, proxyToCheck.Password)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+
+		// Override dialer to resolve judge's host to pre-defined IP
+		dialer := &net.Dialer{Timeout: time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond}
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if host, port, err := net.SplitHostPort(addr); err == nil && host == judge.Url.Hostname() {
+				addr = net.JoinHostPort(judge.Ip, port)
 			}
-		},
+			return dialer.DialContext(ctx, network, addr)
+		}
+
+	default:
+		// Handle SOCKS5 proxy
+		var auth *proxy.Auth
+		if proxyToCheck.HasAuth() {
+			auth = &proxy.Auth{User: proxyToCheck.Username, Password: proxyToCheck.Password}
+		}
+		socksDialer, err := proxy.SOCKS5("tcp", proxyToCheck.GetFullProxy(), auth, &net.Dialer{
+			Timeout: time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond,
+		})
+		if err != nil {
+			return nil, err
+		}
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return socksDialer.Dial(network, addr)
+		}
 	}
-}
 
-// GetClientFromPool Thread-safe borrowing and returning clients
-// This also creates a new http Client if non are available
-func GetClientFromPool() *http.Client {
-	return clientPool.Get().(*http.Client)
-}
+	// Configure TLS to use judge's hostname
+	transport.TLSClientConfig = &tls.Config{
+		ServerName:         judge.Url.Hostname(),
+		InsecureSkipVerify: false,
+	}
 
-func ReturnClientToPool(client *http.Client) {
-	clientPool.Put(client)
-}
-
-func GetSharedTransport() *http.Transport {
-	return sharedTransport.Clone()
+	return transport, nil
 }

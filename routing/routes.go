@@ -37,9 +37,10 @@ func OpenRoutes(port int) {
 		Handler: enableCORS(router),
 	}
 
-	log.Infof("Starting server on port :%d\n", port)
+	log.Infof("Starting mapgie backend on port :%d\n", port)
 	err := server.ListenAndServe()
 	if err != nil {
+		log.Fatalf("%s\nUse \"go run magpie -port=[PORT]\" to run with a custom port", err)
 		return
 	}
 }

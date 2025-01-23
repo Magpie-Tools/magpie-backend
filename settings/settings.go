@@ -25,17 +25,16 @@ type config struct {
 	} `json:"timer"`
 
 	Checker struct {
-		Threads        uint32    `json:"threads"`
-		Retries        uint32    `json:"retries"`
-		Timeout        uint32    `json:"timeout"`
-		JudgesThreads  uint32    `json:"judges_threads"`
-		JudgesTimeout  uint32    `json:"judges_timeout"`
-		Judges         []judge   `json:"judges"`
-		IpLookup       string    `json:"ip_lookup"`
-		CurrentIp      string    `json:"current_ip"`
-		StandardHeader []string  `json:"standard_header"`
-		ProxyHeader    []string  `json:"proxy_header"`
-		Transport      transport `json:"transport"`
+		Threads        uint32   `json:"threads"`
+		Retries        uint32   `json:"retries"`
+		Timeout        uint32   `json:"timeout"`
+		JudgesThreads  uint32   `json:"judges_threads"`
+		JudgesTimeout  uint32   `json:"judges_timeout"`
+		Judges         []judge  `json:"judges"`
+		IpLookup       string   `json:"ip_lookup"`
+		CurrentIp      string   `json:"current_ip"`
+		StandardHeader []string `json:"standard_header"`
+		ProxyHeader    []string `json:"proxy_header"`
 	} `json:"checker"`
 
 	BlacklistSources []string `json:"blacklist_sources"`
@@ -44,16 +43,6 @@ type config struct {
 type judge struct {
 	URL   string `json:"url"`
 	Regex string `json:"regex"`
-}
-
-type transport struct {
-	KeepAlive             bool `json:"KeepAlive"`
-	KeepAliveSeconds      int  `json:"KeepAliveSeconds"`
-	MaxIdleConns          int  `json:"MaxIdleConns"`
-	MaxIdleConnsPerHost   int  `json:"MaxIdleConnsPerHost"`
-	IdleConnTimeout       int  `json:"IdleConnTimeout"`
-	TLSHandshakeTimeout   int  `json:"TLSHandshakeTimeout"`
-	ExpectContinueTimeout int  `json:"ExpectContinueTimeout"`
 }
 
 const settingsFilePath = "data/settings.json"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
 	"magpie/checker"
@@ -8,7 +9,9 @@ import (
 	"magpie/helper"
 	"magpie/routing"
 	"magpie/settings"
+	"os"
 	"runtime/debug"
+	"strconv"
 	"time"
 )
 
@@ -33,12 +36,21 @@ func main() {
 	log.Info("Starting Program")
 	log.SetLevel(log.DebugLevel)
 
+	portFlag := flag.Int("port", 8082, "Port to listen on")
+	flag.Parse()
+
+	port, err := strconv.Atoi(os.Getenv("PORT"))
+
+	if err != nil || port == 0 {
+		port = *portFlag
+	}
+
 	debug.SetMaxThreads(9999999999)
 
 	settings.ReadSettings()
 	setup()
 
-	routing.OpenRoutes(8080)
+	routing.OpenRoutes(port)
 }
 
 func setup() {

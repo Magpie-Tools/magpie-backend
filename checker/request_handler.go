@@ -1,16 +1,11 @@
 package checker
 
 import (
-	"context"
-	"crypto/tls"
-	"golang.org/x/net/proxy"
 	"io"
 	"magpie/helper"
 	"magpie/models"
 	"magpie/settings"
-	"net"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -18,97 +13,40 @@ import (
 
 // ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
 func ProxyCheckRequest(proxyToCheck models.Proxy, judge models.Judge, protocol string) (string, int, error) {
-	privateTransport := helper.GetSharedTransport()
-	isAuthProxy := false
-
-	if proxyToCheck.Username != "" && proxyToCheck.Password != "" {
-		isAuthProxy = true
+	transport, err := helper.CreateTransport(proxyToCheck, judge, protocol)
+	if err != nil {
+		return "Failed to create transport", -1, err
 	}
+	defer transport.CloseIdleConnections() // Release resources immediately
 
-	switch protocol {
-	case "http", "https":
-		dialer := net.Dialer{
-			Timeout: time.Millisecond * time.Duration(settings.GetConfig().Checker.Timeout),
-		}
-
-		proxyUrl := &url.URL{
-			Scheme: strings.Replace(protocol, "https", "http", 1),
-			Host:   proxyToCheck.GetFullProxy(),
-		}
-
-		if isAuthProxy {
-			proxyUrl.User = url.UserPassword(proxyToCheck.Username, proxyToCheck.Password)
-		}
-
-		privateTransport.Proxy = http.ProxyURL(proxyUrl)
-
-		privateTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if strings.Contains(addr, judge.Url.Hostname()) {
-				addr = net.JoinHostPort(judge.Ip, judge.Url.Port())
-			}
-			return dialer.DialContext(ctx, network, addr)
-		}
-	default:
-		var proxyAuth *proxy.Auth
-
-		if isAuthProxy {
-			proxyAuth = &proxy.Auth{
-				User:     proxyToCheck.Username,
-				Password: proxyToCheck.Password,
-			}
-		}
-
-		dialer, err := proxy.SOCKS5("tcp", proxyToCheck.GetFullProxy(), proxyAuth,
-			&net.Dialer{
-				Timeout: time.Millisecond * time.Duration(settings.GetConfig().Checker.Timeout),
-			})
-
-		if err != nil {
-			return "Error creating SOCKS dialer", -1, err
-		}
-
-		privateTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
-		}
-
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond,
 	}
-
-	privateTransport.TLSClientConfig = &tls.Config{
-		ServerName:         judge.Url.Hostname(),
-		InsecureSkipVerify: false,
-	}
-
-	client := helper.GetClientFromPool()
-	client.Transport = privateTransport
 
 	req, err := http.NewRequest("GET", judge.Url.String(), nil)
 	if err != nil {
-		helper.ReturnClientToPool(client)
-		return "Error creating HTTP request", -1, err
+		return "Error creating request", -1, err
 	}
-
 	req.Header.Set("Connection", "close")
 
 	resp, err := client.Do(req)
-	helper.ReturnClientToPool(client)
 	if err != nil {
-		return "Error making HTTP request", -1, err
+		return "Request failed", -1, err
 	}
 	defer resp.Body.Close()
 
-	status := resp.StatusCode
-	resBody, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "Error reading response body", -1, err
+		return "Error reading body", -1, err
 	}
 
-	html := string(resBody)
-
+	html := string(body)
 	if !CheckForValidResponse(html, judge.Regex) {
 		return "Invalid response", -1, nil
 	}
 
-	return html, status, nil
+	return html, resp.StatusCode, nil
 }
 
 func CheckForValidResponse(html string, regex string) bool {

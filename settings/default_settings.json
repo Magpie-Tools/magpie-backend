@@ -40,17 +40,7 @@
 
     "proxy_header": [
       "HTTP_X_FORWARDED_FOR", "HTTP_FORWARDED", "HTTP_VIA", "HTTP_X_PROXY_ID"
-    ],
-
-    "transport": {
-      "KeepAlive": false,
-      "KeepAliveSeconds": 15,
-      "MaxIdleConns": 500,
-      "MaxIdleConnsPerHost": 100,
-      "IdleConnTimeout": 20,
-      "TLSHandshakeTimeout": 5,
-      "ExpectContinueTimeout": 1
-    }
+    ]
   },
 
   "blacklist_sources": [
