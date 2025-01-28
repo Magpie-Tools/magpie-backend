@@ -13,17 +13,22 @@ type Proxy struct {
 	Port     int    `gorm:"not null;index:idx_proxy_addr"`
 	Username string `gorm:"default:''"`
 	Password string `gorm:"default:''"`
-	Hash     []byte `gorm:"type:bytea;uniqueIndex;size:32"` // SHA-256 of IP|Port|Username|Password
+
+	UserID uint `gorm:"not null;index"` // Foreign key (indexed for performance)
+	User   User `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+
+	Hash []byte `gorm:"type:bytea;uniqueIndex;size:32"` // SHA-256 of IP|Port|Username|Password|UserID
 }
 
 func (proxy *Proxy) BeforeCreate(_ *gorm.DB) error {
 	hash := sha256.Sum256([]byte(
 		strings.ToLower( // having different upper/lowercase username/password would not make sense for the same proxy
-			fmt.Sprintf("%s|%d|%s|%s",
+			fmt.Sprintf("%s|%d|%s|%s|%d",
 				proxy.IP,
 				proxy.Port,
 				proxy.Username,
 				proxy.Password,
+				proxy.UserID,
 			))))
 	proxy.Hash = hash[:]
 	return nil

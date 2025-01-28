@@ -12,7 +12,7 @@ import (
 )
 
 // ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
-func ProxyCheckRequest(proxyToCheck models.Proxy, judge models.Judge, protocol string) (string, int, error) {
+func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol string) (string, int, error) {
 	transport, err := helper.CreateTransport(proxyToCheck, judge, protocol)
 	if err != nil {
 		return "Failed to create transport", -1, err
@@ -24,7 +24,7 @@ func ProxyCheckRequest(proxyToCheck models.Proxy, judge models.Judge, protocol s
 		Timeout:   time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond,
 	}
 
-	req, err := http.NewRequest("GET", judge.Url.String(), nil)
+	req, err := http.NewRequest("GET", judge.GetFullString(), nil)
 	if err != nil {
 		return "Error creating request", -1, err
 	}
@@ -42,7 +42,7 @@ func ProxyCheckRequest(proxyToCheck models.Proxy, judge models.Judge, protocol s
 	}
 
 	html := string(body)
-	if !CheckForValidResponse(html, judge.Regex) {
+	if !CheckForValidResponse(html, judge.GetRegex()) {
 		return "Invalid response", -1, nil
 	}
 

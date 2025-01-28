@@ -35,17 +35,19 @@ func main() {
 
 	log.Info("Starting Program")
 	log.SetLevel(log.DebugLevel)
+	debug.SetMaxThreads(9999999999)
 
 	portFlag := flag.Int("port", 8082, "Port to listen on")
+	productionFlag := flag.Bool("production", false, "Run in production mode")
 	flag.Parse()
+
+	settings.SetProductionMode(*productionFlag)
 
 	port, err := strconv.Atoi(os.Getenv("PORT"))
 
 	if err != nil || port == 0 {
 		port = *portFlag
 	}
-
-	debug.SetMaxThreads(9999999999)
 
 	settings.ReadSettings()
 	setup()
@@ -55,6 +57,7 @@ func main() {
 
 func setup() {
 	database.SetupDB()
+	judgeSetup()
 
 	go func() {
 		cfg := settings.GetConfig()
@@ -80,4 +83,19 @@ func setup() {
 		}
 
 	}()
+
+	// Routines
+
+	go checker.StartJudgeRoutine()
+}
+
+func judgeSetup() {
+	cfg := settings.GetConfig()
+
+	for _, judge := range cfg.Checker.Judges {
+		err := checker.CreateAndAddJudgeToHandler(judge.URL, judge.Regex)
+		if err != nil {
+			log.Warn("Error creating and adding judge to handler:", err)
+		}
+	}
 }

@@ -51,10 +51,11 @@ var (
 	//go:embed default_settings.json
 	defaultConfig []byte
 
-	// Config is now managed via atomic.Value for thread-safe access.
 	configValue       atomic.Value
 	timeBetweenChecks atomic.Value
 	protocolsToCheck  atomic.Value
+
+	InProductionMode bool
 )
 
 func init() {
@@ -128,6 +129,10 @@ func GetConfig() config {
 	return configValue.Load().(config)
 }
 
+func SetProductionMode(productionMode bool) {
+	InProductionMode = productionMode
+}
+
 func GetTimeBetweenChecks() time.Duration {
 	return timeBetweenChecks.Load().(time.Duration)
 }
@@ -155,14 +160,19 @@ func getProtocolsOfConfig(cfg config) []string {
 	return protocols
 }
 
-func calculateBetweenTime(proxyCount uint64) {
-	cfg := GetConfig()
-	timeBetweenChecks.Store(time.Duration(calculateMilliseconds(cfg) /
-		proxyCount * (uint64(cfg.Checker.Retries) + 1) / uint64(cfg.Checker.Threads) *
-		uint64(cfg.Checker.Timeout)))
+func setBetweenTime(proxyCount uint64) {
+	timeBetweenChecks.Store(CalculateBetweenTime(proxyCount))
 }
 
-func calculateMilliseconds(cfg config) uint64 {
+// CalculateBetweenTime Also works with e.g a judgeCount
+func CalculateBetweenTime(proxyCount uint64) time.Duration {
+	cfg := GetConfig()
+	return time.Duration(CalculateMillisecondsOfCheckingPeriod(cfg) /
+		proxyCount * (uint64(cfg.Checker.Retries) + 1) / uint64(cfg.Checker.Threads) *
+		uint64(cfg.Checker.Timeout))
+}
+
+func CalculateMillisecondsOfCheckingPeriod(cfg config) uint64 {
 	// Calculate total duration in milliseconds
 	return uint64(cfg.Timer.Days)*24*60*60*1000 +
 		uint64(cfg.Timer.Hours)*60*60*1000 +

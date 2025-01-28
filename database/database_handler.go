@@ -29,7 +29,7 @@ func SetupDB() {
 	}
 	DB = database
 
-	err = database.AutoMigrate(models.User{})
+	err = database.AutoMigrate(models.User{}, models.Proxy{})
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}

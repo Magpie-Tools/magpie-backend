@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func CreateTransport(proxyToCheck models.Proxy, judge models.Judge, protocol string) (*http.Transport, error) {
+func CreateTransport(proxyToCheck models.Proxy, judge *models.Judge, protocol string) (*http.Transport, error) {
 	// Base configuration with keep-alives disabled
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
@@ -43,8 +43,8 @@ func CreateTransport(proxyToCheck models.Proxy, judge models.Judge, protocol str
 		// Override dialer to resolve judge's host to pre-defined IP
 		dialer := &net.Dialer{Timeout: time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond}
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if host, port, err := net.SplitHostPort(addr); err == nil && host == judge.Url.Hostname() {
-				addr = net.JoinHostPort(judge.Ip, port)
+			if host, port, err := net.SplitHostPort(addr); err == nil && host == judge.GetHostname() {
+				addr = net.JoinHostPort(judge.GetIp(), port)
 			}
 			return dialer.DialContext(ctx, network, addr)
 		}
@@ -68,7 +68,7 @@ func CreateTransport(proxyToCheck models.Proxy, judge models.Judge, protocol str
 
 	// Configure TLS to use judge's hostname
 	transport.TLSClientConfig = &tls.Config{
-		ServerName:         judge.Url.Hostname(),
+		ServerName:         judge.GetHostname(),
 		InsecureSkipVerify: false,
 	}
 
