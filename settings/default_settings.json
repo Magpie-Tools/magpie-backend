@@ -32,7 +32,6 @@
     ],
 
     "ip_lookup": "https://ident.me",
-    "current_ip": "",
 
     "standard_header": [
       "USER-AGENT", "HOST", "ACCEPT", "ACCEPT-ENCODING"

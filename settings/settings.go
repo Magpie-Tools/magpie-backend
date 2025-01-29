@@ -32,7 +32,6 @@ type Config struct {
 		JudgesTimeout  uint32   `json:"judges_timeout"`
 		Judges         []judge  `json:"judges"`
 		IpLookup       string   `json:"ip_lookup"`
-		CurrentIp      string   `json:"current_ip"`
 		StandardHeader []string `json:"standard_header"`
 		ProxyHeader    []string `json:"proxy_header"`
 	} `json:"checker"`
@@ -54,6 +53,7 @@ var (
 	configValue       atomic.Value
 	timeBetweenChecks atomic.Value
 	protocolsToCheck  atomic.Value
+	currentIp         atomic.Value
 
 	InProductionMode bool
 )
@@ -62,6 +62,7 @@ func init() {
 	// Initialize configValue with a default config instance
 	configValue.Store(Config{})
 	protocolsToCheck.Store(make([]string, 4))
+	currentIp.Store("")
 }
 
 func ReadSettings() {
@@ -135,6 +136,14 @@ func SetProductionMode(productionMode bool) {
 
 func GetTimeBetweenChecks() time.Duration {
 	return timeBetweenChecks.Load().(time.Duration)
+}
+
+func GetCurrentIp() string {
+	return currentIp.Load().(string)
+}
+
+func SetCurrentIp(ip string) {
+	currentIp.Store(ip)
 }
 
 func GetProtocolsToCheck() []string {

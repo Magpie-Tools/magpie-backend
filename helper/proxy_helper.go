@@ -59,13 +59,13 @@ func FindIP(input string) string {
 }
 
 func GetProxyLevel(html string) int {
-	cfg := settings.GetConfig()
 	//When the headers contain UserIp proxy is transparent
-	if strings.Contains(html, cfg.Checker.CurrentIp) {
+	if strings.Contains(html, settings.GetCurrentIp()) {
 		return 1
 	}
 
-	//When containing one of these headers proxy is anonymous
+	//When containing one of these headers the proxy is anonymous
+	cfg := settings.GetConfig()
 	for _, header := range cfg.Checker.ProxyHeader {
 		if strings.Contains(html, header) {
 			return 2

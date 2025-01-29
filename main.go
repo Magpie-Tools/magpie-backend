@@ -62,22 +62,19 @@ func setup() {
 	go func() {
 		cfg := settings.GetConfig()
 
-		if cfg.Checker.CurrentIp == "" && cfg.Checker.IpLookup == "" {
+		if settings.GetCurrentIp() == "" && cfg.Checker.IpLookup == "" {
 			return
 		}
 
-		for cfg.Checker.CurrentIp == "" {
+		for settings.GetCurrentIp() == "" {
 			html, err := checker.DefaultRequest(cfg.Checker.IpLookup)
 			if err != nil {
 				log.Error("Error checking IP address:", err)
 			}
 
-			cfg = settings.GetConfig()
-			if cfg.Checker.CurrentIp == "" {
-				cfg.Checker.CurrentIp = helper.FindIP(html)
-				settings.SetConfig(cfg)
-				log.Infof("Found IP! Current IP: %s", cfg.Checker.CurrentIp)
-			}
+			currentIp := helper.FindIP(html)
+			settings.SetCurrentIp(currentIp)
+			log.Infof("Found IP! Current IP: %s", currentIp)
 
 			time.Sleep(3 * time.Second)
 		}
