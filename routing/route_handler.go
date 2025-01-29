@@ -11,6 +11,7 @@ import (
 	"magpie/database"
 	"magpie/helper"
 	"magpie/models"
+	"magpie/settings"
 	"net/http"
 	"strings"
 )
@@ -125,4 +126,22 @@ func LoginUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{"token": token})
+}
+
+func SaveSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var newConfig settings.Config
+	if err := json.NewDecoder(r.Body).Decode(&newConfig); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		log.Error("Error decoding request body:", err)
+		return
+	}
+
+	settings.SetConfig(newConfig)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Configuration updated successfully"))
 }

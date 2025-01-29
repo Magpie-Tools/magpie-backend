@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-type config struct {
+type Config struct {
 	Protocols struct {
 		HTTP   bool `json:"http"`
 		HTTPS  bool `json:"https"`
@@ -60,7 +60,7 @@ var (
 
 func init() {
 	// Initialize configValue with a default config instance
-	configValue.Store(config{})
+	configValue.Store(Config{})
 	protocolsToCheck.Store(make([]string, 4))
 }
 
@@ -90,7 +90,7 @@ func ReadSettings() {
 		}
 	}
 
-	var newConfig config
+	var newConfig Config
 	err = json.Unmarshal(data, &newConfig)
 	if err != nil {
 		log.Error("Error unmarshalling settings file:", err)
@@ -104,7 +104,7 @@ func ReadSettings() {
 	log.Debug("Settings file loaded successfully")
 }
 
-func SetConfig(newConfig config) {
+func SetConfig(newConfig Config) {
 	// Update the config atomically
 	configValue.Store(newConfig)
 
@@ -124,9 +124,9 @@ func SetConfig(newConfig config) {
 	log.Debug("Configuration updated and written to file successfully")
 }
 
-func GetConfig() config {
+func GetConfig() Config {
 	// Get the current config atomically
-	return configValue.Load().(config)
+	return configValue.Load().(Config)
 }
 
 func SetProductionMode(productionMode bool) {
@@ -141,7 +141,7 @@ func GetProtocolsToCheck() []string {
 	return protocolsToCheck.Load().([]string)
 }
 
-func getProtocolsOfConfig(cfg config) []string {
+func getProtocolsOfConfig(cfg Config) []string {
 	var protocols []string
 
 	if cfg.Protocols.HTTP {
@@ -172,7 +172,7 @@ func CalculateBetweenTime(proxyCount uint64) time.Duration {
 		uint64(cfg.Checker.Timeout))
 }
 
-func CalculateMillisecondsOfCheckingPeriod(cfg config) uint64 {
+func CalculateMillisecondsOfCheckingPeriod(cfg Config) uint64 {
 	// Calculate total duration in milliseconds
 	return uint64(cfg.Timer.Days)*24*60*60*1000 +
 		uint64(cfg.Timer.Hours)*60*60*1000 +
