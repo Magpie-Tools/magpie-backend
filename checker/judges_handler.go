@@ -2,6 +2,7 @@ package checker
 
 import (
 	"magpie/models"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -44,9 +45,29 @@ func updateJudges(newMap map[string]*judgeEntry) {
 	judges.Store(newMap)
 }
 
-// TODO Sort this
 func GetAllJudgeEntries() map[string]*judgeEntry {
 	return judges.Load().(map[string]*judgeEntry)
+}
+
+func GetSortedJudgeEntries() []*judgeEntry {
+	judgeMap := GetAllJudgeEntries()
+	keys := make([]string, 0, len(judgeMap))
+
+	// Collect keys
+	for key := range judgeMap {
+		keys = append(keys, key)
+	}
+
+	// Sort keys
+	sort.Strings(keys)
+
+	// Iterate in sorted order
+	sortedEntries := make([]*judgeEntry, 0, len(keys))
+	for _, key := range keys {
+		sortedEntries = append(sortedEntries, judgeMap[key])
+	}
+
+	return sortedEntries
 }
 
 // AddJudge adds a judge to the list of available judges for the specified protocol and sorts the list by fullstring.

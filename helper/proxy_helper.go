@@ -10,7 +10,7 @@ import (
 )
 
 func ParseTextToProxies(text string) []models.Proxy {
-	text = strings.ReplaceAll(text, "@", ";")
+	text = clearProxyString(text)
 
 	lines := strings.Split(text, "\n")
 	proxies := make([]models.Proxy, 0, len(lines))
@@ -21,6 +21,9 @@ func ParseTextToProxies(text string) []models.Proxy {
 
 		// Validate ip
 		ip := split[0]
+		if len(ip) > 0 && ip[0] == '0' {
+			ip = ip[1:] // Fix proxy if it leads with 0
+		}
 		if net.ParseIP(ip) == nil {
 			continue
 		}
@@ -45,6 +48,18 @@ func ParseTextToProxies(text string) []models.Proxy {
 			})
 		}
 	}
+
+	return proxies
+}
+
+func clearProxyString(proxies string) string {
+	proxies = strings.ReplaceAll(proxies, "@", ";")
+	proxies = strings.ReplaceAll(proxies, "\r", "")
+
+	// Makes leading 0 proxies valid
+	proxies = strings.ReplaceAll(proxies, ".0", ".")
+	proxies = strings.ReplaceAll(proxies, "..", ".0.")
+	proxies = strings.ReplaceAll(proxies, ".:", ".0:")
 
 	return proxies
 }

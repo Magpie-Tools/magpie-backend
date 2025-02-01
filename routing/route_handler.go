@@ -43,12 +43,14 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 
 	log.Infof("File content received: %d bytes", len(mergedContent))
 
-	checker.PublicProxyQueue.AddToQueue(helper.ParseTextToProxies(mergedContent))
+	proxyList := helper.ParseTextToProxies(mergedContent)
 
+	err = database.InsertProxies(proxyList)
 	if err != nil {
-		http.Error(writer, "The program is stopping at the moment", http.StatusInternalServerError)
+		http.Error(writer, "Could not add proxies to database", http.StatusInternalServerError)
 		return
 	}
+	checker.PublicProxyQueue.AddToQueue(proxyList)
 
 	writer.WriteHeader(http.StatusOK)
 	writer.Write([]byte(`{"message": "Added Proxies to Queue"}`))

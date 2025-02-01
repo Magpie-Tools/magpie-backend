@@ -14,8 +14,8 @@ type Proxy struct {
 	Username string `gorm:"default:''"`
 	Password string `gorm:"default:''"`
 
-	UserID uint `gorm:"not null;index"` // Foreign key (indexed for performance)
-	User   User `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	//UserID uint `gorm:"not null;index"` // Foreign key (indexed for performance)
+	//User   User `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
 	Hash []byte `gorm:"type:bytea;uniqueIndex;size:32"` // SHA-256 of IP|Port|Username|Password|UserID
 }
@@ -28,7 +28,7 @@ func (proxy *Proxy) BeforeCreate(_ *gorm.DB) error {
 				proxy.Port,
 				proxy.Username,
 				proxy.Password,
-				proxy.UserID,
+				//proxy.UserID,
 			))))
 	proxy.Hash = hash[:]
 	return nil

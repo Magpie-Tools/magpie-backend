@@ -1,7 +1,6 @@
 package models
 
 import (
-	"github.com/charmbracelet/log"
 	"net"
 	"net/url"
 	"sync"
@@ -37,7 +36,7 @@ func (judge *Judge) SetUp(urlStr, regex string) error {
 }
 
 func (judge *Judge) UpdateIp() {
-	hostname := judge.hostname // Immutable after setup
+	hostname := judge.hostname
 
 	if hostname == "" {
 		judge.ip.Store("")
@@ -49,8 +48,6 @@ func (judge *Judge) UpdateIp() {
 		judge.ip.Store("")
 		return
 	}
-
-	log.Debug(addrs)
 
 	judge.ip.Store(addrs[0])
 }
