@@ -92,7 +92,7 @@ func judgeSetup() {
 	for _, judge := range cfg.Checker.Judges {
 		err := checker.CreateAndAddJudgeToHandler(judge.URL, judge.Regex)
 		if err != nil {
-			log.Warn("Error creating and adding judge to handler:", err)
+			log.Error("Error creating and adding judge to handler:", err)
 		}
 	}
 }

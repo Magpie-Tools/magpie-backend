@@ -17,20 +17,18 @@ type Config struct {
 		Socks5 bool `json:"socks5"`
 	} `json:"protocols"`
 
-	Timer struct {
-		Days    uint32 `json:"days"`
-		Hours   uint32 `json:"hours"`
-		Minutes uint32 `json:"minutes"`
-		Seconds uint32 `json:"seconds"`
-	} `json:"timer"`
+	Timer Timer `json:"timer"`
 
 	Checker struct {
-		Threads        uint32   `json:"threads"`
-		Retries        uint32   `json:"retries"`
-		Timeout        uint32   `json:"timeout"`
-		JudgesThreads  uint32   `json:"judges_threads"`
-		JudgesTimeout  uint32   `json:"judges_timeout"`
-		Judges         []judge  `json:"judges"`
+		Threads uint32 `json:"threads"`
+		Retries uint32 `json:"retries"`
+		Timeout uint32 `json:"timeout"`
+
+		JudgesThreads uint32  `json:"judges_threads"`
+		JudgesTimeout uint32  `json:"judges_timeout"`
+		Judges        []judge `json:"judges"`
+		JudgeTimer    Timer   `json:"judge_timer"` // Only for production
+
 		IpLookup       string   `json:"ip_lookup"`
 		StandardHeader []string `json:"standard_header"`
 		ProxyHeader    []string `json:"proxy_header"`
@@ -42,6 +40,13 @@ type Config struct {
 type judge struct {
 	URL   string `json:"url"`
 	Regex string `json:"regex"`
+}
+
+type Timer struct {
+	Days    uint32 `json:"days"`
+	Hours   uint32 `json:"hours"`
+	Minutes uint32 `json:"minutes"`
+	Seconds uint32 `json:"seconds"`
 }
 
 const settingsFilePath = "data/settings.json"
@@ -59,7 +64,7 @@ var (
 )
 
 func init() {
-	// Initialize configValue with a default config instance
+	// Initialize configValue with a default Config instance
 	configValue.Store(Config{})
 	protocolsToCheck.Store(make([]string, 4))
 	currentIp.Store("")
@@ -106,7 +111,7 @@ func ReadSettings() {
 }
 
 func SetConfig(newConfig Config) {
-	// Update the config atomically
+	// Update the Config atomically
 	configValue.Store(newConfig)
 
 	// Write the new configuration to the file
@@ -126,7 +131,7 @@ func SetConfig(newConfig Config) {
 }
 
 func GetConfig() Config {
-	// Get the current config atomically
+	// Get the current Config atomically
 	return configValue.Load().(Config)
 }
 
@@ -176,15 +181,15 @@ func setBetweenTime(proxyCount uint64) {
 // CalculateBetweenTime Also works with e.g a judgeCount
 func CalculateBetweenTime(proxyCount uint64) time.Duration {
 	cfg := GetConfig()
-	return time.Duration(CalculateMillisecondsOfCheckingPeriod(cfg) /
+	return time.Duration(CalculateMillisecondsOfCheckingPeriod(cfg.Timer) /
 		proxyCount * (uint64(cfg.Checker.Retries) + 1) / uint64(cfg.Checker.Threads) *
 		uint64(cfg.Checker.Timeout))
 }
 
-func CalculateMillisecondsOfCheckingPeriod(cfg Config) uint64 {
+func CalculateMillisecondsOfCheckingPeriod(timer Timer) uint64 {
 	// Calculate total duration in milliseconds
-	return uint64(cfg.Timer.Days)*24*60*60*1000 +
-		uint64(cfg.Timer.Hours)*60*60*1000 +
-		uint64(cfg.Timer.Minutes)*60*1000 +
-		uint64(cfg.Timer.Seconds)*1000
+	return uint64(timer.Days)*24*60*60*1000 +
+		uint64(timer.Hours)*60*60*1000 +
+		uint64(timer.Minutes)*60*1000 +
+		uint64(timer.Seconds)*1000
 }
