@@ -14,6 +14,9 @@ type Proxy struct {
 	Username string `gorm:"default:''"`
 	Password string `gorm:"default:''"`
 
+	// Relationships
+	Statistics []ProxyStatistic `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+
 	//UserID uint `gorm:"not null;index"` // Foreign key (indexed for performance)
 	//User   User `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
@@ -35,7 +38,7 @@ func (proxy *Proxy) BeforeCreate(_ *gorm.DB) error {
 }
 
 func (proxy *Proxy) GetFullProxy() string {
-	return fmt.Sprintf("%s:%d", proxy.Username, proxy.Port)
+	return fmt.Sprintf("%s:%d", proxy.IP, proxy.Port)
 }
 
 func (proxy *Proxy) HasAuth() bool {

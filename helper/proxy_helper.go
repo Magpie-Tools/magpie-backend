@@ -76,7 +76,7 @@ func FindIP(input string) string {
 func GetProxyLevel(html string) int {
 	//When the headers contain UserIp proxy is transparent
 	if strings.Contains(html, settings.GetCurrentIp()) {
-		return 1
+		return 3
 	}
 
 	//When containing one of these headers the proxy is anonymous
@@ -88,5 +88,5 @@ func GetProxyLevel(html string) int {
 	}
 
 	//Proxy is elite
-	return 3
+	return 1
 }

@@ -174,7 +174,7 @@ func getProtocolsOfConfig(cfg Config) []string {
 	return protocols
 }
 
-func setBetweenTime(proxyCount uint64) {
+func SetBetweenTime(proxyCount uint64) {
 	timeBetweenChecks.Store(CalculateBetweenTime(proxyCount))
 }
 

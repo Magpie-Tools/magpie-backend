@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -32,7 +31,7 @@ func CreateTransport(proxyToCheck models.Proxy, judge *models.Judge, protocol st
 	case "http", "https":
 		// Configure HTTP/HTTPS proxy
 		proxyURL := &url.URL{
-			Scheme: strings.Replace(protocol, "https", "http", 1),
+			Scheme: "http",
 			Host:   proxyToCheck.GetFullProxy(),
 		}
 		if proxyToCheck.HasAuth() {

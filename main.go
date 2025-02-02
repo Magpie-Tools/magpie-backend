@@ -4,15 +4,12 @@ import (
 	"flag"
 	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
-	"magpie/checker"
-	"magpie/database"
-	"magpie/helper"
 	"magpie/routing"
 	"magpie/settings"
+	"magpie/setup"
 	"os"
 	"runtime/debug"
 	"strconv"
-	"time"
 )
 
 func init() {
@@ -24,15 +21,6 @@ func init() {
 }
 
 func main() {
-	//logFile, err := os.OpenFile("output.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	//if err != nil {
-	//	log.Fatalf("Failed to open log file: %v", err)
-	//}
-	//defer logFile.Close()
-	//
-	//multiWriter := io.MultiWriter(os.Stdout, logFile)
-	//log.SetOutput(multiWriter)
-
 	log.Info("Starting Program")
 	log.SetLevel(log.DebugLevel)
 	debug.SetMaxThreads(9999999999)
@@ -49,50 +37,7 @@ func main() {
 		port = *portFlag
 	}
 
-	settings.ReadSettings()
-	setup()
+	setup.Setup()
 
 	routing.OpenRoutes(port)
-}
-
-func setup() {
-	database.SetupDB()
-	judgeSetup()
-
-	go func() {
-		cfg := settings.GetConfig()
-
-		if settings.GetCurrentIp() == "" && cfg.Checker.IpLookup == "" {
-			return
-		}
-
-		for settings.GetCurrentIp() == "" {
-			html, err := checker.DefaultRequest(cfg.Checker.IpLookup)
-			if err != nil {
-				log.Error("Error checking IP address:", err)
-			}
-
-			currentIp := helper.FindIP(html)
-			settings.SetCurrentIp(currentIp)
-			log.Infof("Found IP! Current IP: %s", currentIp)
-
-			time.Sleep(3 * time.Second)
-		}
-
-	}()
-
-	// Routines
-
-	go checker.StartJudgeRoutine()
-}
-
-func judgeSetup() {
-	cfg := settings.GetConfig()
-
-	for _, judge := range cfg.Checker.Judges {
-		err := checker.CreateAndAddJudgeToHandler(judge.URL, judge.Regex)
-		if err != nil {
-			log.Error("Error creating and adding judge to handler:", err)
-		}
-	}
 }

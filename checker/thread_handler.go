@@ -1,7 +1,9 @@
 package checker
 
 import (
+	"magpie/database"
 	"magpie/helper"
+	"magpie/models"
 	"magpie/settings"
 	"sync/atomic"
 	"time"
@@ -43,13 +45,24 @@ func work() {
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
 			for _, protocol := range protocolsToCheck {
-				html, _, err := ProxyCheckRequest(proxy, getNextJudge(protocol), protocol)
-				if err != nil {
-					continue
+				timeStart := time.Now()
+				html, err := ProxyCheckRequest(proxy, getNextJudge(protocol), protocol)
+				responseTime := time.Since(timeStart).Milliseconds()
+				statistic := models.ProxyStatistic{
+					Alive:         false,
+					ResponseTime:  int16(responseTime),
+					Country:       database.GetCountryCode(proxy.IP),
+					EstimatedType: database.DetermineProxyType(proxy.IP),
+					ProxyID:       proxy.ID,
 				}
 
-				_ = helper.GetProxyLevel(html)
-				//TODO SAFE STUFF
+				if err == nil {
+					lvl := helper.GetProxyLevel(html)
+					statistic.LevelID = &lvl
+					statistic.Alive = true
+				}
+
+				database.AddProxyStatistic(statistic)
 			}
 
 			// Perform proxy checking or other tasks

@@ -12,10 +12,10 @@ import (
 )
 
 // ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
-func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol string) (string, int, error) {
+func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol string) (string, error) {
 	transport, err := helper.CreateTransport(proxyToCheck, judge, protocol)
 	if err != nil {
-		return "Failed to create transport", -1, err
+		return "Failed to create transport", err
 	}
 	defer transport.CloseIdleConnections() // Release resources immediately
 
@@ -26,27 +26,27 @@ func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol 
 
 	req, err := http.NewRequest("GET", judge.GetFullString(), nil)
 	if err != nil {
-		return "Error creating request", -1, err
+		return "Error creating request", err
 	}
 	req.Header.Set("Connection", "close")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "Request failed", -1, err
+		return "Request failed", err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "Error reading body", -1, err
+		return "Error reading body", err
 	}
 
 	html := string(body)
 	if !CheckForValidResponse(html, judge.GetRegex()) {
-		return "Invalid response", -1, nil
+		return "Invalid response", nil
 	}
 
-	return html, resp.StatusCode, nil
+	return html, nil
 }
 
 func CheckForValidResponse(html string, regex string) bool {
