@@ -44,7 +44,7 @@ func work() {
 			proxy := PublicProxyQueue.GetNextProxy()
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
-			for _, protocol := range protocolsToCheck {
+			for protocol, protocolId := range protocolsToCheck {
 				timeStart := time.Now()
 				html, err := ProxyCheckRequest(proxy, getNextJudge(protocol), protocol)
 				responseTime := time.Since(timeStart).Milliseconds()
@@ -60,6 +60,7 @@ func work() {
 					lvl := helper.GetProxyLevel(html)
 					statistic.LevelID = &lvl
 					statistic.Alive = true
+					statistic.ProtocolID = &protocolId
 				}
 
 				database.AddProxyStatistic(statistic)

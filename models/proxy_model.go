@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gorm.io/gorm"
 	"strings"
+	"time"
 )
 
 type Proxy struct {
@@ -20,7 +21,8 @@ type Proxy struct {
 	//UserID uint `gorm:"not null;index"` // Foreign key (indexed for performance)
 	//User   User `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
-	Hash []byte `gorm:"type:bytea;uniqueIndex;size:32"` // SHA-256 of IP|Port|Username|Password|UserID
+	Hash      []byte    `gorm:"type:bytea;uniqueIndex;size:32"` // SHA-256 of IP|Port|Username|Password|UserID
+	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
 func (proxy *Proxy) BeforeCreate(_ *gorm.DB) error {

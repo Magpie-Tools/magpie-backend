@@ -66,7 +66,7 @@ var (
 func init() {
 	// Initialize configValue with a default Config instance
 	configValue.Store(Config{})
-	protocolsToCheck.Store(make([]string, 4))
+	protocolsToCheck.Store(make(map[string]int, 4))
 	currentIp.Store("")
 }
 
@@ -151,24 +151,24 @@ func SetCurrentIp(ip string) {
 	currentIp.Store(ip)
 }
 
-func GetProtocolsToCheck() []string {
-	return protocolsToCheck.Load().([]string)
+func GetProtocolsToCheck() map[string]int {
+	return protocolsToCheck.Load().(map[string]int)
 }
 
-func getProtocolsOfConfig(cfg Config) []string {
-	var protocols []string
+func getProtocolsOfConfig(cfg Config) map[string]int {
+	protocols := make(map[string]int)
 
 	if cfg.Protocols.HTTP {
-		protocols = append(protocols, "http")
+		protocols["http"] = 1
 	}
 	if cfg.Protocols.HTTPS {
-		protocols = append(protocols, "https")
+		protocols["https"] = 2
 	}
 	if cfg.Protocols.Socks4 {
-		protocols = append(protocols, "socks4")
+		protocols["socks4"] = 3
 	}
 	if cfg.Protocols.Socks5 {
-		protocols = append(protocols, "socks5")
+		protocols["socks5"] = 4
 	}
 
 	return protocols
