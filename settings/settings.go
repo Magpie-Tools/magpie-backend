@@ -126,7 +126,7 @@ func SetConfig(newConfig Config) {
 		log.Error("Error writing new configuration to file:", err)
 		return
 	}
-
+	SetBetweenTime()
 	log.Debug("Configuration updated and written to file successfully")
 }
 
@@ -174,16 +174,25 @@ func getProtocolsOfConfig(cfg Config) map[string]int {
 	return protocols
 }
 
-func SetBetweenTime(proxyCount uint64) {
-	timeBetweenChecks.Store(CalculateBetweenTime(proxyCount))
+func SetBetweenTime() {
+	timeBetweenChecks.Store(CalculateBetweenTime())
 }
 
 // CalculateBetweenTime Also works with e.g a judgeCount
-func CalculateBetweenTime(proxyCount uint64) time.Duration {
+func CalculateBetweenTime() time.Duration {
 	cfg := GetConfig()
-	return time.Duration(CalculateMillisecondsOfCheckingPeriod(cfg.Timer) /
-		proxyCount * (uint64(cfg.Checker.Retries) + 1) / uint64(cfg.Checker.Threads) *
-		uint64(cfg.Checker.Timeout))
+	totalMs := CalculateMillisecondsOfCheckingPeriod(cfg.Timer)
+
+	// Return the full checking period (e.g., 1 hour)
+	intervalMs := totalMs
+
+	// Enforce minimum interval (e.g., 1 second)
+	minInterval := uint64(1000)
+	if intervalMs < minInterval {
+		intervalMs = minInterval
+	}
+
+	return time.Duration(intervalMs) * time.Millisecond
 }
 
 func CalculateMillisecondsOfCheckingPeriod(timer Timer) uint64 {

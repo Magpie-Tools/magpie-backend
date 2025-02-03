@@ -30,7 +30,7 @@ func Dispatcher() {
 			currentThreads.Add(^uint32(0))
 		}
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(10 * time.Second)
 	}
 }
 
@@ -41,12 +41,12 @@ func work() {
 			// Exit the work loop if a stop signal is received
 			return
 		default:
-			proxy := PublicProxyQueue.GetNextProxy()
+			proxy, scheduledTime := PublicProxyQueue.GetNextProxy()
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
 			for protocol, protocolId := range protocolsToCheck {
 				timeStart := time.Now()
-				html, err := ProxyCheckRequest(proxy, getNextJudge(protocol), protocol)
+				html, err := CheckProxyWithRetries(proxy, getNextJudge(protocol), protocol)
 				responseTime := time.Since(timeStart).Milliseconds()
 				statistic := models.ProxyStatistic{
 					Alive:         false,
@@ -66,8 +66,27 @@ func work() {
 				database.AddProxyStatistic(statistic)
 			}
 
-			// Perform proxy checking or other tasks
-			time.Sleep(settings.GetTimeBetweenChecks())
+			// Requeue the proxy for the next check
+			PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
 		}
 	}
+}
+
+func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol string) (string, error) {
+	retries := settings.GetConfig().Checker.Retries
+
+	var (
+		html string
+		err  error
+	)
+
+	for i := uint32(0); i < retries; i++ {
+		html, err = ProxyCheckRequest(proxy, judge, protocol)
+		if err != nil {
+			return html, err
+		}
+		continue
+	}
+
+	return html, err
 }

@@ -15,10 +15,7 @@ func Setup() {
 
 	database.SetupDB()
 	statisticsSetup()
-	proxyCount := statistics.GetProxyCount()
-	if proxyCount > 0 {
-		settings.SetBetweenTime(uint64(proxyCount))
-	}
+	settings.SetBetweenTime()
 
 	judgeSetup()
 

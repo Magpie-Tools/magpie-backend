@@ -8,7 +8,6 @@ import (
 	"gorm.io/gorm/clause"
 	"magpie/checker/statistics"
 	"magpie/models"
-	"magpie/settings"
 )
 
 const (
@@ -70,9 +69,21 @@ func InsertAndGetProxies(proxies []models.Proxy) ([]models.Proxy, error) {
 		return nil, err
 	}
 
-	// Collect all hashes from the proxies slice
-	hashes := make([][]byte, 0, len(proxies))
+	// I hate that I have to do this after trying the insert
+	seen := make(map[string]struct{}, len(proxies))
+	uniqueProxies := make([]models.Proxy, 0, len(proxies))
+
 	for _, p := range proxies {
+		hashStr := string(p.Hash)
+		if _, exists := seen[hashStr]; !exists {
+			seen[hashStr] = struct{}{}
+			uniqueProxies = append(uniqueProxies, p)
+		}
+	}
+
+	// Collect all hashes from the proxies slice
+	hashes := make([][]byte, 0, len(uniqueProxies))
+	for _, p := range uniqueProxies {
 		hashes = append(hashes, p.Hash)
 	}
 
@@ -92,7 +103,6 @@ func InsertAndGetProxies(proxies []models.Proxy) ([]models.Proxy, error) {
 	}
 
 	statistics.IncreaseProxyCount(int64(len(existingProxies)))
-	settings.SetBetweenTime(uint64(statistics.GetProxyCount()))
 	return existingProxies, nil
 }
 
