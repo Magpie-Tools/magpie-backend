@@ -23,8 +23,8 @@ type Proxy struct {
 	// Relationships
 	Statistics []ProxyStatistic `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
-	//UserID uint `gorm:"not null;index"` // Foreign key (indexed for performance)
-	//User   User `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	UserID uint `gorm:"not null;index"` // Foreign key (indexed for performance)
+	User   User `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
 	Hash      []byte    `gorm:"type:bytea;uniqueIndex;size:32"` // SHA-256 of IP|Port|Username|Password|UserID
 	CreatedAt time.Time `gorm:"autoCreateTime"`

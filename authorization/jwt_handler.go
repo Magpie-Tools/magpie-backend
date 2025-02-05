@@ -9,11 +9,11 @@ import (
 
 var jwtKey = []byte(helper.GetEnv("JWT_SECRET", "magpie-secret"))
 
-func GenerateJWT(email, role string) (string, error) {
+func GenerateJWT(userId uint, role string) (string, error) {
 	claims := jwt.MapClaims{
-		"email": email,
-		"role":  role,
-		"exp":   time.Now().Add(24 * time.Hour).Unix(),
+		"user_id": userId,
+		"role":    role,
+		"exp":     time.Now().Add(24 * time.Hour).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

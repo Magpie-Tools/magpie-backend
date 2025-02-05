@@ -3,6 +3,7 @@ package routing
 import (
 	"fmt"
 	"github.com/charmbracelet/log"
+	"magpie/authorization"
 	"net/http"
 )
 
@@ -29,8 +30,8 @@ func OpenRoutes(port int) {
 	router := http.NewServeMux()
 	router.HandleFunc("POST /register", registerUser)
 	router.HandleFunc("POST /login", loginUser)
-	router.HandleFunc("POST /addProxies", addProxies)
-	router.HandleFunc("POST /saveSettings", SaveSettings)
+	router.Handle("POST /addProxies", authorization.RequireAuth(http.HandlerFunc(addProxies)))
+	router.Handle("POST /saveSettings", authorization.RequireRole("admin")(http.HandlerFunc(SaveSettings)))
 	log.Debug("Routes opened")
 
 	server := http.Server{

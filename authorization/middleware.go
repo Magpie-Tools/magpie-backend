@@ -51,6 +51,32 @@ func RequireRole(requiredRole string) func(http.Handler) http.Handler {
 	}
 }
 
+func RequireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := extractClaims(r)
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func GetUserIDFromRequest(r *http.Request) (uint, error) {
+	claims, err := extractClaims(r)
+	if err != nil {
+		return 0, err
+	}
+
+	// JWT numbers are parsed as float64 by default
+	userID, ok := claims["user_id"].(float64)
+	if !ok {
+		return 0, errors.New("invalid user ID in token")
+	}
+
+	return uint(userID), nil
+}
+
 func extractClaims(r *http.Request) (map[string]interface{}, error) {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {

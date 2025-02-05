@@ -56,6 +56,14 @@ func ParseTextToProxies(text string) []models.Proxy {
 	return proxies
 }
 
+func AddUserIdToProxies(proxies []models.Proxy, userId uint) []models.Proxy {
+	for i := range proxies {
+		proxies[i].UserID = userId
+	}
+
+	return proxies
+}
+
 func clearProxyString(proxies string) string {
 	proxies = strings.ReplaceAll(proxies, "@", ";")
 	proxies = strings.ReplaceAll(proxies, "\r", "")

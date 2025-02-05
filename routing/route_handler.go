@@ -73,7 +73,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := authorization.GenerateJWT(user.Email, user.Role)
+	token, err := authorization.GenerateJWT(user.ID, user.Role)
 	if err != nil {
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
@@ -107,7 +107,7 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate token
-	token, err := authorization.GenerateJWT(user.Email, user.Role)
+	token, err := authorization.GenerateJWT(user.ID, user.Role)
 	if err != nil {
 		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
@@ -117,6 +117,12 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func addProxies(writer http.ResponseWriter, request *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(request)
+	if userErr != nil {
+		http.Error(writer, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	textareaContent := request.FormValue("proxyTextarea") // "proxyTextarea" matches the key sent by the frontend
 	file, fileHeader, err := request.FormFile("file")     // "file" is the key of the form field
 
@@ -144,6 +150,7 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 	log.Infof("File content received: %d bytes", len(mergedContent))
 
 	proxyList := helper.ParseTextToProxies(mergedContent)
+	proxyList = helper.AddUserIdToProxies(proxyList, userID)
 
 	proxyList, err = database.InsertAndGetProxies(proxyList)
 	if err != nil {
