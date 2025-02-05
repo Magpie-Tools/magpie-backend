@@ -42,6 +42,7 @@ func work() {
 			return
 		default:
 			proxy, scheduledTime := PublicProxyQueue.GetNextProxy()
+			ip := proxy.GetIp()
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
 			for protocol, protocolId := range protocolsToCheck {
@@ -51,8 +52,8 @@ func work() {
 				statistic := models.ProxyStatistic{
 					Alive:         false,
 					ResponseTime:  int16(responseTime),
-					Country:       database.GetCountryCode(proxy.IP),
-					EstimatedType: database.DetermineProxyType(proxy.IP),
+					Country:       database.GetCountryCode(ip),
+					EstimatedType: database.DetermineProxyType(ip),
 					ProxyID:       proxy.ID,
 				}
 

@@ -34,18 +34,22 @@ func ParseTextToProxies(text string) []models.Proxy {
 			continue
 		}
 
+		proxy := models.Proxy{
+			Port: port,
+		}
+
+		err = proxy.SetIP(ip)
+		if err != nil {
+			continue
+		}
+
 		if count == 2 {
-			proxies = append(proxies, models.Proxy{
-				IP:   ip,
-				Port: port,
-			})
+			proxies = append(proxies, proxy)
 		} else if count == 4 {
-			proxies = append(proxies, models.Proxy{
-				IP:       ip,
-				Port:     port,
-				Username: split[2],
-				Password: split[3],
-			})
+			proxy.Username = split[2]
+			proxy.Password = split[3]
+
+			proxies = append(proxies, proxy)
 		}
 	}
 
