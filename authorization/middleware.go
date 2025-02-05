@@ -3,6 +3,7 @@ package authorization
 import (
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -57,4 +58,9 @@ func extractClaims(r *http.Request) (map[string]interface{}, error) {
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 	return ValidateJWT(token)
+}
+
+func IsValidEmail(email string) bool {
+	re := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	return re.MatchString(email)
 }
