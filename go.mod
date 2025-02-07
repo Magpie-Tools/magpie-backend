@@ -9,6 +9,7 @@ require (
 	github.com/oschwald/geoip2-golang v1.11.0
 	golang.org/x/crypto v0.32.0
 	golang.org/x/net v0.34.0
+	golang.org/x/sync v0.10.0
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/gorm v1.25.12
 )
@@ -31,7 +32,6 @@ require (
 	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
-	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 )

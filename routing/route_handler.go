@@ -13,6 +13,7 @@ import (
 	"magpie/models"
 	"magpie/settings"
 	"net/http"
+	"strconv"
 )
 
 func registerUser(w http.ResponseWriter, r *http.Request) {
@@ -116,15 +117,15 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"token": token})
 }
 
-func addProxies(writer http.ResponseWriter, request *http.Request) {
-	userID, userErr := authorization.GetUserIDFromRequest(request)
+func addProxies(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(writer, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	textareaContent := request.FormValue("proxyTextarea") // "proxyTextarea" matches the key sent by the frontend
-	file, fileHeader, err := request.FormFile("file")     // "file" is the key of the form field
+	textareaContent := r.FormValue("proxyTextarea") // "proxyTextarea" matches the key sent by the frontend
+	file, fileHeader, err := r.FormFile("file")     // "file" is the key of the form field
 
 	var fileContent []byte
 
@@ -135,12 +136,12 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 
 		fileContent, err = io.ReadAll(file)
 		if err != nil {
-			http.Error(writer, "Failed to read file", http.StatusInternalServerError)
+			http.Error(w, "Failed to read file", http.StatusInternalServerError)
 			return
 		}
 
 	} else if len(textareaContent) == 0 {
-		http.Error(writer, "Failed to retrieve file", http.StatusBadRequest)
+		http.Error(w, "Failed to retrieve file", http.StatusBadRequest)
 		return
 	}
 
@@ -154,16 +155,16 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 	proxyList, err = database.InsertAndGetProxies(proxyList, userID)
 	if err != nil {
 		log.Error("Could not add proxies to database", "error", err.Error())
-		http.Error(writer, "Could not add proxies to database", http.StatusInternalServerError)
+		http.Error(w, "Could not add proxies to database", http.StatusInternalServerError)
 		return
 	}
 	checker.PublicProxyQueue.AddToQueue(proxyList)
 
-	writer.WriteHeader(http.StatusOK)
-	writer.Write([]byte(`{"message": "Added Proxies to Queue"}`))
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"message": "Added Proxies to Queue"}`))
 }
 
-func SaveSettings(w http.ResponseWriter, r *http.Request) {
+func saveSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -179,4 +180,33 @@ func SaveSettings(w http.ResponseWriter, r *http.Request) {
 	settings.SetConfig(newConfig)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Configuration updated successfully"))
+}
+
+func getProxyPage(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(r)
+	if userErr != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	page, err := strconv.Atoi(r.PathValue("page"))
+	if err != nil {
+		log.Error("error converting page to int", "error", err.Error())
+		http.Error(w, "Invalid page", http.StatusBadRequest)
+		return
+	}
+
+	proxyList := database.GetProxyPage(userID, page)
+
+	json.NewEncoder(w).Encode(proxyList)
+}
+
+func getProxyCount(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(r)
+	if userErr != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	json.NewEncoder(w).Encode(database.GetAllProxyCountOfUser(userID))
 }

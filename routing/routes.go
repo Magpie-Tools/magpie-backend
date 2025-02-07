@@ -31,7 +31,9 @@ func OpenRoutes(port int) {
 	router.HandleFunc("POST /register", registerUser)
 	router.HandleFunc("POST /login", loginUser)
 	router.Handle("POST /addProxies", authorization.RequireAuth(http.HandlerFunc(addProxies)))
-	router.Handle("POST /saveSettings", authorization.RequireRole("admin")(http.HandlerFunc(SaveSettings)))
+	router.Handle("POST /saveSettings", authorization.RequireRole("admin")(http.HandlerFunc(saveSettings)))
+	router.Handle("GET /getProxyCount", authorization.RequireRole("admin")(http.HandlerFunc(getProxyCount)))
+	router.Handle("GET /getProxyPage/{page}", authorization.RequireRole("admin")(http.HandlerFunc(getProxyPage)))
 	log.Debug("Routes opened")
 
 	server := http.Server{
