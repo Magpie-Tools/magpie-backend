@@ -42,6 +42,10 @@ func Setup() {
 
 	}()
 
+	proxies := database.GetAllProxies()
+	checker.PublicProxyQueue.AddToQueue(proxies)
+	log.Infof("Added %d proxies to queue", len(proxies))
+
 	// Routines
 
 	go checker.StartJudgeRoutine()

@@ -150,9 +150,8 @@ func addProxies(writer http.ResponseWriter, request *http.Request) {
 	log.Infof("File content received: %d bytes", len(mergedContent))
 
 	proxyList := helper.ParseTextToProxies(mergedContent)
-	proxyList = helper.AddUserIdToProxies(proxyList, userID)
 
-	proxyList, err = database.InsertAndGetProxies(proxyList)
+	proxyList, err = database.InsertAndGetProxies(proxyList, userID)
 	if err != nil {
 		log.Error("Could not add proxies to database", "error", err.Error())
 		http.Error(writer, "Could not add proxies to database", http.StatusInternalServerError)

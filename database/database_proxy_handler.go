@@ -16,7 +16,7 @@ const (
 	minBatchSize      = 100   // Minimum batch size to maintain efficiency
 )
 
-func InsertAndGetProxies(proxies []models.Proxy) ([]models.Proxy, error) {
+func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, error) {
 	proxyLength := len(proxies)
 
 	if proxyLength == 0 {
@@ -102,6 +102,23 @@ func InsertAndGetProxies(proxies []models.Proxy) ([]models.Proxy, error) {
 		existingProxies = append(existingProxies, batchProxies...)
 	}
 
+	//TODO in db transaction?
+
+	var associations []models.UserProxy
+	for _, p := range existingProxies {
+		associations = append(associations, models.UserProxy{
+			UserID:  userID,
+			ProxyID: p.ID,
+		})
+	}
+
+	if err := DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "proxy_id"}},
+		DoNothing: true,
+	}).CreateInBatches(associations, batchSize).Error; err != nil {
+		return nil, err
+	}
+
 	statistics.IncreaseProxyCount(int64(len(existingProxies)))
 	return existingProxies, nil
 }
@@ -118,4 +135,10 @@ func GetAllProxyCount() int64 {
 	var count int64
 	DB.Model(&models.Proxy{}).Count(&count)
 	return count
+}
+
+func GetAllProxies() []models.Proxy {
+	var proxies []models.Proxy
+	DB.Model(&models.Proxy{}).Find(&proxies)
+	return proxies
 }

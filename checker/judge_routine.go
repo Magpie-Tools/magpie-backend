@@ -1,7 +1,6 @@
 package checker
 
 import (
-	"github.com/charmbracelet/log"
 	"magpie/settings"
 	"time"
 )
@@ -14,8 +13,6 @@ func StartJudgeRoutine() {
 		for _, judgeEntries := range judgeEntriesList {
 			for _, judge := range judgeEntries.list {
 				judge.UpdateIp()
-
-				log.Debug(betweenTime.String())
 
 				time.Sleep(betweenTime)
 			}

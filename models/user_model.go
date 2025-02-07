@@ -3,9 +3,11 @@ package models
 import "time"
 
 type User struct {
-	ID        uint      `gorm:"primaryKey;autoIncrement"`
-	Email     string    `gorm:"uniqueIndex;not null;size:255"`
-	Password  string    `gorm:"not null;size:100;check:length(password) >= 8" json:"-"`
-	Role      string    `gorm:"not null;default:'user';check:role IN ('user', 'admin')"`
+	ID       uint   `gorm:"primaryKey;autoIncrement"`
+	Email    string `gorm:"uniqueIndex;not null;size:255"`
+	Password string `gorm:"not null;size:100;check:length(password) >= 8" json:"-"`
+	Role     string `gorm:"not null;default:'user';check:role IN ('user', 'admin')"`
+
+	Proxies   []Proxy   `gorm:"many2many:user_proxies;"`
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
