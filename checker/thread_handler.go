@@ -12,11 +12,15 @@ import (
 var (
 	currentThreads atomic.Uint32
 	stopChannel    = make(chan struct{}) // Signal to stop threads
+
+	useHttpsForSocks = atomic.Bool{}
 )
 
 func Dispatcher() {
 	for {
-		targetThreads := settings.GetConfig().Checker.Threads
+		cfg := settings.GetConfig()
+		useHttpsForSocks.Store(cfg.Checker.UseHttpsForSocks)
+		targetThreads := cfg.Checker.Threads
 
 		// Start threads if currentThreads is less than targetThreads
 		for currentThreads.Load() < targetThreads {
@@ -46,8 +50,19 @@ func work() {
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
 			for protocol, protocolId := range protocolsToCheck {
+				var nextJudge *models.Judge
+				if protocolId > 2 { // Socks protocol
+					if useHttpsForSocks.Load() {
+						nextJudge = getNextJudge("https")
+					} else {
+						nextJudge = getNextJudge("http")
+					}
+				} else {
+					nextJudge = getNextJudge(protocol)
+				}
+
 				timeStart := time.Now()
-				html, err := CheckProxyWithRetries(proxy, getNextJudge(protocol), protocol)
+				html, err := CheckProxyWithRetries(proxy, nextJudge, protocol)
 				responseTime := time.Since(timeStart).Milliseconds()
 				statistic := models.ProxyStatistic{
 					Alive:         false,
@@ -55,13 +70,13 @@ func work() {
 					Country:       database.GetCountryCode(ip),
 					EstimatedType: database.DetermineProxyType(ip),
 					ProxyID:       proxy.ID,
+					ProtocolID:    &protocolId,
 				}
 
 				if err == nil {
 					lvl := helper.GetProxyLevel(html)
 					statistic.LevelID = &lvl
 					statistic.Alive = true
-					statistic.ProtocolID = &protocolId
 				}
 
 				database.AddProxyStatistic(statistic)

@@ -60,10 +60,10 @@ func SetupDB() {
 	}
 	if DB.Model(&models.Protocol{}).Count(&count); count == 0 {
 		levels := []models.Protocol{
-			{Name: "http"},
-			{Name: "https"},
-			{Name: "socks4"},
-			{Name: "socks5"},
+			{Name: "http", ID: 1},
+			{Name: "https", ID: 2},
+			{Name: "socks4", ID: 3},
+			{Name: "socks5", ID: 4},
 		}
 		DB.Create(&levels)
 	}

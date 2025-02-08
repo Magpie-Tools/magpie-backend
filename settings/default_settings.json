@@ -37,6 +37,7 @@
       "seconds": 0
     },
 
+    "use_https_for_socks": true,
     "ip_lookup": "https://ident.me",
 
     "standard_header": [

@@ -29,9 +29,10 @@ type Config struct {
 		Judges        []judge `json:"judges"`
 		JudgeTimer    Timer   `json:"judge_timer"` // Only for production
 
-		IpLookup       string   `json:"ip_lookup"`
-		StandardHeader []string `json:"standard_header"`
-		ProxyHeader    []string `json:"proxy_header"`
+		UseHttpsForSocks bool     `json:"use_https_for_socks"`
+		IpLookup         string   `json:"ip_lookup"`
+		StandardHeader   []string `json:"standard_header"`
+		ProxyHeader      []string `json:"proxy_header"`
 	} `json:"checker"`
 
 	BlacklistSources []string `json:"blacklist_sources"`
