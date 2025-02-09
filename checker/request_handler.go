@@ -42,9 +42,6 @@ func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol 
 	}
 
 	html := string(body)
-	if !CheckForValidResponse(html, judge.GetRegex()) {
-		return "Invalid response", nil
-	}
 
 	return html, nil
 }

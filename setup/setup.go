@@ -63,9 +63,7 @@ func judgeSetup() {
 	cfg := settings.GetConfig()
 
 	for _, judge := range cfg.Checker.Judges {
-		err := checker.CreateAndAddJudgeToHandler(judge.URL, judge.Regex)
-		if err != nil {
-			log.Error("Error creating and adding judge to handler:", err)
-		}
+		//TODO GET ALL DEFAULT JUDGES AND SETUP THEM AND CHECK IF THE USERS ALREADY HAVE JUDGES IF NOT ADD THE JUDGES TO THEIR JUDGES
+		// AND ADD IT TO THE JUDGE HANDLER (BULK INSERT)
 	}
 }

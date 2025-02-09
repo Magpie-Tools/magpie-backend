@@ -7,15 +7,13 @@ import (
 
 func StartJudgeRoutine() {
 	for {
-		judgeEntriesList := GetSortedJudgeEntries()
-		betweenTime := getTimeBetweenJudgeChecks(uint64(len(judgeEntriesList)))
+		judgeList := GetSortedJudgesByID()
+		betweenTime := getTimeBetweenJudgeChecks(uint64(len(judgeList)))
 
-		for _, judgeEntries := range judgeEntriesList {
-			for _, judge := range judgeEntries.list {
-				judge.UpdateIp()
+		for _, judge := range judgeList {
+			judge.UpdateIp()
 
-				time.Sleep(betweenTime)
-			}
+			time.Sleep(betweenTime)
 		}
 
 	}

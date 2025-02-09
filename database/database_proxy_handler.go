@@ -171,14 +171,14 @@ func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
 				"COALESCE(ps.country, 'N/A') AS country, "+
 				"COALESCE(al.name, 'N/A') AS anonymity_level, "+
 				"COALESCE(pr.name, 'N/A') AS protocol, "+
-				"COALESCE(ps.alive, false) AS alive, "+ // Add alive status
+				"COALESCE(ps.alive, false) AS alive, "+
 				"COALESCE(ps.created_at, '0001-01-01 00:00:00'::timestamp) AS latest_check",
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userId).
 		Joins("LEFT JOIN (?) AS ps ON ps.proxy_id = proxies.id", subQuery).
 		Joins("LEFT JOIN anonymity_levels al ON al.id = ps.level_id").
 		Joins("LEFT JOIN protocols pr ON pr.id = ps.protocol_id").
-		Order("proxies.id ASC").
+		Order("alive DESC, latest_check DESC").
 		Offset(offset).
 		Limit(proxiesPerPage).
 		Scan(&results)

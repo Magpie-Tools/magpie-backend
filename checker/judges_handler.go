@@ -8,113 +8,128 @@ import (
 	"unsafe"
 )
 
+type judgeWithRegex struct {
+	judge *models.Judge
+	regex string
+}
+
 type judgeEntry struct {
-	list    []*models.Judge
+	list    []judgeWithRegex
 	length  uint32
 	counter uint32
-	_       [64 - unsafe.Sizeof([]models.Judge{}) - 4 - 4]byte // Pad to 64 bytes
+	_       [64 - unsafe.Sizeof([]judgeWithRegex{}) - 4 - 4]byte // Padding for cache line alignment
 }
 
 var (
 	judgesMutex sync.Mutex
-	judges      atomic.Value // Holds map[string]*judgeEntry
+	judges      atomic.Value // map[uint]map[string]*judgeEntry (userID -> protocol -> entry)
 )
 
-//TODO
-// no judges for socks4/5. Because they just will be redundant and will just be more work than without them.
-// Use http/s for them.
-
 func init() {
-	updateJudges(make(map[string]*judgeEntry))
+	updateJudges(make(map[uint]map[string]*judgeEntry))
 }
 
-func getNextJudge(protocol string) *models.Judge {
-	currentMap, _ := judges.Load().(map[string]*judgeEntry)
-	je := currentMap[protocol]
+// getNextJudge returns the next judge and regex for a user/protocol combination
+func getNextJudge(userID uint, protocol string) (*models.Judge, string) {
+	currentMap, _ := judges.Load().(map[uint]map[string]*judgeEntry)
+	userMap, ok := currentMap[userID]
+	if !ok {
+		return nil, ""
+	}
+
+	je := userMap[protocol]
 	if je == nil || je.length == 0 {
-		return &models.Judge{}
+		return nil, ""
 	}
 
 	idx := atomic.AddUint32(&je.counter, 1) - 1
-	idx %= je.length // Consider power-of-two optimization
+	idx %= je.length // Use bitwise AND if length is power-of-two
 
-	return je.list[idx]
+	entry := je.list[idx]
+	return entry.judge, entry.regex
 }
 
-func updateJudges(newMap map[string]*judgeEntry) {
+func updateJudges(newMap map[uint]map[string]*judgeEntry) {
 	judges.Store(newMap)
 }
 
-func GetAllJudgeEntries() map[string]*judgeEntry {
-	return judges.Load().(map[string]*judgeEntry)
-}
-
-func GetSortedJudgeEntries() []*judgeEntry {
-	judgeMap := GetAllJudgeEntries()
-	keys := make([]string, 0, len(judgeMap))
-
-	// Collect keys
-	for key := range judgeMap {
-		keys = append(keys, key)
-	}
-
-	// Sort keys
-	sort.Strings(keys)
-
-	// Iterate in sorted order
-	sortedEntries := make([]*judgeEntry, 0, len(keys))
-	for _, key := range keys {
-		sortedEntries = append(sortedEntries, judgeMap[key])
-	}
-
-	return sortedEntries
-}
-
-// AddJudge adds a judge to the list of available judges for the specified protocol and sorts the list by fullstring.
-func AddJudge(protocol string, judge *models.Judge) {
+// AddUserJudge atomically adds a judge with regex to a user's protocol list
+func AddUserJudge(userID uint, judge *models.Judge, regex string) {
 	judgesMutex.Lock()
 	defer judgesMutex.Unlock()
 
-	currentMap := judges.Load().(map[string]*judgeEntry)
-	newMap := make(map[string]*judgeEntry, len(currentMap)+1)
+	currentMap := judges.Load().(map[uint]map[string]*judgeEntry)
+	newMap := copyMap(currentMap)
 
-	// Copy existing entries
-	for k, v := range currentMap {
-		newMap[k] = v
+	protoMap := newMap[userID]
+	if protoMap == nil {
+		protoMap = make(map[string]*judgeEntry)
+		newMap[userID] = protoMap
 	}
 
-	entry, exists := newMap[protocol]
-	if !exists {
-		newMap[protocol] = &judgeEntry{
-			list:    []*models.Judge{judge},
+	entry := protoMap[judge.GetScheme()]
+	if entry == nil {
+		protoMap[judge.GetScheme()] = &judgeEntry{
+			list:    []judgeWithRegex{{judge: judge, regex: regex}},
 			length:  1,
 			counter: 0,
 		}
 	} else {
-		newList := make([]*models.Judge, len(entry.list)+1)
-		copy(newList, entry.list)
-		newList[len(entry.list)] = judge
-
-		currentCounter := atomic.LoadUint32(&entry.counter)
-		newMap[protocol] = &judgeEntry{
-			list:    newList,
-			length:  uint32(len(newList)),
-			counter: currentCounter,
+		newEntry := &judgeEntry{
+			list:    append(entry.list, judgeWithRegex{judge: judge, regex: regex}),
+			length:  entry.length + 1,
+			counter: atomic.LoadUint32(&entry.counter),
 		}
+		protoMap[judge.GetScheme()] = newEntry
 	}
 
 	updateJudges(newMap)
 }
-func CreateAndAddJudgeToHandler(url, regex string) error {
-	judge := models.Judge{}
-	err := judge.SetUp(url, regex)
-	if err != nil {
-		return err
+
+// BulkUpdateJudges optimizes mass updates (use for initial load)
+func BulkUpdateJudges(newMap map[uint]map[string]*judgeEntry) {
+	judgesMutex.Lock()
+	defer judgesMutex.Unlock()
+	updateJudges(newMap)
+}
+
+func copyMap(src map[uint]map[string]*judgeEntry) map[uint]map[string]*judgeEntry {
+	dst := make(map[uint]map[string]*judgeEntry, len(src))
+	for userID, protoMap := range src {
+		dstProto := make(map[string]*judgeEntry, len(protoMap))
+		for proto, entry := range protoMap {
+			dstProto[proto] = entry
+		}
+		dst[userID] = dstProto
+	}
+	return dst
+}
+
+// GetSortedJudgesByID returns a sorted list of all judges, sorted by their ID.
+func GetSortedJudgesByID() []*models.Judge {
+	currentMap, _ := judges.Load().(map[uint]map[string]*judgeEntry)
+	judgeSet := make(map[uint]*models.Judge) // Judge ID as key for deduplication
+
+	// Iterate through all user and protocol entries to collect judges
+	for _, userMap := range currentMap {
+		for _, entry := range userMap {
+			for _, jwr := range entry.list {
+				judge := jwr.judge
+				judgeSet[judge.ID] = judge
+			}
+		}
 	}
 
-	judge.UpdateIp()
+	// Convert the map to a slice
+	sortedJudges := make([]*models.Judge, 0, len(judgeSet))
+	for _, judge := range judgeSet {
+		sortedJudges = append(sortedJudges, judge)
+	}
 
-	AddJudge(judge.GetScheme(), &judge)
+	// Sort the slice by Judge ID
+	sort.Slice(sortedJudges, func(i, j int) bool {
+		return sortedJudges[i].ID < sortedJudges[j].ID
+	})
 
-	return nil
+	return sortedJudges
 }

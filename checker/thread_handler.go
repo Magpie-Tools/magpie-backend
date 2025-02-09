@@ -49,37 +49,42 @@ func work() {
 			ip := proxy.GetIp()
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
-			for protocol, protocolId := range protocolsToCheck {
-				var nextJudge *models.Judge
-				if protocolId > 2 { // Socks protocol
-					if useHttpsForSocks.Load() {
-						nextJudge = getNextJudge("https")
+			for _, user := range proxy.Users {
+				for protocol, protocolId := range protocolsToCheck {
+					var (
+						nextJudge *models.Judge
+						regex     string
+					)
+					if protocolId > 2 { // Socks protocol
+						if useHttpsForSocks.Load() {
+							nextJudge, regex = getNextJudge(user.ID, "https")
+						} else {
+							nextJudge, regex = getNextJudge(user.ID, "http")
+						}
 					} else {
-						nextJudge = getNextJudge("http")
+						nextJudge, regex = getNextJudge(user.ID, protocol)
 					}
-				} else {
-					nextJudge = getNextJudge(protocol)
-				}
 
-				timeStart := time.Now()
-				html, err := CheckProxyWithRetries(proxy, nextJudge, protocol)
-				responseTime := time.Since(timeStart).Milliseconds()
-				statistic := models.ProxyStatistic{
-					Alive:         false,
-					ResponseTime:  int16(responseTime),
-					Country:       database.GetCountryCode(ip),
-					EstimatedType: database.DetermineProxyType(ip),
-					ProxyID:       proxy.ID,
-					ProtocolID:    &protocolId,
-				}
+					timeStart := time.Now()
+					html, err := CheckProxyWithRetries(proxy, nextJudge, protocol, regex)
+					responseTime := time.Since(timeStart).Milliseconds()
+					statistic := models.ProxyStatistic{
+						Alive:         false,
+						ResponseTime:  int16(responseTime),
+						Country:       database.GetCountryCode(ip),
+						EstimatedType: database.DetermineProxyType(ip),
+						ProxyID:       proxy.ID,
+						ProtocolID:    &protocolId,
+					}
 
-				if err == nil {
-					lvl := helper.GetProxyLevel(html)
-					statistic.LevelID = &lvl
-					statistic.Alive = true
-				}
+					if err == nil {
+						lvl := helper.GetProxyLevel(html)
+						statistic.LevelID = &lvl
+						statistic.Alive = true
+					}
 
-				database.AddProxyStatistic(statistic)
+					database.AddProxyStatistic(statistic)
+				}
 			}
 
 			// Requeue the proxy for the next check
@@ -88,7 +93,7 @@ func work() {
 	}
 }
 
-func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol string) (string, error) {
+func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, regex string) (string, error) {
 	retries := settings.GetConfig().Checker.Retries
 
 	var (
@@ -98,7 +103,8 @@ func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol str
 
 	for i := uint32(0); i < retries; i++ {
 		html, err = ProxyCheckRequest(proxy, judge, protocol)
-		if err != nil {
+
+		if err != nil && !CheckForValidResponse(html, regex) {
 			return html, err
 		}
 		continue

@@ -8,6 +8,7 @@ type User struct {
 	Password string `gorm:"not null;size:100;check:length(password) >= 8" json:"-"`
 	Role     string `gorm:"not null;default:'user';check:role IN ('user', 'admin')"`
 
+	Judges    []Judge   `gorm:"many2many:user_judges;"`
 	Proxies   []Proxy   `gorm:"many2many:user_proxies;"`
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }

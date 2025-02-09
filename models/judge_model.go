@@ -5,18 +5,25 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type Judge struct {
-	url        url.URL
-	hostname   string // Pre-extracted during setup
-	fullString string
-	ip         atomic.Value // Stores a string
-	regex      string
-	setupOnce  sync.Once // Ensures safe one-time initialization
+	ID         uint   `gorm:"primaryKey;autoIncrement"`
+	fullString string `gorm:"size:512;not null"`
+
+	url       url.URL
+	hostname  string       // Pre-extracted during setup
+	ip        atomic.Value // Stores a string
+	setupOnce sync.Once    // Ensures safe one-time initialization
+
+	//ProxyStatistics []ProxyStatistic `gorm:"foreignKey:JudgeID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	Users []User `gorm:"many2many:user_judges;"`
+
+	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
-func (judge *Judge) SetUp(urlStr, regex string) error {
+func (judge *Judge) SetUp(urlStr string) error {
 	var err error
 	judge.setupOnce.Do(func() {
 		var parsedURL *url.URL
@@ -29,7 +36,6 @@ func (judge *Judge) SetUp(urlStr, regex string) error {
 		judge.url = *parsedURL
 		judge.hostname = parsedURL.Hostname()
 		judge.fullString = parsedURL.String()
-		judge.regex = regex
 		judge.ip.Store("")
 	})
 	return err
@@ -67,8 +73,4 @@ func (judge *Judge) GetFullString() string {
 
 func (judge *Judge) GetScheme() string {
 	return judge.url.Scheme
-}
-
-func (judge *Judge) GetRegex() string {
-	return judge.regex // Immutable after setup
 }
