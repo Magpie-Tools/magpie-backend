@@ -8,16 +8,11 @@ import (
 	"unsafe"
 )
 
-type judgeWithRegex struct {
-	judge *models.Judge
-	regex string
-}
-
 type judgeEntry struct {
-	list    []judgeWithRegex
+	list    []models.JudgeWithRegex
 	length  uint32
 	counter uint32
-	_       [64 - unsafe.Sizeof([]judgeWithRegex{}) - 4 - 4]byte // Padding for cache line alignment
+	_       [64 - unsafe.Sizeof([]models.JudgeWithRegex{}) - 4 - 4]byte // Padding for cache line alignment
 }
 
 var (
@@ -29,7 +24,7 @@ func init() {
 	updateJudges(make(map[uint]map[string]*judgeEntry))
 }
 
-// getNextJudge returns the next judge and regex for a user/protocol combination
+// getNextJudge returns the next Judge and Regex for a user/protocol combination
 func getNextJudge(userID uint, protocol string) (*models.Judge, string) {
 	currentMap, _ := judges.Load().(map[uint]map[string]*judgeEntry)
 	userMap, ok := currentMap[userID]
@@ -46,14 +41,14 @@ func getNextJudge(userID uint, protocol string) (*models.Judge, string) {
 	idx %= je.length // Use bitwise AND if length is power-of-two
 
 	entry := je.list[idx]
-	return entry.judge, entry.regex
+	return entry.Judge, entry.Regex
 }
 
 func updateJudges(newMap map[uint]map[string]*judgeEntry) {
 	judges.Store(newMap)
 }
 
-// AddUserJudge atomically adds a judge with regex to a user's protocol list
+// AddUserJudge atomically adds a Judge with Regex to a user's protocol list
 func AddUserJudge(userID uint, judge *models.Judge, regex string) {
 	judgesMutex.Lock()
 	defer judgesMutex.Unlock()
@@ -70,13 +65,13 @@ func AddUserJudge(userID uint, judge *models.Judge, regex string) {
 	entry := protoMap[judge.GetScheme()]
 	if entry == nil {
 		protoMap[judge.GetScheme()] = &judgeEntry{
-			list:    []judgeWithRegex{{judge: judge, regex: regex}},
+			list:    []models.JudgeWithRegex{{Judge: judge, Regex: regex}},
 			length:  1,
 			counter: 0,
 		}
 	} else {
 		newEntry := &judgeEntry{
-			list:    append(entry.list, judgeWithRegex{judge: judge, regex: regex}),
+			list:    append(entry.list, models.JudgeWithRegex{Judge: judge, Regex: regex}),
 			length:  entry.length + 1,
 			counter: atomic.LoadUint32(&entry.counter),
 		}
@@ -114,7 +109,7 @@ func GetSortedJudgesByID() []*models.Judge {
 	for _, userMap := range currentMap {
 		for _, entry := range userMap {
 			for _, jwr := range entry.list {
-				judge := jwr.judge
+				judge := jwr.Judge
 				judgeSet[judge.ID] = judge
 			}
 		}
@@ -132,4 +127,43 @@ func GetSortedJudgesByID() []*models.Judge {
 	})
 
 	return sortedJudges
+}
+
+// AddJudgesToUsers adds a list of judges with regex to multiple users atomically.
+// Each user in the userIDs list receives all the provided judges.
+func AddJudgesToUsers(userIDs []uint, judgesWithRegex []models.JudgeWithRegex) {
+	judgesMutex.Lock()
+	defer judgesMutex.Unlock()
+
+	currentMap := judges.Load().(map[uint]map[string]*judgeEntry)
+	newMap := copyMap(currentMap)
+
+	for _, userID := range userIDs {
+		protoMap := newMap[userID]
+		if protoMap == nil {
+			protoMap = make(map[string]*judgeEntry)
+			newMap[userID] = protoMap
+		}
+
+		for _, jwr := range judgesWithRegex {
+			scheme := jwr.Judge.GetScheme()
+			entry := protoMap[scheme]
+			if entry == nil {
+				protoMap[scheme] = &judgeEntry{
+					list:    []models.JudgeWithRegex{jwr},
+					length:  1,
+					counter: 0,
+				}
+			} else {
+				newList := append(entry.list, jwr)
+				protoMap[scheme] = &judgeEntry{
+					list:    newList,
+					length:  entry.length + 1,
+					counter: atomic.LoadUint32(&entry.counter),
+				}
+			}
+		}
+	}
+
+	updateJudges(newMap)
 }

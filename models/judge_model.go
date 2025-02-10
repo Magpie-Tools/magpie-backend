@@ -10,10 +10,10 @@ import (
 
 type Judge struct {
 	ID         uint   `gorm:"primaryKey;autoIncrement"`
-	fullString string `gorm:"size:512;not null"`
+	FullString string `gorm:"size:512;not null;unique"`
 
 	url       url.URL
-	hostname  string       // Pre-extracted during setup
+	hostname  string
 	ip        atomic.Value // Stores a string
 	setupOnce sync.Once    // Ensures safe one-time initialization
 
@@ -23,11 +23,11 @@ type Judge struct {
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
-func (judge *Judge) SetUp(urlStr string) error {
+func (judge *Judge) SetUp() error {
 	var err error
 	judge.setupOnce.Do(func() {
 		var parsedURL *url.URL
-		parsedURL, err = url.Parse(urlStr)
+		parsedURL, err = url.Parse(judge.FullString)
 		if err != nil {
 			return
 		}
@@ -35,7 +35,7 @@ func (judge *Judge) SetUp(urlStr string) error {
 		// Extract hostname once during setup
 		judge.url = *parsedURL
 		judge.hostname = parsedURL.Hostname()
-		judge.fullString = parsedURL.String()
+		judge.FullString = parsedURL.String()
 		judge.ip.Store("")
 	})
 	return err
@@ -65,10 +65,6 @@ func (judge *Judge) GetIp() string {
 
 func (judge *Judge) GetHostname() string {
 	return judge.hostname
-}
-
-func (judge *Judge) GetFullString() string {
-	return judge.fullString
 }
 
 func (judge *Judge) GetScheme() string {

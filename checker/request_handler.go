@@ -24,7 +24,7 @@ func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol 
 		Timeout:   time.Duration(settings.GetConfig().Checker.Timeout) * time.Millisecond,
 	}
 
-	req, err := http.NewRequest("GET", judge.GetFullString(), nil)
+	req, err := http.NewRequest("GET", judge.FullString, nil)
 	if err != nil {
 		return "Error creating request", err
 	}

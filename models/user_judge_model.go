@@ -12,3 +12,8 @@ type UserJudge struct {
 func (UserJudge) TableName() string {
 	return "user_judges"
 }
+
+type JudgeWithRegex struct {
+	Judge *Judge
+	Regex string
+}
