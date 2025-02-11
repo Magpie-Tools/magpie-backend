@@ -2,29 +2,40 @@ package database
 
 import (
 	"magpie/models"
+	"time"
 )
 
 func GetJudgesRegexFromString(judges []*models.Judge) []*models.JudgeWithRegex {
 	fullStrings := getStringListFromJudges(judges)
 
 	var results []struct {
-		judge models.Judge
-		regex string
+		ID         uint      `gorm:"column:id"`
+		FullString string    `gorm:"column:full_string"`
+		CreatedAt  time.Time `gorm:"column:created_at"`
+		Regex      string    `gorm:"column:regex"`
 	}
 
 	if err := DB.Table("user_judges").
-		Select("judges.*, user_judges.regex").
+		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
-		Where("full_string IN ?", fullStrings).
+		Where("judges.full_string IN (?)", fullStrings).
 		Scan(&results).Error; err != nil {
 		return nil
 	}
 
 	ptrResults := make([]*models.JudgeWithRegex, len(results))
 	for i, item := range results {
+		judge := &models.Judge{
+			ID:         item.ID,
+			FullString: item.FullString,
+			CreatedAt:  item.CreatedAt,
+		}
+
+		judge.SetUp()
+		judge.UpdateIp()
 		ptrResults[i] = &models.JudgeWithRegex{
-			Judge: &item.judge,
-			Regex: item.regex,
+			Judge: judge,
+			Regex: item.Regex,
 		}
 	}
 

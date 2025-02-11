@@ -61,5 +61,5 @@ func statisticsSetup() {
 
 func judgeSetup() {
 	addJudgeRelationsToCache()
-	addDefaultJudgesToUsers()
+	AddDefaultJudgesToUsers()
 }

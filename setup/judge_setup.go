@@ -7,10 +7,17 @@ import (
 	"magpie/helper"
 	"magpie/models"
 	"magpie/settings"
+	"sync"
 )
 
-// addDefaultJudgesToUsers gets empty judges list of users and adds the default judges (from config) to the db
-func addDefaultJudgesToUsers() {
+var addDefaultJudgeMutex sync.Mutex
+
+// AddDefaultJudgesToUsers gets empty judges list of users and adds the default judges (from config) to the db
+// this is the ugliest function I have ever written
+func AddDefaultJudgesToUsers() {
+	addDefaultJudgeMutex.Lock()
+	defer addDefaultJudgeMutex.Unlock()
+
 	cfg := settings.GetConfig()
 	users := database.GetUsersThatDontHaveJudges()
 
@@ -39,12 +46,13 @@ func addDefaultJudgesToUsers() {
 		if err != nil {
 			database.GetJudgesFromString(judges) // Sets id if not added judges
 		}
+
+		for i, judge := range judges {
+			judgesWithRegex[i].Judge = judge
+		}
+
 	} else {
 		judgesWithRegex = jwr
-	}
-
-	for i, judge := range judges {
-		judgesWithRegex[i].Judge = judge
 	}
 
 	err := database.AddUserJudgesRelation(users, judgesWithRegex)

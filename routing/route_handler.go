@@ -12,6 +12,7 @@ import (
 	"magpie/helper"
 	"magpie/models"
 	"magpie/settings"
+	"magpie/setup"
 	"net/http"
 	"strconv"
 )
@@ -73,6 +74,8 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
 		return
 	}
+
+	go setup.AddDefaultJudgesToUsers()
 
 	token, err := authorization.GenerateJWT(user.ID, user.Role)
 	if err != nil {
