@@ -37,3 +37,32 @@ func AddUserJudgesRelation(users []models.User, judges []*models.JudgeWithRegex)
 
 	return nil
 }
+
+func GetAllUserJudgeRelations() ([]models.UserJudge, []models.JudgeWithRegex) {
+	var userJudges []models.UserJudge
+	if err := DB.Find(&userJudges).Error; err != nil {
+		return nil, nil
+	}
+
+	var results []struct {
+		judge models.Judge
+		regex string
+	}
+
+	if err := DB.Table("user_judges").
+		Select("judges.*, user_judges.regex").
+		Joins("JOIN judges ON user_judges.judge_id = judges.id").
+		Scan(&results).Error; err != nil {
+		return nil, nil
+	}
+
+	var judgesWithRegex []models.JudgeWithRegex
+	for _, result := range results {
+		judgesWithRegex = append(judgesWithRegex, models.JudgeWithRegex{
+			Judge: &result.judge,
+			Regex: result.regex,
+		})
+	}
+
+	return userJudges, judgesWithRegex
+}

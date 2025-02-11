@@ -7,15 +7,28 @@ import (
 func GetJudgesRegexFromString(judges []*models.Judge) []*models.JudgeWithRegex {
 	fullStrings := getStringListFromJudges(judges)
 
-	var results []*models.JudgeWithRegex
-	DB.Raw(`
-		SELECT j.*, uj.regex 
-		FROM judges j
-		JOIN user_judges uj ON j.id = uj.judge_id
-		WHERE j.full_string IN (?)
-	`, fullStrings).Scan(&results)
+	var results []struct {
+		judge models.Judge
+		regex string
+	}
 
-	return results
+	if err := DB.Table("user_judges").
+		Select("judges.*, user_judges.regex").
+		Joins("JOIN judges ON user_judges.judge_id = judges.id").
+		Where("full_string IN ?", fullStrings).
+		Scan(&results).Error; err != nil {
+		return nil
+	}
+
+	ptrResults := make([]*models.JudgeWithRegex, len(results))
+	for i, item := range results {
+		ptrResults[i] = &models.JudgeWithRegex{
+			Judge: &item.judge,
+			Regex: item.regex,
+		}
+	}
+
+	return ptrResults
 }
 
 func GetJudgesFromString(judges []*models.Judge) []*models.Judge {
