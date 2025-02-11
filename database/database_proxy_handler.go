@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	batchThreshold    = 30000 // Use batches when exceeding this number of records
+	batchThreshold    = 8191  // Use batches when exceeding this number of records
 	maxParamsPerBatch = 65535 // Conservative default (PostgreSQL's limit)
 	minBatchSize      = 100   // Minimum batch size to maintain efficiency
 
@@ -37,7 +37,7 @@ func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, e
 			return nil, errors.New("model has no database fields")
 		}
 
-		batchSize = maxParamsPerBatch / numFields
+		batchSize = (maxParamsPerBatch - 1) / numFields // Prevents off-by-one errors
 		if batchSize < minBatchSize {
 			batchSize = minBatchSize
 		}
@@ -72,7 +72,6 @@ func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, e
 		return nil, err
 	}
 
-	// I hate that I have to do this after trying the insert
 	seen := make(map[string]struct{}, len(proxies))
 	uniqueProxies := make([]models.Proxy, 0, len(proxies))
 
