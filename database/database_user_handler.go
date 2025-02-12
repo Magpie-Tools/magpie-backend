@@ -3,6 +3,7 @@ package database
 import (
 	"gorm.io/gorm/clause"
 	"magpie/models"
+	"time"
 )
 
 func GetUsersThatDontHaveJudges() []models.User {
@@ -45,12 +46,14 @@ func GetAllUserJudgeRelations() ([]models.UserJudge, []models.JudgeWithRegex) {
 	}
 
 	var results []struct {
-		judge models.Judge
-		regex string
+		ID         uint   `gorm:"column:id"`
+		FullString string `gorm:"column:full_string"`
+		CreatedAt  time.Time
+		Regex      string `gorm:"column:regex"`
 	}
 
 	if err := DB.Table("user_judges").
-		Select("judges.*, user_judges.regex").
+		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
 		Scan(&results).Error; err != nil {
 		return nil, nil
@@ -58,9 +61,15 @@ func GetAllUserJudgeRelations() ([]models.UserJudge, []models.JudgeWithRegex) {
 
 	var judgesWithRegex []models.JudgeWithRegex
 	for _, result := range results {
+		judge := &models.Judge{
+			ID:         result.ID,
+			FullString: result.FullString,
+			CreatedAt:  result.CreatedAt,
+		}
+		judge.SetUp()
 		judgesWithRegex = append(judgesWithRegex, models.JudgeWithRegex{
-			Judge: &result.judge,
-			Regex: result.regex,
+			Judge: judge,
+			Regex: result.Regex,
 		})
 	}
 

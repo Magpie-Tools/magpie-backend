@@ -17,8 +17,8 @@ type Judge struct {
 	ip        atomic.Value // Stores a string
 	setupOnce sync.Once    // Ensures safe one-time initialization
 
-	//ProxyStatistics []ProxyStatistic `gorm:"foreignKey:JudgeID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
-	Users []User `gorm:"many2many:user_judges;"`
+	ProxyStatistics []ProxyStatistic `gorm:"foreignKey:JudgeID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	Users           []User           `gorm:"many2many:user_judges;"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }

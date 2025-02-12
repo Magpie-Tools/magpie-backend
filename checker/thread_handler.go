@@ -65,9 +65,8 @@ func work() {
 						nextJudge, regex = getNextJudge(user.ID, protocol)
 					}
 
-					timeStart := time.Now()
-					html, err := CheckProxyWithRetries(proxy, nextJudge, protocol, regex)
-					responseTime := time.Since(timeStart).Milliseconds()
+					html, err, responseTime := CheckProxyWithRetries(proxy, nextJudge, protocol, regex)
+
 					statistic := models.ProxyStatistic{
 						Alive:         false,
 						ResponseTime:  int16(responseTime),
@@ -75,6 +74,7 @@ func work() {
 						EstimatedType: database.DetermineProxyType(ip),
 						ProxyID:       proxy.ID,
 						ProtocolID:    &protocolId,
+						JudgeID:       nextJudge.ID,
 					}
 
 					if err == nil {
@@ -93,22 +93,24 @@ func work() {
 	}
 }
 
-func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, regex string) (string, error) {
+func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, regex string) (string, error, int64) {
 	retries := settings.GetConfig().Checker.Retries
 
 	var (
-		html string
-		err  error
+		html         string
+		err          error
+		responseTime int64
 	)
 
 	for i := uint32(0); i < retries; i++ {
+		timeStart := time.Now()
 		html, err = ProxyCheckRequest(proxy, judge, protocol)
+		responseTime = time.Since(timeStart).Milliseconds()
 
-		if err != nil && !CheckForValidResponse(html, regex) {
-			return html, err
+		if err == nil && CheckForValidResponse(html, regex) {
+			return html, err, responseTime
 		}
-		continue
 	}
 
-	return html, err
+	return html, err, responseTime
 }

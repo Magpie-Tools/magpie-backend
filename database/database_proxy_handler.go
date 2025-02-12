@@ -149,7 +149,7 @@ func GetAllProxyCountOfUser(userId uint) int64 {
 
 func GetAllProxies() []models.Proxy {
 	var proxies []models.Proxy
-	DB.Model(&models.Proxy{}).Find(&proxies)
+	DB.Preload("Users").Find(&proxies)
 	return proxies
 }
 

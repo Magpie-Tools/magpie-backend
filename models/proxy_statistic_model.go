@@ -19,8 +19,8 @@ type ProxyStatistic struct {
 	ProxyID uint64 `gorm:"not null;index"`
 	Proxy   Proxy  `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
-	//JudgeID uint  `gorm:"not null;index"`
-	//Judge   Judge `gorm:"foreignKey:JudgeID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	JudgeID uint  `gorm:"not null;index"`
+	Judge   Judge `gorm:"foreignKey:JudgeID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
