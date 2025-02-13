@@ -13,7 +13,7 @@ import (
 
 const (
 	batchThreshold    = 8191  // Use batches when exceeding this number of records
-	maxParamsPerBatch = 65535 // Conservative default (PostgreSQL's limit)
+	maxParamsPerBatch = 65534 // Conservative default (PostgreSQL's limit) - 1
 	minBatchSize      = 100   // Minimum batch size to maintain efficiency
 
 	proxiesPerPage = 40
@@ -37,7 +37,7 @@ func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, e
 			return nil, errors.New("model has no database fields")
 		}
 
-		batchSize = (maxParamsPerBatch - 1) / numFields // Prevents off-by-one errors
+		batchSize = maxParamsPerBatch / numFields // Prevents off-by-one errors
 		if batchSize < minBatchSize {
 			batchSize = minBatchSize
 		}
@@ -148,9 +148,22 @@ func GetAllProxyCountOfUser(userId uint) int64 {
 }
 
 func GetAllProxies() []models.Proxy {
-	var proxies []models.Proxy
-	DB.Preload("Users").Find(&proxies)
-	return proxies
+	var allProxies []models.Proxy
+	const batchSize = maxParamsPerBatch
+
+	collectedProxies := make([]models.Proxy, 0)
+
+	err := DB.Preload("Users").Order("id").FindInBatches(&allProxies, batchSize, func(tx *gorm.DB, batch int) error {
+		collectedProxies = append(collectedProxies, allProxies...)
+		return nil
+	})
+
+	if err.Error != nil {
+		log.Error(err.Error)
+		return nil
+	}
+
+	return collectedProxies
 }
 
 func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
