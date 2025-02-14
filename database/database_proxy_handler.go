@@ -147,7 +147,7 @@ func GetAllProxyCountOfUser(userId uint) int64 {
 	return count
 }
 
-func GetAllProxies() []models.Proxy {
+func GetAllProxies() ([]models.Proxy, error) {
 	var allProxies []models.Proxy
 	const batchSize = maxParamsPerBatch
 
@@ -159,11 +159,10 @@ func GetAllProxies() []models.Proxy {
 	})
 
 	if err.Error != nil {
-		log.Error(err.Error)
-		return nil
+		return nil, err.Error
 	}
 
-	return collectedProxies
+	return collectedProxies, nil
 }
 
 func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {

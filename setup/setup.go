@@ -42,11 +42,15 @@ func Setup() {
 
 	}()
 
-	proxies := database.GetAllProxies()
-	checker.PublicProxyQueue.AddToQueue(proxies)
-	proxyLen := len(proxies)
-	statistics.IncreaseProxyCount(int64(proxyLen))
-	log.Infof("Added %d proxies to queue", proxyLen)
+	proxies, err := database.GetAllProxies()
+	if err != nil {
+		log.Error("Error getting all proxies:", "error", err)
+	} else {
+		checker.PublicProxyQueue.AddToQueue(proxies)
+		proxyLen := len(proxies)
+		statistics.IncreaseProxyCount(int64(proxyLen))
+		log.Infof("Added %d proxies to queue", proxyLen)
+	}
 
 	// Routines
 
