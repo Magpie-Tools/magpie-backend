@@ -1,8 +1,6 @@
 package database
 
 import (
-	"errors"
-	"fmt"
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -20,109 +18,168 @@ const (
 )
 
 func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, error) {
-	proxyLength := len(proxies)
-
-	if proxyLength == 0 {
-		return proxies, nil
+	// Deduplicate proxies upfront to reduce processing
+	uniqueProxies := deduplicateProxies(proxies)
+	if len(uniqueProxies) == 0 {
+		return nil, nil
 	}
 
-	// Determine batch size
-	batchSize := len(proxies)
-	if proxyLength > batchThreshold {
-		numFields, err := getNumDatabaseFields(models.Proxy{}, DB)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse model schema: %w", err)
-		}
-		if numFields == 0 {
-			return nil, errors.New("model has no database fields")
-		}
+	// Calculate batch size based on deduplicated count
+	batchSize := calculateBatchSize(len(uniqueProxies))
 
-		batchSize = maxParamsPerBatch / numFields // Prevents off-by-one errors
-		if batchSize < minBatchSize {
-			batchSize = minBatchSize
-		}
-		if batchSize > proxyLength {
-			batchSize = proxyLength
-		}
-	}
-
+	// Single transaction for all database operations
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
+	defer transactionRollbackHandler(tx)
 
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-			log.Errorf("Transaction rolled back due to panic: %v", r)
-		}
-	}()
-
-	result := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "hash"}},
-		DoNothing: true,
-	}).CreateInBatches(proxies, batchSize)
-
-	if result.Error != nil {
-		tx.Rollback()
-		return nil, result.Error
-	}
-
-	if err := tx.Commit().Error; err != nil {
+	// Bulk insert deduplicated proxies
+	if err := insertProxies(tx, uniqueProxies, batchSize); err != nil {
 		return nil, err
 	}
 
-	seen := make(map[string]struct{}, len(proxies))
-	uniqueProxies := make([]models.Proxy, 0, len(proxies))
+	// Get existing proxies (including pre-existing ones)
+	existingProxies, err := fetchExistingProxies(tx, uniqueProxies, batchSize)
+	if err != nil {
+		return nil, err
+	}
 
+	// Create user-proxy associations
+	if err = createUserAssociations(tx, existingProxies, userID, batchSize); err != nil {
+		return nil, err
+	}
+
+	// Retrieve final results with user relationships
+	proxiesWithUsers, err := fetchProxiesWithUsers(tx, existingProxies)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit().Error; err != nil {
+		return nil, err
+	}
+
+	statistics.IncreaseProxyCount(int64(len(proxiesWithUsers)))
+	return proxiesWithUsers, nil
+}
+
+// Helper functions
+func deduplicateProxies(proxies []models.Proxy) []models.Proxy {
+	seen := make(map[string]struct{}, len(proxies))
+	unique := make([]models.Proxy, 0, len(proxies))
 	for _, p := range proxies {
-		hashStr := string(p.Hash)
-		if _, exists := seen[hashStr]; !exists {
-			seen[hashStr] = struct{}{}
-			uniqueProxies = append(uniqueProxies, p)
+		p.GenerateHash()
+		key := string(p.Hash)
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			unique = append(unique, p)
 		}
 	}
+	return unique
+}
 
-	// Collect all hashes from the proxies slice
-	hashes := make([][]byte, 0, len(uniqueProxies))
-	for _, p := range uniqueProxies {
-		hashes = append(hashes, p.Hash)
+func calculateBatchSize(proxyCount int) int {
+	if proxyCount <= batchThreshold {
+		return proxyCount
 	}
 
-	// Query all proxies with these hashes to get their IDs
-	var existingProxies []models.Proxy
+	numFields, err := getNumDatabaseFields(models.Proxy{}, DB)
+	if err != nil || numFields == 0 {
+		return minBatchSize // Fallback to safe minimum
+	}
+
+	batchSize := maxParamsPerBatch / numFields
+	return clamp(batchSize, minBatchSize, proxyCount)
+}
+
+func clamp(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func insertProxies(tx *gorm.DB, proxies []models.Proxy, batchSize int) error {
+	return tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "hash"}},
+		DoNothing: true,
+	}).CreateInBatches(proxies, batchSize).Error
+}
+
+func fetchExistingProxies(tx *gorm.DB, proxies []models.Proxy, batchSize int) ([]models.Proxy, error) {
+	hashes := make([][]byte, len(proxies))
+	for i, p := range proxies {
+		hashes[i] = p.Hash
+	}
+
+	var results []models.Proxy
 	for i := 0; i < len(hashes); i += batchSize {
 		end := i + batchSize
 		if end > len(hashes) {
 			end = len(hashes)
 		}
-		batch := hashes[i:end]
-		var batchProxies []models.Proxy
-		if err := DB.Where("hash IN ?", batch).Find(&batchProxies).Error; err != nil {
+
+		var batch []models.Proxy
+		err := tx.Preload("Users").
+			Where("hash IN ?", hashes[i:end]).
+			Find(&batch).Error
+		if err != nil {
 			return nil, err
 		}
-		existingProxies = append(existingProxies, batchProxies...)
+		results = append(results, batch...)
 	}
+	return results, nil
+}
 
-	//TODO in db transaction?
-
-	var associations []models.UserProxy
-	for _, p := range existingProxies {
-		associations = append(associations, models.UserProxy{
+func createUserAssociations(tx *gorm.DB, proxies []models.Proxy, userID uint, batchSize int) error {
+	associations := make([]models.UserProxy, len(proxies))
+	for i, p := range proxies {
+		associations[i] = models.UserProxy{
 			UserID:  userID,
 			ProxyID: p.ID,
-		})
+		}
 	}
 
-	if err := DB.Clauses(clause.OnConflict{
+	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}, {Name: "proxy_id"}},
 		DoNothing: true,
-	}).CreateInBatches(associations, batchSize).Error; err != nil {
-		return nil, err
+	}).CreateInBatches(associations, batchSize).Error
+}
+
+func fetchProxiesWithUsers(tx *gorm.DB, proxies []models.Proxy) ([]models.Proxy, error) {
+	ids := make([]uint64, len(proxies))
+	for i, p := range proxies {
+		ids[i] = p.ID
 	}
 
-	statistics.IncreaseProxyCount(int64(len(existingProxies)))
-	return existingProxies, nil
+	var results []models.Proxy
+	for i := 0; i < len(ids); i += maxParamsPerBatch {
+		end := i + maxParamsPerBatch
+		if end > len(ids) {
+			end = len(ids)
+		}
+
+		var batch []models.Proxy
+		err := tx.Preload("Users").
+			Where("id IN ?", ids[i:end]).
+			Find(&batch).Error
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, batch...)
+	}
+	return results, nil
+}
+
+func transactionRollbackHandler(tx *gorm.DB) {
+	if r := recover(); r != nil {
+		tx.Rollback()
+		log.Errorf("Transaction rolled back due to panic: %v", r)
+	}
 }
 
 func getNumDatabaseFields(model interface{}, db *gorm.DB) (int, error) {
@@ -176,7 +233,7 @@ func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
 
 	DB.Model(&models.Proxy{}).
 		Select(
-			"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4) AS ip, "+
+			"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4, ':', proxies.port) AS ip, "+
 				"COALESCE(ps.estimated_type, 'N/A') AS estimated_type, "+
 				"COALESCE(ps.response_time, 0) AS response_time, "+
 				"COALESCE(ps.country, 'N/A') AS country, "+

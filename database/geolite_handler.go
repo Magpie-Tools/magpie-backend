@@ -148,5 +148,5 @@ func DetermineProxyType(ipAddress string) string {
 	}
 
 	// Default to ISP for unknown organizations
-	return "ISP"
+	return "N/A"
 }

@@ -48,11 +48,15 @@ func AddDefaultJudgesToUsers() {
 		}
 
 		for i, judge := range judges {
+			setUpAndUpdateJudgeIp(judge)
 			judgesWithRegex[i].Judge = judge
 		}
-
 	} else {
 		judgesWithRegex = jwr
+
+		for _, judge := range judgesWithRegex {
+			setUpAndUpdateJudgeIp(judge.Judge)
+		}
 	}
 
 	err := database.AddUserJudgesRelation(users, judgesWithRegex)
@@ -78,4 +82,9 @@ func addJudgeRelationsToCache() {
 			}
 		}
 	}
+}
+
+func setUpAndUpdateJudgeIp(judge *models.Judge) {
+	judge.SetUp()
+	judge.UpdateIp()
 }

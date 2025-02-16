@@ -15,9 +15,10 @@ type proxyItem struct {
 }
 
 type ProxyQueue struct {
-	heap []*proxyItem
-	mu   sync.Mutex
-	cond *sync.Cond
+	heap    []*proxyItem
+	mu      sync.Mutex
+	cond    *sync.Cond
+	hashMap map[string]*proxyItem // Track proxies by hash
 }
 
 var PublicProxyQueue *ProxyQueue
@@ -28,7 +29,8 @@ func init() {
 
 func NewProxyQueue() *ProxyQueue {
 	q := &ProxyQueue{
-		heap: []*proxyItem{},
+		heap:    []*proxyItem{},
+		hashMap: make(map[string]*proxyItem),
 	}
 	q.cond = sync.NewCond(&q.mu)
 	return q
@@ -63,26 +65,49 @@ func (pq *ProxyQueue) Pop() interface{} {
 	return item
 }
 
+// removeFromQueue removes a proxy item from both heap and hashMap
+func (pq *ProxyQueue) removeFromQueue(item *proxyItem) {
+	// Remove from hashMap
+	delete(pq.hashMap, string(item.proxy.Hash))
+
+	// Remove from heap
+	idx := item.index
+	if idx >= 0 && idx < len(pq.heap) {
+		heap.Remove(pq, idx)
+	}
+}
+
 // AddToQueue adds proxies with staggered initial check times to spread load.
+// Only unique proxies (by hash) are added.
 func (pq *ProxyQueue) AddToQueue(proxies []models.Proxy) {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
 
 	interval := settings.GetTimeBetweenChecks()
 	now := time.Now()
-	count := len(proxies)
+	addedCount := 0
 
-	for i, proxy := range proxies {
-		// Spread evenly over the full checking period
-		offset := (interval * time.Duration(i)) / time.Duration(count)
+	for _, proxy := range proxies {
+		hashKey := string(proxy.Hash)
+
+		// If proxy already exists in queue, update its check time
+		if existingItem, exists := pq.hashMap[hashKey]; exists {
+			pq.removeFromQueue(existingItem)
+		}
+
+		// Add new proxy item
+		offset := (interval * time.Duration(addedCount)) / time.Duration(len(proxies))
 		item := &proxyItem{
 			proxy:     proxy,
 			nextCheck: now.Add(offset),
 		}
+
 		heap.Push(pq, item)
+		pq.hashMap[hashKey] = item
+		addedCount++
 	}
 
-	if count > 0 {
+	if addedCount > 0 {
 		pq.cond.Broadcast()
 	}
 }
@@ -110,20 +135,32 @@ func (pq *ProxyQueue) GetNextProxy() (models.Proxy, time.Time) {
 		}
 
 		item := heap.Pop(pq).(*proxyItem)
-		return item.proxy, item.nextCheck // Return scheduled time
+		delete(pq.hashMap, string(item.proxy.Hash)) // Remove from hashMap
+		return item.proxy, item.nextCheck
 	}
 }
 
 // RequeueProxy reinserts a proxy with the next check time set to now + interval.
+// If the proxy already exists in the queue, it will be updated instead of duplicated.
 func (pq *ProxyQueue) RequeueProxy(proxy models.Proxy, lastCheckTime time.Time) {
 	pq.mu.Lock()
 	defer pq.mu.Unlock()
 
+	hashKey := string(proxy.Hash)
+
+	// If proxy already exists in queue, remove it
+	if existingItem, exists := pq.hashMap[hashKey]; exists {
+		pq.removeFromQueue(existingItem)
+	}
+
+	// Add updated proxy item
 	item := &proxyItem{
 		proxy:     proxy,
-		nextCheck: lastCheckTime.Add(settings.GetTimeBetweenChecks()), // Schedule next check AFTER the interval
+		nextCheck: lastCheckTime.Add(settings.GetTimeBetweenChecks()),
 	}
+
 	heap.Push(pq, item)
+	pq.hashMap[hashKey] = item
 
 	if pq.heap[0] == item {
 		pq.cond.Signal()

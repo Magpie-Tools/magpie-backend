@@ -30,6 +30,13 @@ type Proxy struct {
 }
 
 func (proxy *Proxy) BeforeCreate(_ *gorm.DB) error {
+	if len(proxy.Hash) == 0 {
+		proxy.GenerateHash()
+	}
+	return nil
+}
+
+func (proxy *Proxy) GenerateHash() {
 	hash := sha256.Sum256([]byte(
 		strings.ToLower( // having different upper/lowercase username/password would not make sense for the same proxy
 			fmt.Sprintf("%s|%d|%s|%s",
@@ -39,7 +46,6 @@ func (proxy *Proxy) BeforeCreate(_ *gorm.DB) error {
 				proxy.Password,
 			))))
 	proxy.Hash = hash[:]
-	return nil
 }
 
 func (proxy *Proxy) SetIP(ip string) error {
