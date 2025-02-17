@@ -164,7 +164,7 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 	checker.PublicProxyQueue.AddToQueue(proxyList)
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"message": "Added Proxies to Queue"}`))
+	json.NewEncoder(w).Encode(map[string]int{"proxyCount": len(proxyList)})
 }
 
 func saveSettings(w http.ResponseWriter, r *http.Request) {
