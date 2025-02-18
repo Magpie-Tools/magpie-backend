@@ -2,6 +2,7 @@ package checker
 
 import (
 	"container/heap"
+	"magpie/checker/statistics"
 	"magpie/models"
 	"magpie/settings"
 	"sync"
@@ -110,6 +111,8 @@ func (pq *ProxyQueue) AddToQueue(proxies []models.Proxy) {
 	if addedCount > 0 {
 		pq.cond.Broadcast()
 	}
+
+	statistics.SetProxyCount(int64(len(pq.heap)))
 }
 
 // GetNextProxy retrieves the next proxy, blocking until its check time arrives.

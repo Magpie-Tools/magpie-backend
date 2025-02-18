@@ -3,7 +3,6 @@ package setup
 import (
 	"github.com/charmbracelet/log"
 	"magpie/checker"
-	"magpie/checker/statistics"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/settings"
@@ -14,7 +13,6 @@ func Setup() {
 	settings.ReadSettings()
 
 	database.SetupDB()
-	statisticsSetup()
 	settings.SetBetweenTime()
 
 	judgeSetup()
@@ -47,9 +45,7 @@ func Setup() {
 		log.Error("Error getting all proxies:", "error", err)
 	} else {
 		checker.PublicProxyQueue.AddToQueue(proxies)
-		proxyLen := len(proxies)
-		statistics.IncreaseProxyCount(int64(proxyLen))
-		log.Infof("Added %d proxies to queue", proxyLen)
+		log.Infof("Added %d proxies to queue", len(proxies))
 	}
 
 	// Routines
@@ -57,10 +53,6 @@ func Setup() {
 	go checker.StartJudgeRoutine()
 	go database.StartProxyStatisticsRoutine()
 	go checker.Dispatcher()
-}
-
-func statisticsSetup() {
-	statistics.SetProxyCount(database.GetAllProxyCount())
 }
 
 func judgeSetup() {

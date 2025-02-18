@@ -20,9 +20,10 @@ type Config struct {
 	Timer Timer `json:"timer"`
 
 	Checker struct {
-		Threads uint32 `json:"threads"`
-		Retries uint32 `json:"retries"`
-		Timeout uint32 `json:"timeout"`
+		DynamicThreads bool   `json:"dynamic_threads"`
+		Threads        uint32 `json:"threads"`
+		Retries        uint32 `json:"retries"`
+		Timeout        uint32 `json:"timeout"`
 
 		JudgesThreads uint32  `json:"judges_threads"`
 		JudgesTimeout uint32  `json:"judges_timeout"`
