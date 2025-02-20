@@ -128,7 +128,8 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	textareaContent := r.FormValue("proxyTextarea") // "proxyTextarea" matches the key sent by the frontend
-	file, fileHeader, err := r.FormFile("file")     // "file" is the key of the form field
+	clipboardContent := r.FormValue("clipboardProxies")
+	file, fileHeader, err := r.FormFile("file") // "file" is the key of the form field
 
 	var fileContent []byte
 
@@ -143,13 +144,13 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-	} else if len(textareaContent) == 0 {
+	} else if len(textareaContent) == 0 && len(clipboardContent) == 0 {
 		http.Error(w, "Failed to retrieve file", http.StatusBadRequest)
 		return
 	}
 
 	// Merge the file content and the textarea content
-	mergedContent := string(fileContent) + "\n" + textareaContent
+	mergedContent := string(fileContent) + "\n" + textareaContent + "\n" + clipboardContent
 
 	log.Infof("File content received: %d bytes", len(mergedContent))
 

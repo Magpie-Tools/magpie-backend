@@ -1,7 +1,6 @@
 package checker
 
 import (
-	"github.com/charmbracelet/log"
 	"magpie/checker/statistics"
 	"magpie/database"
 	"magpie/helper"
@@ -44,7 +43,6 @@ func Dispatcher() {
 			currentThreads.Add(^uint32(0)) // Decrement by 1
 		}
 
-		log.Info(currentThreads.Load())
 		time.Sleep(15 * time.Second)
 	}
 }
