@@ -1,7 +1,9 @@
 package checker
 
 import (
-	"magpie/checker/statistics"
+	"github.com/charmbracelet/log"
+	"magpie/checker/judges"
+	"magpie/checker/redis"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/models"
@@ -48,25 +50,39 @@ func Dispatcher() {
 }
 
 func getAutoThreads(cfg settings.Config) uint32 {
-	proxyCount := statistics.GetProxyCount()
+	totalProxies, err := redis.PublicProxyQueue.GetProxyCount()
+	if err != nil {
+		log.Error("Failed to get proxy count", "error", err)
+		return 1 // Fallback to minimal threads
+	}
+
+	activeInstances, err := redis.PublicProxyQueue.GetActiveInstances()
+	if err != nil {
+		log.Error("Failed to get active instances", "error", err)
+		activeInstances = 1
+	}
+	if activeInstances == 0 {
+		activeInstances = 1 // Prevent division by zero
+	}
+
+	perInstanceProxies := (totalProxies + int64(activeInstances) - 1) / int64(activeInstances)
+
 	checkingPeriodMs := settings.CalculateMillisecondsOfCheckingPeriod(cfg.Timer)
 	protocolsToCheck := settings.GetProtocolsToCheck()
 	protocolsCount := len(protocolsToCheck)
 	retries := cfg.Checker.Retries
 	timeoutMs := cfg.Checker.Timeout
 
-	numerator := uint64(proxyCount) * uint64(protocolsCount) * uint64(retries+1) * uint64(timeoutMs)
+	numerator := uint64(perInstanceProxies) * uint64(protocolsCount) * uint64(retries+1) * uint64(timeoutMs)
 	if checkingPeriodMs == 0 {
-		checkingPeriodMs = 1 // Avoid division by zero
+		checkingPeriodMs = 1
 	}
 	requiredThreads := (numerator + checkingPeriodMs - 1) / checkingPeriodMs
 
-	// Ensure at least 1 thread if there are proxies
-	if requiredThreads == 0 && proxyCount > 0 {
+	if requiredThreads == 0 && perInstanceProxies > 0 {
 		requiredThreads = 1
 	}
 
-	// Cap at MaxUint32 to prevent overflow even if its unrealistic that it'll be more than this
 	if requiredThreads > math.MaxUint32 {
 		requiredThreads = math.MaxUint32
 	}
@@ -81,7 +97,11 @@ func work() {
 			// Exit the work loop if a stop signal is received
 			return
 		default:
-			proxy, scheduledTime := PublicProxyQueue.GetNextProxy()
+			proxy, scheduledTime, err := redis.PublicProxyQueue.GetNextProxy()
+			if err != nil {
+				time.Sleep(3 * time.Second)
+				continue
+			}
 			ip := proxy.GetIp()
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
@@ -93,12 +113,12 @@ func work() {
 					)
 					if protocolId > 2 { // Socks protocol
 						if useHttpsForSocks.Load() {
-							nextJudge, regex = getNextJudge(user.ID, "https")
+							nextJudge, regex = judges.GetNextJudge(user.ID, "https")
 						} else {
-							nextJudge, regex = getNextJudge(user.ID, "http")
+							nextJudge, regex = judges.GetNextJudge(user.ID, "http")
 						}
 					} else {
-						nextJudge, regex = getNextJudge(user.ID, protocol)
+						nextJudge, regex = judges.GetNextJudge(user.ID, protocol)
 					}
 
 					html, err, responseTime := CheckProxyWithRetries(proxy, nextJudge, protocol, regex)
@@ -124,7 +144,7 @@ func work() {
 			}
 
 			// Requeue the proxy for the next check
-			PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
+			redis.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
 		}
 	}
 }

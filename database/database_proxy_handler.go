@@ -4,7 +4,6 @@ import (
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"magpie/checker/statistics"
 	"magpie/models"
 	"magpie/models/routeModels"
 )
@@ -18,40 +17,30 @@ const (
 )
 
 func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, error) {
-	// Deduplicate proxies upfront to reduce processing
 	uniqueProxies := deduplicateProxies(proxies)
 	if len(uniqueProxies) == 0 {
 		return nil, nil
 	}
 
-	// Calculate batch size based on deduplicated count
 	batchSize := calculateBatchSize(len(uniqueProxies))
 
-	// Single transaction for all database operations
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
 	defer transactionRollbackHandler(tx)
 
-	// Bulk insert deduplicated proxies
+	// Insert proxies and populate their IDs (including existing ones)
 	if err := insertProxies(tx, uniqueProxies, batchSize); err != nil {
 		return nil, err
 	}
 
-	// Get existing proxies (including pre-existing ones)
-	existingProxies, err := fetchExistingProxies(tx, uniqueProxies, batchSize)
-	if err != nil {
+	// Create associations using the now-populated IDs
+	if err := createUserAssociations(tx, uniqueProxies, userID, batchSize); err != nil {
 		return nil, err
 	}
 
-	// Create user-proxy associations
-	if err = createUserAssociations(tx, existingProxies, userID, batchSize); err != nil {
-		return nil, err
-	}
-
-	// Retrieve final results with user relationships
-	proxiesWithUsers, err := fetchProxiesWithUsers(tx, existingProxies)
+	proxiesWithUsers, err := fetchProxiesWithUsers(tx, uniqueProxies)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +49,6 @@ func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, e
 		return nil, err
 	}
 
-	statistics.IncreaseProxyCount(int64(len(proxiesWithUsers)))
 	return proxiesWithUsers, nil
 }
 
@@ -106,7 +94,7 @@ func clamp(value, min, max int) int {
 func insertProxies(tx *gorm.DB, proxies []models.Proxy, batchSize int) error {
 	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "hash"}},
-		DoNothing: true,
+		DoUpdates: clause.AssignmentColumns([]string{"hash"}), // To get the ids from duplicates
 	}).CreateInBatches(proxies, batchSize).Error
 }
 

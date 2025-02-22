@@ -7,7 +7,7 @@ import (
 	"gorm.io/gorm"
 	"io"
 	"magpie/authorization"
-	"magpie/checker"
+	"magpie/checker/redis"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/models"
@@ -162,7 +162,7 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not add proxies to database", http.StatusInternalServerError)
 		return
 	}
-	checker.PublicProxyQueue.AddToQueue(proxyList)
+	redis.PublicProxyQueue.AddToQueue(proxyList)
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]int{"proxyCount": len(proxyList)})

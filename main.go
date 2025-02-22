@@ -4,6 +4,7 @@ import (
 	"flag"
 	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
+	"magpie/checker/redis"
 	"magpie/routing"
 	"magpie/settings"
 	"magpie/setup"
@@ -23,6 +24,7 @@ func init() {
 func main() {
 	log.Info("Starting Program")
 	log.SetLevel(log.DebugLevel)
+
 	debug.SetMaxThreads(9999999999)
 
 	portFlag := flag.Int("port", 8082, "Port to listen on")
@@ -38,6 +40,13 @@ func main() {
 	}
 
 	setup.Setup()
+
+	defer func(PublicProxyQueue *redis.RedisProxyQueue) {
+		err := PublicProxyQueue.Close()
+		if err != nil {
+			log.Warn(err)
+		}
+	}(&redis.PublicProxyQueue)
 
 	routing.OpenRoutes(port)
 }

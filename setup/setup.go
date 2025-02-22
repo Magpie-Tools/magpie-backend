@@ -3,6 +3,8 @@ package setup
 import (
 	"github.com/charmbracelet/log"
 	"magpie/checker"
+	"magpie/checker/judges"
+	"magpie/checker/redis"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/settings"
@@ -44,13 +46,13 @@ func Setup() {
 	if err != nil {
 		log.Error("Error getting all proxies:", "error", err)
 	} else {
-		checker.PublicProxyQueue.AddToQueue(proxies)
+		redis.PublicProxyQueue.AddToQueue(proxies)
 		log.Infof("Added %d proxies to queue", len(proxies))
 	}
 
 	// Routines
 
-	go checker.StartJudgeRoutine()
+	go judges.StartJudgeRoutine()
 	go database.StartProxyStatisticsRoutine()
 	go checker.Dispatcher()
 }

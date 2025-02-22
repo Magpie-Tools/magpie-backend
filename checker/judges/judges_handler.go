@@ -1,4 +1,4 @@
-package checker
+package judges
 
 import (
 	"magpie/models"
@@ -24,8 +24,8 @@ func init() {
 	updateJudges(make(map[uint]map[string]*judgeEntry))
 }
 
-// getNextJudge returns the next Judge and Regex for a user/protocol combination
-func getNextJudge(userID uint, protocol string) (*models.Judge, string) {
+// GetNextJudge returns the next Judge and Regex for a user/protocol combination
+func GetNextJudge(userID uint, protocol string) (*models.Judge, string) {
 	currentMap, _ := judges.Load().(map[uint]map[string]*judgeEntry)
 	userMap, ok := currentMap[userID]
 	if !ok {

@@ -1,4 +1,4 @@
-package checker
+package judges
 
 import (
 	"magpie/settings"
