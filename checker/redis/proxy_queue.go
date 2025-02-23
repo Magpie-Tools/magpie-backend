@@ -16,7 +16,6 @@ import (
 const (
 	proxyKeyPrefix  = "proxy:"
 	queueKey        = "proxy_queue"
-	proxyDataTTL    = 12 * time.Hour
 	emptyQueueSleep = 1 * time.Second
 )
 
@@ -94,7 +93,7 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []models.Proxy) error {
 			return fmt.Errorf("failed to marshal proxy: %w", err)
 		}
 
-		pipe.Set(rpq.ctx, proxyKey, proxyJSON, proxyDataTTL)
+		pipe.Set(rpq.ctx, proxyKey, proxyJSON, 0)
 		pipe.ZAdd(rpq.ctx, queueKey, redis.Z{
 			Score:  float64(nextCheck.Unix()),
 			Member: hashKey,
@@ -152,7 +151,7 @@ func (rpq *RedisProxyQueue) RequeueProxy(proxy models.Proxy, lastCheckTime time.
 	}
 
 	pipe := rpq.client.Pipeline()
-	pipe.Set(rpq.ctx, proxyKey, proxyJSON, proxyDataTTL)
+	pipe.Set(rpq.ctx, proxyKey, proxyJSON, 0)
 	pipe.ZAdd(rpq.ctx, queueKey, redis.Z{
 		Score:  float64(nextCheck.Unix()),
 		Member: hashKey,
