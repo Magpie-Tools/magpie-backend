@@ -3,7 +3,7 @@ package checker
 import (
 	"github.com/charmbracelet/log"
 	"magpie/checker/judges"
-	"magpie/checker/redis"
+	"magpie/checker/redis_queue"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/models"
@@ -50,13 +50,13 @@ func Dispatcher() {
 }
 
 func getAutoThreads(cfg settings.Config) uint32 {
-	totalProxies, err := redis.PublicProxyQueue.GetProxyCount()
+	totalProxies, err := redis_queue.PublicProxyQueue.GetProxyCount()
 	if err != nil {
 		log.Error("Failed to get proxy count", "error", err)
 		return 1 // Fallback to minimal threads
 	}
 
-	activeInstances, err := redis.PublicProxyQueue.GetActiveInstances()
+	activeInstances, err := redis_queue.PublicProxyQueue.GetActiveInstances()
 	if err != nil {
 		log.Error("Failed to get active instances", "error", err)
 		activeInstances = 1
@@ -97,7 +97,7 @@ func work() {
 			// Exit the work loop if a stop signal is received
 			return
 		default:
-			proxy, scheduledTime, err := redis.PublicProxyQueue.GetNextProxy()
+			proxy, scheduledTime, err := redis_queue.PublicProxyQueue.GetNextProxy()
 			if err != nil {
 				time.Sleep(3 * time.Second)
 				continue
@@ -144,13 +144,14 @@ func work() {
 			}
 
 			// Requeue the proxy for the next check
-			redis.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
+			redis_queue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
 		}
 	}
 }
 
 func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, regex string) (string, error, int64) {
-	retries := settings.GetConfig().Checker.Retries
+	cfg := settings.GetConfig()
+	retries := cfg.Checker.Retries
 
 	var (
 		html         string
@@ -160,7 +161,7 @@ func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, re
 
 	for i := uint32(0); i < retries; i++ {
 		timeStart := time.Now()
-		html, err = ProxyCheckRequest(proxy, judge, protocol)
+		html, err = ProxyCheckRequest(proxy, judge, protocol, cfg.Checker.Timeout)
 		responseTime = time.Since(timeStart).Milliseconds()
 
 		if err == nil && CheckForValidResponse(html, regex) {

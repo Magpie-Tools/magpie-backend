@@ -4,7 +4,7 @@ import (
 	"flag"
 	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
-	"magpie/checker/redis"
+	"magpie/checker/redis_queue"
 	"magpie/routing"
 	"magpie/settings"
 	"magpie/setup"
@@ -41,12 +41,12 @@ func main() {
 
 	setup.Setup()
 
-	defer func(PublicProxyQueue *redis.RedisProxyQueue) {
+	defer func(PublicProxyQueue *redis_queue.RedisProxyQueue) {
 		err := PublicProxyQueue.Close()
 		if err != nil {
 			log.Warn(err)
 		}
-	}(&redis.PublicProxyQueue)
+	}(&redis_queue.PublicProxyQueue)
 
 	routing.OpenRoutes(port)
 }

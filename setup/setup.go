@@ -4,7 +4,7 @@ import (
 	"github.com/charmbracelet/log"
 	"magpie/checker"
 	"magpie/checker/judges"
-	"magpie/checker/redis"
+	"magpie/checker/redis_queue"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/settings"
@@ -46,7 +46,7 @@ func Setup() {
 	if err != nil {
 		log.Error("Error getting all proxies:", "error", err)
 	} else {
-		redis.PublicProxyQueue.AddToQueue(proxies)
+		redis_queue.PublicProxyQueue.AddToQueue(proxies)
 		log.Infof("Added %d proxies to queue", len(proxies))
 	}
 

@@ -7,10 +7,11 @@ import (
 	"gorm.io/gorm"
 	"io"
 	"magpie/authorization"
-	"magpie/checker/redis"
+	"magpie/checker/redis_queue"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/models"
+	"magpie/models/routeModels"
 	"magpie/settings"
 	"magpie/setup"
 	"net/http"
@@ -18,10 +19,7 @@ import (
 )
 
 func registerUser(w http.ResponseWriter, r *http.Request) {
-	var credentials struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
+	var credentials routeModels.Credentials
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
@@ -88,11 +86,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func loginUser(w http.ResponseWriter, r *http.Request) {
-	var credentials struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
+	var credentials routeModels.Credentials
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
@@ -156,13 +150,17 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 
 	proxyList := helper.ParseTextToProxies(mergedContent)
 
+	log.Infof("Parsing finished")
+
 	proxyList, err = database.InsertAndGetProxies(proxyList, userID)
 	if err != nil {
 		log.Error("Could not add proxies to database", "error", err.Error())
 		http.Error(w, "Could not add proxies to database", http.StatusInternalServerError)
 		return
 	}
-	redis.PublicProxyQueue.AddToQueue(proxyList)
+	log.Infof("Insert finished")
+	redis_queue.PublicProxyQueue.AddToQueue(proxyList)
+	log.Infof("Queue finished")
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]int{"proxyCount": len(proxyList)})

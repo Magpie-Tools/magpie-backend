@@ -50,6 +50,20 @@
     ]
   },
 
+  "scraper": {
+    "dynamic_threads": false,
+    "threads": 250,
+    "retries": 2,
+    "timeout": 7500,
+
+    "scraper_timer": {
+      "days": 0,
+      "hours": 0,
+      "minutes": 5,
+      "seconds": 0
+    }
+  },
+
   "blacklist_sources": [
     "https://www.spamhaus.org/drop/drop.txt",
     "https://www.spamhaus.org/drop/edrop.txt",

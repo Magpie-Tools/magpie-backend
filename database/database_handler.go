@@ -41,7 +41,8 @@ func SetupDB() {
 	DB = database
 
 	err = database.AutoMigrate(models.User{}, models.Proxy{}, models.UserProxy{},
-		models.ProxyStatistic{}, models.AnonymityLevel{}, models.Judge{}, models.UserJudge{})
+		models.ProxyStatistic{}, models.AnonymityLevel{}, models.Judge{}, models.UserJudge{},
+		models.ScrapeSite{}, models.UserScrapeSite{})
 
 	if err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)

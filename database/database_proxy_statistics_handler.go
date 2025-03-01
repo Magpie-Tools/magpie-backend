@@ -2,7 +2,7 @@ package database
 
 import (
 	"github.com/charmbracelet/log"
-	"magpie/checker/redis"
+	"magpie/checker/redis_queue"
 	"magpie/models"
 	"sync/atomic"
 	"time"
@@ -22,7 +22,7 @@ var (
 func StartProxyStatisticsRoutine() {
 	go proxyStatisticsWorker()
 	for {
-		cnt, err := redis.PublicProxyQueue.GetProxyCount()
+		cnt, err := redis_queue.PublicProxyQueue.GetProxyCount()
 		if err == nil {
 			if workerCount < cnt/1000000 {
 				threadCount.Add(1)

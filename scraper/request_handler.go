@@ -6,56 +6,45 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto" // import proto for CDP commands
-	"github.com/go-rod/stealth"
 )
 
-var (
-	browser  *rod.Browser
-	pagePool chan *rod.Page
-	poolSize = 50 // Adjust pool size based on expected concurrency
-)
-
-func init() {
-	// Launch the browser with default settings
-	browser = rod.New().MustConnect()
-
-	// Initialize the page pool with stealth pages
-	pagePool = make(chan *rod.Page, poolSize)
-	for i := 0; i < poolSize; i++ {
-		page, err := stealth.Page(browser)
-		if err != nil {
-			panic(fmt.Sprintf("Failed to create stealth page: %v", err))
-		}
-		pagePool <- page
+func ScraperRequest(url string, timeout time.Duration) (string, error) {
+	// Try to get a page from the pool with timeout
+	var page *rod.Page
+	select {
+	case p := <-pagePool:
+		page = p
+	case <-time.After(5 * time.Second):
+		return "", fmt.Errorf("timeout waiting for available page")
 	}
-}
 
-func ScraperRequest(url string) (string, error) {
-	// Acquire a page from the pool
-	page := <-pagePool
 	defer func() {
-		if err := resetPage(page); err != nil {
-			// Replace faulty page with a new one
+		select {
+		case <-stopPageSignal:
+			// This page should be closed to reduce pool size
 			page.MustClose()
-			newPage, err := stealth.Page(browser)
-			if err != nil {
-				return // Log error in production
+			currentPages.Add(-1)
+		default:
+			// Return the page to the pool after cleaning
+			if err := resetPage(page); err != nil {
+				// Replace faulty page
+				page.MustClose()
+				addPageToPool() // Add a new page asynchronously
+			} else {
+				pagePool <- page
 			}
-			pagePool <- newPage
-		} else {
-			pagePool <- page
 		}
 	}()
 
 	// Navigate to the target URL with timeout
-	err := page.Timeout(30 * time.Second).Navigate(url)
+	err := page.Timeout(timeout).Navigate(url)
 	if err != nil {
 		return "", fmt.Errorf("navigation failed: %w", err)
 	}
 
-	// Wait until all network activity is idle
+	// Wait until page is loaded
 	if err = page.WaitLoad(); err != nil {
-		return "", fmt.Errorf("wait idle failed: %w", err)
+		return "", fmt.Errorf("wait load failed: %w", err)
 	}
 
 	// Retrieve the HTML content
@@ -79,6 +68,7 @@ func resetPage(page *rod.Page) error {
 	_, err = page.Eval(`() => {
 		localStorage.clear();
 		sessionStorage.clear();
+		return true;
 	}`)
 	if err != nil {
 		return fmt.Errorf("clear storage: %w", err)
@@ -95,4 +85,19 @@ func resetPage(page *rod.Page) error {
 	}
 
 	return nil
+}
+
+// Cleanup function to close all pages and the browser
+func Cleanup() {
+	// Close all pages in the pool
+	for {
+		select {
+		case page := <-pagePool:
+			page.MustClose()
+		default:
+			// No more pages in the pool
+			browser.MustClose()
+			return
+		}
+	}
 }

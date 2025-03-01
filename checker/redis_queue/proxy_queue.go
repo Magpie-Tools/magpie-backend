@@ -1,8 +1,9 @@
-package redis
+package redis_queue
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,7 +21,7 @@ const (
 )
 
 var luaPopScript = `
-local result = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+local result = redis_queue.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
 if #result == 0 then return nil end
 
 local member = result[1]
@@ -30,10 +31,10 @@ local current_time = tonumber(ARGV[1])
 if score > current_time then return nil end
 
 local proxy_key = KEYS[2] .. member
-local proxy_data = redis.call('GET', proxy_key)
+local proxy_data = redis_queue.call('GET', proxy_key)
 
-if redis.call('ZREM', KEYS[1], member) == 0 then return nil end
-redis.call('DEL', proxy_key)
+if redis_queue.call('ZREM', KEYS[1], member) == 0 then return nil end
+redis_queue.call('DEL', proxy_key)
 
 return {member, proxy_data, score}
 `
@@ -47,9 +48,9 @@ type RedisProxyQueue struct {
 var PublicProxyQueue RedisProxyQueue
 
 func init() {
-	ppq, err := NewRedisProxyQueue(helper.GetEnv("redisUrl", "redis://host.docker.internal:6379"))
+	ppq, err := NewRedisProxyQueue(helper.GetEnv("redisUrl", "redis://localhost:6379"))
 	if err != nil {
-		log.Fatal("Could not connect to redis", "error", err)
+		log.Fatal("Could not connect to redis for proxy queue", "error", err)
 	}
 	PublicProxyQueue = *ppq
 
@@ -80,10 +81,11 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []models.Proxy) error {
 	pipe := rpq.client.Pipeline()
 	interval := settings.GetTimeBetweenChecks()
 	now := time.Now()
+	proxyLenDuration := time.Duration(len(proxies))
 	batchSize := 500 // Adjust based on your Redis server capabilities
 
 	for i, proxy := range proxies {
-		offset := (interval * time.Duration(i)) / time.Duration(len(proxies))
+		offset := (interval * time.Duration(i)) / proxyLenDuration
 		nextCheck := now.Add(offset)
 		hashKey := string(proxy.Hash)
 		proxyKey := proxyKeyPrefix + hashKey
@@ -120,7 +122,7 @@ func (rpq *RedisProxyQueue) GetNextProxy() (models.Proxy, time.Time, error) {
 		currentTime := time.Now().Unix()
 		result, err := rpq.popScript.Run(rpq.ctx, rpq.client, []string{queueKey, proxyKeyPrefix}, currentTime).Result()
 
-		if err == redis.Nil {
+		if errors.Is(err, redis.Nil) {
 			time.Sleep(emptyQueueSleep)
 			continue
 		} else if err != nil {

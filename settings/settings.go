@@ -6,7 +6,6 @@ import (
 	"github.com/charmbracelet/log"
 	"os"
 	"sync/atomic"
-	"time"
 )
 
 type Config struct {
@@ -36,6 +35,15 @@ type Config struct {
 		ProxyHeader      []string `json:"proxy_header"`
 	} `json:"checker"`
 
+	Scraper struct {
+		DynamicThreads bool   `json:"dynamic_threads"`
+		Threads        uint32 `json:"threads"`
+		Retries        uint32 `json:"retries"`
+		Timeout        uint32 `json:"timeout"`
+
+		ScraperTimer Timer `json:"scraper_timer"`
+	} `json:"scraper"`
+
 	BlacklistSources []string `json:"blacklist_sources"`
 }
 
@@ -57,10 +65,9 @@ var (
 	//go:embed default_settings.json
 	defaultConfig []byte
 
-	configValue       atomic.Value
-	timeBetweenChecks atomic.Value
-	protocolsToCheck  atomic.Value
-	currentIp         atomic.Value
+	configValue      atomic.Value
+	protocolsToCheck atomic.Value
+	currentIp        atomic.Value
 
 	InProductionMode bool
 )
@@ -141,10 +148,6 @@ func SetProductionMode(productionMode bool) {
 	InProductionMode = productionMode
 }
 
-func GetTimeBetweenChecks() time.Duration {
-	return timeBetweenChecks.Load().(time.Duration)
-}
-
 func GetCurrentIp() string {
 	return currentIp.Load().(string)
 }
@@ -174,33 +177,4 @@ func getProtocolsOfConfig(cfg Config) map[string]int {
 	}
 
 	return protocols
-}
-
-func SetBetweenTime() {
-	timeBetweenChecks.Store(CalculateBetweenTime())
-}
-
-// CalculateBetweenTime Also works with e.g a judgeCount
-func CalculateBetweenTime() time.Duration {
-	cfg := GetConfig()
-	totalMs := CalculateMillisecondsOfCheckingPeriod(cfg.Timer)
-
-	// Return the full checking period (e.g., 1 hour)
-	intervalMs := totalMs
-
-	// Enforce minimum interval (e.g., 1 second)
-	minInterval := uint64(1000)
-	if intervalMs < minInterval {
-		intervalMs = minInterval
-	}
-
-	return time.Duration(intervalMs) * time.Millisecond
-}
-
-func CalculateMillisecondsOfCheckingPeriod(timer Timer) uint64 {
-	// Calculate total duration in milliseconds
-	return uint64(timer.Days)*24*60*60*1000 +
-		uint64(timer.Hours)*60*60*1000 +
-		uint64(timer.Minutes)*60*1000 +
-		uint64(timer.Seconds)*1000
 }
