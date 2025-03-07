@@ -9,6 +9,7 @@ import (
 	"magpie/models"
 	"magpie/settings"
 	"math"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -16,8 +17,6 @@ import (
 var (
 	currentThreads atomic.Uint32
 	stopChannel    = make(chan struct{}) // Signal to stop threads
-
-	useHttpsForSocks = atomic.Bool{}
 )
 
 func Dispatcher() {
@@ -30,8 +29,6 @@ func Dispatcher() {
 		} else {
 			targetThreads = cfg.Checker.Threads
 		}
-
-		useHttpsForSocks.Store(cfg.Checker.UseHttpsForSocks)
 
 		// Start threads if currentThreads is less than targetThreads
 		for currentThreads.Load() < targetThreads {
@@ -67,7 +64,7 @@ func getAutoThreads(cfg settings.Config) uint32 {
 
 	perInstanceProxies := (totalProxies + int64(activeInstances) - 1) / int64(activeInstances)
 
-	checkingPeriodMs := settings.CalculateMillisecondsOfCheckingPeriod(cfg.Timer)
+	checkingPeriodMs := settings.CalculateMillisecondsOfCheckingPeriod(cfg.Checker.CheckerTimer)
 	protocolsToCheck := settings.GetProtocolsToCheck()
 	protocolsCount := len(protocolsToCheck)
 	retries := cfg.Checker.Retries
@@ -105,6 +102,13 @@ func work() {
 			ip := proxy.GetIp()
 			protocolsToCheck := settings.GetProtocolsToCheck()
 
+			allJudges := make(map[string]struct {
+				judge      *models.Judge
+				regex      string
+				protocol   string
+				protocolId int
+			})
+
 			for _, user := range proxy.Users {
 				for protocol, protocolId := range protocolsToCheck {
 					var (
@@ -112,7 +116,7 @@ func work() {
 						regex     string
 					)
 					if protocolId > 2 { // Socks protocol
-						if useHttpsForSocks.Load() {
+						if user.UseHttpsForSocks {
 							nextJudge, regex = judges.GetNextJudge(user.ID, "https")
 						} else {
 							nextJudge, regex = judges.GetNextJudge(user.ID, "http")
@@ -121,26 +125,35 @@ func work() {
 						nextJudge, regex = judges.GetNextJudge(user.ID, protocol)
 					}
 
-					html, err, responseTime := CheckProxyWithRetries(proxy, nextJudge, protocol, regex)
-
-					statistic := models.ProxyStatistic{
-						Alive:         false,
-						ResponseTime:  int16(responseTime),
-						Country:       database.GetCountryCode(ip),
-						EstimatedType: database.DetermineProxyType(ip),
-						ProxyID:       proxy.ID,
-						ProtocolID:    &protocolId,
-						JudgeID:       nextJudge.ID,
-					}
-
-					if err == nil {
-						lvl := helper.GetProxyLevel(html)
-						statistic.LevelID = &lvl
-						statistic.Alive = true
-					}
-
-					database.AddProxyStatistic(statistic)
+					allJudges[strconv.Itoa(int(nextJudge.ID))+regex] = struct {
+						judge      *models.Judge
+						regex      string
+						protocol   string
+						protocolId int
+					}{judge: nextJudge, regex: regex, protocol: protocol, protocolId: protocolId}
 				}
+			}
+
+			for _, item := range allJudges {
+				html, err, responseTime := CheckProxyWithRetries(proxy, item.judge, item.protocol, item.regex)
+
+				statistic := models.ProxyStatistic{
+					Alive:         false,
+					ResponseTime:  int16(responseTime),
+					Country:       database.GetCountryCode(ip),
+					EstimatedType: database.DetermineProxyType(ip),
+					ProxyID:       proxy.ID,
+					ProtocolID:    item.protocolId,
+					JudgeID:       item.judge.ID,
+				}
+
+				if err == nil {
+					lvl := helper.GetProxyLevel(html)
+					statistic.LevelID = &lvl
+					statistic.Alive = true
+				}
+
+				database.AddProxyStatistic(statistic)
 			}
 
 			// Requeue the proxy for the next check

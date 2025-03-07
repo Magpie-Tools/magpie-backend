@@ -28,7 +28,7 @@ func getTimeBetweenJudgeChecks(count uint64) time.Duration {
 	if settings.InProductionMode {
 		periodTime = settings.CalculateMillisecondsOfCheckingPeriod(settings.GetConfig().Checker.JudgeTimer) / count
 	} else {
-		periodTime = settings.CalculateMillisecondsOfCheckingPeriod(settings.GetConfig().Timer) / count / 2 // Twice per period_time
+		periodTime = settings.CalculateMillisecondsOfCheckingPeriod(settings.GetConfig().Checker.CheckerTimer) / count / 2 // Twice per period_time
 	}
 
 	return time.Duration(periodTime) * time.Millisecond

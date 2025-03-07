@@ -16,13 +16,12 @@ type Config struct {
 		Socks5 bool `json:"socks5"`
 	} `json:"protocols"`
 
-	Timer Timer `json:"timer"`
-
 	Checker struct {
 		DynamicThreads bool   `json:"dynamic_threads"`
 		Threads        uint32 `json:"threads"`
 		Retries        uint32 `json:"retries"`
 		Timeout        uint32 `json:"timeout"`
+		CheckerTimer   Timer  `json:"checker_timer"`
 
 		JudgesThreads uint32  `json:"judges_threads"`
 		JudgesTimeout uint32  `json:"judges_timeout"`

@@ -12,7 +12,7 @@ var (
 
 func SetBetweenTime() {
 	cfg := GetConfig()
-	timeBetweenChecks.Store(CalculateBetweenTime(cfg.Timer))
+	timeBetweenChecks.Store(CalculateBetweenTime(cfg.Checker.CheckerTimer))
 	timeBetweenScrapes.Store(CalculateBetweenTime(cfg.Scraper.ScraperTimer))
 }
 

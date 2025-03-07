@@ -10,7 +10,7 @@ type ProxyStatistic struct {
 	EstimatedType string `gorm:"size:20;not null"` // ISP, Datacenter, Residential
 
 	// Relationships
-	ProtocolID *int     `gorm:"index"`
+	ProtocolID int      `gorm:"index"`
 	Protocol   Protocol `gorm:"foreignKey:ProtocolID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 
 	LevelID *int           `gorm:"index"`
@@ -31,5 +31,5 @@ type AnonymityLevel struct {
 
 type Protocol struct {
 	ID   int    `gorm:"primaryKey;autoIncrement"`
-	Name string `gorm:"size:6;not null;unique"`
+	Name string `gorm:"size:6;not null;unique"` //http, https, socks4, socks5
 }

@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+func GetUserFromId(id uint) models.User {
+	var users models.User
+	DB.Where("id = ?", id).First(&users)
+	return users
+}
+
 func GetUsersThatDontHaveJudges() []models.User {
 	var users []models.User
 	DB.Where("id NOT IN (SELECT DISTINCT user_id FROM user_judges)").Find(&users)

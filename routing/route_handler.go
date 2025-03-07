@@ -67,6 +67,13 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		user.Role = "user" // just to make sure
 	}
 
+	//Set default values
+	cfg := settings.GetConfig()
+	user.HTTPProtocol = cfg.Protocols.HTTP
+	user.HTTPSProtocol = cfg.Protocols.HTTPS
+	user.SOCKS4Protocol = cfg.Protocols.Socks4
+	user.SOCKS5Protocol = cfg.Protocols.Socks5
+
 	// Save user to the database
 	if err = database.DB.Create(&user).Error; err != nil {
 		http.Error(w, "Failed to create user", http.StatusInternalServerError)
@@ -150,17 +157,13 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 
 	proxyList := helper.ParseTextToProxies(mergedContent)
 
-	log.Infof("Parsing finished")
-
 	proxyList, err = database.InsertAndGetProxies(proxyList, userID)
 	if err != nil {
 		log.Error("Could not add proxies to database", "error", err.Error())
 		http.Error(w, "Could not add proxies to database", http.StatusInternalServerError)
 		return
 	}
-	log.Infof("Insert finished")
 	redis_queue.PublicProxyQueue.AddToQueue(proxyList)
-	log.Infof("Queue finished")
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]int{"proxyCount": len(proxyList)})
@@ -181,7 +184,7 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 
 	settings.SetConfig(newConfig)
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Configuration updated successfully"))
+	json.NewEncoder(w).Encode(map[string]string{"message": "Configuration updated successfully"})
 }
 
 func getProxyPage(w http.ResponseWriter, r *http.Request) {
@@ -211,4 +214,8 @@ func getProxyCount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(database.GetAllProxyCountOfUser(userID))
+}
+
+func getGlobalSettings(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(settings.GetConfig())
 }
