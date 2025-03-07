@@ -3,6 +3,7 @@ package database
 import (
 	"gorm.io/gorm/clause"
 	"magpie/models"
+	"magpie/models/routeModels"
 	"time"
 )
 
@@ -80,4 +81,23 @@ func GetAllUserJudgeRelations() ([]models.UserJudge, []models.JudgeWithRegex) {
 	}
 
 	return userJudges, judgesWithRegex
+}
+
+func UpdateUserSettings(userid uint, settings routeModels.UserSettings) error {
+	updates := map[string]interface{}{
+		"HTTPProtocol":     settings.HTTPProtocol,
+		"HTTPSProtocol":    settings.HTTPSProtocol,
+		"SOCKS4Protocol":   settings.SOCKS4Protocol,
+		"SOCKS5Protocol":   settings.SOCKS5Protocol,
+		"Timeout":          settings.Timeout,
+		"Retries":          settings.Retries,
+		"UseHttpsForSocks": settings.UseHttpsForSocks,
+	}
+
+	result := DB.Model(&models.User{}).Where("id = ?", userid).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+
+	return nil
 }

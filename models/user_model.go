@@ -29,11 +29,12 @@ type User struct {
 
 func (u *User) ToUserSettings() routeModels.UserSettings {
 	return routeModels.UserSettings{
-		HTTPProtocol:   u.HTTPProtocol,
-		HTTPSProtocol:  u.HTTPSProtocol,
-		SOCKS4Protocol: u.SOCKS4Protocol,
-		SOCKS5Protocol: u.SOCKS5Protocol,
-		Timeout:        u.Timeout,
-		Retries:        u.Retries,
+		HTTPProtocol:     u.HTTPProtocol,
+		HTTPSProtocol:    u.HTTPSProtocol,
+		SOCKS4Protocol:   u.SOCKS4Protocol,
+		SOCKS5Protocol:   u.SOCKS5Protocol,
+		Timeout:          u.Timeout,
+		Retries:          u.Retries,
+		UseHttpsForSocks: u.UseHttpsForSocks,
 	}
 }
