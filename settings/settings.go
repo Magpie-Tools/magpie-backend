@@ -135,7 +135,7 @@ func SetConfig(newConfig Config) {
 		return
 	}
 	SetBetweenTime()
-	log.Debug("Configuration updated and written to file successfully")
+	log.Debug("Default Configuration updated and written to file successfully")
 }
 
 func GetConfig() Config {
