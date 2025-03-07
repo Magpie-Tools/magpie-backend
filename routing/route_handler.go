@@ -73,6 +73,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 	user.HTTPSProtocol = cfg.Protocols.HTTPS
 	user.SOCKS4Protocol = cfg.Protocols.Socks4
 	user.SOCKS5Protocol = cfg.Protocols.Socks5
+	user.UseHttpsForSocks = cfg.Checker.UseHttpsForSocks
 
 	// Save user to the database
 	if err = database.DB.Create(&user).Error; err != nil {
