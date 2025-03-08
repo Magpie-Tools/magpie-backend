@@ -38,3 +38,22 @@ func (u *User) ToUserSettings() routeModels.UserSettings {
 		UseHttpsForSocks: u.UseHttpsForSocks,
 	}
 }
+
+func (u *User) GetProtocolMap() map[string]int {
+	protocols := make(map[string]int)
+
+	if u.HTTPProtocol {
+		protocols["http"] = 1
+	}
+	if u.HTTPSProtocol {
+		protocols["https"] = 2
+	}
+	if u.SOCKS4Protocol {
+		protocols["socks4"] = 3
+	}
+	if u.SOCKS5Protocol {
+		protocols["socks5"] = 4
+	}
+
+	return protocols
+}

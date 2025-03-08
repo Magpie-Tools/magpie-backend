@@ -5,7 +5,8 @@ import "time"
 type ProxyStatistic struct {
 	ID            uint64 `gorm:"primaryKey;autoIncrement"`
 	Alive         bool   `gorm:"not null"`
-	ResponseTime  int16  `gorm:"not null"`         // Milliseconds
+	Attempt       uint8  `gorm:"not null"`
+	ResponseTime  uint16 `gorm:"not null"`         // Milliseconds
 	Country       string `gorm:"size:2;not null"`  // ISO 3166-1 alpha-2
 	EstimatedType string `gorm:"size:20;not null"` // ISP, Datacenter, Residential
 

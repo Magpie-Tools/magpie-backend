@@ -12,7 +12,7 @@ import (
 )
 
 // ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
-func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol string, timeout uint32) (string, error) {
+func ProxyCheckRequest(proxyToCheck models.Proxy, judge *models.Judge, protocol string, timeout uint16) (string, error) {
 	transport, err := helper.CreateTransport(proxyToCheck, judge, protocol)
 	if err != nil {
 		return "Failed to create transport", err

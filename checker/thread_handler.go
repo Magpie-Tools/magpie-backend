@@ -100,7 +100,6 @@ func work() {
 				continue
 			}
 			ip := proxy.GetIp()
-			protocolsToCheck := settings.GetProtocolsToCheck()
 
 			allJudges := make(map[string]struct {
 				judge      *models.Judge
@@ -109,8 +108,19 @@ func work() {
 				protocolId int
 			})
 
+			var maxTimeout uint16 = 0
+			var maxRetries uint8 = 0
+
 			for _, user := range proxy.Users {
-				for protocol, protocolId := range protocolsToCheck {
+
+				if user.Timeout > maxTimeout {
+					maxTimeout = user.Timeout
+				}
+				if user.Retries > maxRetries {
+					maxRetries = user.Retries
+				}
+
+				for protocol, protocolId := range user.GetProtocolMap() {
 					var (
 						nextJudge *models.Judge
 						regex     string
@@ -135,11 +145,12 @@ func work() {
 			}
 
 			for _, item := range allJudges {
-				html, err, responseTime := CheckProxyWithRetries(proxy, item.judge, item.protocol, item.regex)
+				html, err, responseTime, attempt := CheckProxyWithRetries(proxy, item.judge, item.protocol, item.regex, maxTimeout, maxRetries)
 
 				statistic := models.ProxyStatistic{
 					Alive:         false,
-					ResponseTime:  int16(responseTime),
+					ResponseTime:  uint16(responseTime),
+					Attempt:       attempt,
 					Country:       database.GetCountryCode(ip),
 					EstimatedType: database.DetermineProxyType(ip),
 					ProxyID:       proxy.ID,
@@ -162,25 +173,22 @@ func work() {
 	}
 }
 
-func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, regex string) (string, error, int64) {
-	cfg := settings.GetConfig()
-	retries := cfg.Checker.Retries
-
+func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, regex string, timeout uint16, retries uint8) (string, error, int64, uint8) {
 	var (
 		html         string
 		err          error
 		responseTime int64
 	)
 
-	for i := uint32(0); i < retries; i++ {
+	for i := uint8(0); i < retries; i++ {
 		timeStart := time.Now()
-		html, err = ProxyCheckRequest(proxy, judge, protocol, cfg.Checker.Timeout)
+		html, err = ProxyCheckRequest(proxy, judge, protocol, timeout)
 		responseTime = time.Since(timeStart).Milliseconds()
 
 		if err == nil && CheckForValidResponse(html, regex) {
-			return html, err, responseTime
+			return html, err, responseTime, i
 		}
 	}
 
-	return html, err, responseTime
+	return html, err, responseTime, retries
 }
