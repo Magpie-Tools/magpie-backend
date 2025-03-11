@@ -42,6 +42,7 @@ func Dispatcher() {
 			currentThreads.Add(^uint32(0)) // Decrement by 1
 		}
 
+		log.Info("Thread", "count", currentThreads.Load())
 		time.Sleep(15 * time.Second)
 	}
 }
@@ -65,15 +66,16 @@ func getAutoThreads(cfg settings.Config) uint32 {
 	perInstanceProxies := (totalProxies + int64(activeInstances) - 1) / int64(activeInstances)
 
 	checkingPeriodMs := settings.CalculateMillisecondsOfCheckingPeriod(cfg.Checker.CheckerTimer)
-	protocolsToCheck := settings.GetProtocolsToCheck()
-	protocolsCount := len(protocolsToCheck)
+	protocolsCount := 4
 	retries := cfg.Checker.Retries
 	timeoutMs := cfg.Checker.Timeout
 
 	numerator := uint64(perInstanceProxies) * uint64(protocolsCount) * uint64(retries+1) * uint64(timeoutMs)
 	if checkingPeriodMs == 0 {
-		checkingPeriodMs = 1
+		log.Warn("Checking Period is set to 0 Milliseconds. Setting it to 1 Day automatically")
+		checkingPeriodMs = 86400000
 	}
+
 	requiredThreads := (numerator + checkingPeriodMs - 1) / checkingPeriodMs
 
 	if requiredThreads == 0 && perInstanceProxies > 0 {
@@ -101,18 +103,18 @@ func work() {
 			}
 			ip := proxy.GetIp()
 
-			allJudges := make(map[string]struct {
-				judge      *models.Judge
-				regex      string
-				protocol   string
-				protocolId int
+			// Group judge requests by judge ID and protocol
+			judgeRequests := make(map[string]struct {
+				judge        *models.Judge
+				protocol     string
+				regexToProto map[string]int // Maps regex to protocolId
 			})
 
 			var maxTimeout uint16 = 0
 			var maxRetries uint8 = 0
 
+			// Prefetch data
 			for _, user := range proxy.Users {
-
 				if user.Timeout > maxTimeout {
 					maxTimeout = user.Timeout
 				}
@@ -122,49 +124,71 @@ func work() {
 
 				for protocol, protocolId := range user.GetProtocolMap() {
 					var (
-						nextJudge *models.Judge
-						regex     string
+						nextJudge       *models.Judge
+						regex           string
+						requestProtocol string
 					)
+
+					// Determine which protocol to use for request
 					if protocolId > 2 { // Socks protocol
 						if user.UseHttpsForSocks {
-							nextJudge, regex = judges.GetNextJudge(user.ID, "https")
+							requestProtocol = "https"
 						} else {
-							nextJudge, regex = judges.GetNextJudge(user.ID, "http")
+							requestProtocol = "http"
 						}
 					} else {
-						nextJudge, regex = judges.GetNextJudge(user.ID, protocol)
+						requestProtocol = protocol
 					}
 
-					allJudges[strconv.Itoa(int(nextJudge.ID))+regex] = struct {
-						judge      *models.Judge
-						regex      string
-						protocol   string
-						protocolId int
-					}{judge: nextJudge, regex: regex, protocol: protocol, protocolId: protocolId}
+					nextJudge, regex = judges.GetNextJudge(user.ID, requestProtocol)
+
+					// Create a unique key for each judge+request_protocol combination
+					judgeKey := strconv.Itoa(int(nextJudge.ID)) + "_" + requestProtocol
+
+					if existingRequest, found := judgeRequests[judgeKey]; found {
+						// If we already plan to check this judge with this protocol, just add the regex
+						existingRequest.regexToProto[regex] = protocolId
+						judgeRequests[judgeKey] = existingRequest
+					} else {
+						// First time seeing this judge+protocol, create new entry
+						judgeRequests[judgeKey] = struct {
+							judge        *models.Judge
+							protocol     string
+							regexToProto map[string]int
+						}{
+							judge:        nextJudge,
+							protocol:     requestProtocol,
+							regexToProto: map[string]int{regex: protocolId},
+						}
+					}
 				}
 			}
 
-			for _, item := range allJudges {
-				html, err, responseTime, attempt := CheckProxyWithRetries(proxy, item.judge, item.protocol, item.regex, maxTimeout, maxRetries)
+			// Now make one request per judge/protocol and check all relevant regexes
+			for _, item := range judgeRequests {
+				html, err, responseTime, attempt := CheckProxyWithRetries(proxy, item.judge, item.protocol, maxTimeout, maxRetries)
 
-				statistic := models.ProxyStatistic{
-					Alive:         false,
-					ResponseTime:  uint16(responseTime),
-					Attempt:       attempt,
-					Country:       database.GetCountryCode(ip),
-					EstimatedType: database.DetermineProxyType(ip),
-					ProxyID:       proxy.ID,
-					ProtocolID:    item.protocolId,
-					JudgeID:       item.judge.ID,
+				// Process each regex against the response
+				for regex, protocolId := range item.regexToProto {
+					statistic := models.ProxyStatistic{
+						Alive:         false,
+						ResponseTime:  uint16(responseTime),
+						Attempt:       attempt,
+						Country:       database.GetCountryCode(ip),
+						EstimatedType: database.DetermineProxyType(ip),
+						ProxyID:       proxy.ID,
+						ProtocolID:    protocolId,
+						JudgeID:       item.judge.ID,
+					}
+
+					if err == nil && CheckForValidResponse(html, regex) {
+						lvl := helper.GetProxyLevel(html)
+						statistic.LevelID = &lvl
+						statistic.Alive = true
+					}
+
+					database.AddProxyStatistic(statistic)
 				}
-
-				if err == nil {
-					lvl := helper.GetProxyLevel(html)
-					statistic.LevelID = &lvl
-					statistic.Alive = true
-				}
-
-				database.AddProxyStatistic(statistic)
 			}
 
 			// Requeue the proxy for the next check
@@ -173,7 +197,7 @@ func work() {
 	}
 }
 
-func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, regex string, timeout uint16, retries uint8) (string, error, int64, uint8) {
+func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol string, timeout uint16, retries uint8) (string, error, int64, uint8) {
 	var (
 		html         string
 		err          error
@@ -185,7 +209,7 @@ func CheckProxyWithRetries(proxy models.Proxy, judge *models.Judge, protocol, re
 		html, err = ProxyCheckRequest(proxy, judge, protocol, timeout)
 		responseTime = time.Since(timeStart).Milliseconds()
 
-		if err == nil && CheckForValidResponse(html, regex) {
+		if err == nil {
 			return html, err, responseTime, i
 		}
 	}
