@@ -16,8 +16,9 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := database.GetUserFromId(userID)
+	judges := database.GetUserJudges(userID)
 
-	json.NewEncoder(w).Encode(user.ToUserSettings())
+	json.NewEncoder(w).Encode(user.ToUserSettings(judges))
 }
 
 func saveUserSettings(w http.ResponseWriter, r *http.Request) {

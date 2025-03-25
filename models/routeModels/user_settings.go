@@ -8,4 +8,6 @@ type UserSettings struct {
 	Timeout          uint16 `json:"timeout"`
 	Retries          uint8  `json:"retries"`
 	UseHttpsForSocks bool   `gorm:"not null;default:true"`
+
+	SimpleUserJudges []SimpleUserJudge `json:"judges"`
 }

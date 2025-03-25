@@ -101,3 +101,17 @@ func UpdateUserSettings(userid uint, settings routeModels.UserSettings) error {
 
 	return nil
 }
+
+func GetUserJudges(userid uint) []routeModels.SimpleUserJudge {
+	var results []routeModels.SimpleUserJudge
+
+	if err := DB.Table("user_judges").
+		Select("judges.full_string AS Url, user_judges.regex AS Regex").
+		Joins("JOIN judges ON user_judges.judge_id = judges.id").
+		Where("user_judges.user_id = ?", userid).
+		Scan(&results).Error; err != nil {
+		return nil
+	}
+
+	return results
+}

@@ -1,6 +1,8 @@
 package models
 
-import "time"
+import (
+	"time"
+)
 
 type UserJudge struct {
 	UserID    uint      `gorm:"primaryKey"`
