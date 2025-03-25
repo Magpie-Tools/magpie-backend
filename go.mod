@@ -9,7 +9,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/joho/godotenv v1.5.1
 	github.com/oschwald/geoip2-golang v1.11.0
-	github.com/redis/go-redis/v9 v9.7.1
+	github.com/redis/go-redis/v9 v9.7.3
 	golang.org/x/crypto v0.35.0
 	golang.org/x/net v0.36.0
 	golang.org/x/sync v0.11.0
