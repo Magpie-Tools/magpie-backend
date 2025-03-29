@@ -221,7 +221,8 @@ func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
 
 	DB.Model(&models.Proxy{}).
 		Select(
-			"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4) AS ip, "+
+			"proxies.id AS id, "+
+				"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4) AS ip, "+
 				"proxies.port AS port, "+
 				"COALESCE(ps.estimated_type, 'N/A') AS estimated_type, "+
 				"COALESCE(ps.response_time, 0) AS response_time, "+
@@ -241,4 +242,8 @@ func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
 		Scan(&results)
 
 	return results
+}
+
+func DeleteProxyRelation(userId uint, proxies []int) {
+	DB.Where("proxy_id IN (?)", proxies).Where("user_id = (?)", userId).Delete(&models.UserProxy{})
 }

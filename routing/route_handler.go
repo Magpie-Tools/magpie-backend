@@ -217,6 +217,25 @@ func getProxyCount(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(database.GetAllProxyCountOfUser(userID))
 }
 
+func deleteProxies(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(r)
+	if userErr != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var proxies []int
+
+	if err := json.NewDecoder(r.Body).Decode(&proxies); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	database.DeleteProxyRelation(userID, proxies)
+
+	json.NewEncoder(w).Encode("Proxies deleted successfully")
+}
+
 func getGlobalSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(settings.GetConfig())
 }

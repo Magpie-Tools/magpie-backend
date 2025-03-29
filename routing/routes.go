@@ -35,6 +35,8 @@ func OpenRoutes(port int) {
 
 	router.Handle("GET /getProxyCount", authorization.RequireAuth(http.HandlerFunc(getProxyCount)))
 	router.Handle("GET /getProxyPage/{page}", authorization.RequireAuth(http.HandlerFunc(getProxyPage)))
+	router.Handle("DELETE /proxies", authorization.RequireAuth(http.HandlerFunc(deleteProxies)))
+
 	router.Handle("GET /user/settings", authorization.RequireAuth(http.HandlerFunc(getUserSettings)))
 	router.Handle("POST /user/settings", authorization.RequireAuth(http.HandlerFunc(saveUserSettings)))
 	router.Handle("GET /user/role", authorization.RequireAuth(http.HandlerFunc(getUserRole)))
