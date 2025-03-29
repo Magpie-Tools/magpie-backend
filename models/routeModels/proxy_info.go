@@ -4,6 +4,7 @@ import "time"
 
 type ProxyInfo struct {
 	IP             string    `json:"ip"`
+	Port           int16     `json:"port"`
 	EstimatedType  string    `json:"estimated_type"`
 	ResponseTime   int16     `json:"response_time"`
 	Country        string    `json:"country"`

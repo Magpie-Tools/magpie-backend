@@ -23,7 +23,7 @@ func init() {
 	browser = rod.New().MustConnect()
 
 	// Initialize the page pool
-	pagePool = make(chan *rod.Page, 1000) // Buffer size large enough for maximum expected usage
+	pagePool = make(chan *rod.Page, 2000) // Buffer size large enough for maximum expected usage
 
 	// Start the page pool manager
 	go managePagePool()

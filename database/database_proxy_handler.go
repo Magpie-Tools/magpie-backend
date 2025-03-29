@@ -221,7 +221,8 @@ func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
 
 	DB.Model(&models.Proxy{}).
 		Select(
-			"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4, ':', proxies.port) AS ip, "+
+			"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4) AS ip, "+
+				"proxies.port AS port, "+
 				"COALESCE(ps.estimated_type, 'N/A') AS estimated_type, "+
 				"COALESCE(ps.response_time, 0) AS response_time, "+
 				"COALESCE(ps.country, 'N/A') AS country, "+

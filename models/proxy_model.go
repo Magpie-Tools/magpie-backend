@@ -16,7 +16,7 @@ type Proxy struct {
 	IP2      uint8  `gorm:"not null;index:idx_proxy_addr,priority:2"`
 	IP3      uint8  `gorm:"not null;index:idx_proxy_addr,priority:3"`
 	IP4      uint8  `gorm:"not null;index:idx_proxy_addr,priority:4"`
-	Port     int    `gorm:"not null;index:idx_proxy_addr,priority:5"`
+	Port     uint16 `gorm:"not null;index:idx_proxy_addr,priority:5"`
 	Username string `gorm:"default:''"`
 	Password string `gorm:"default:''"`
 

@@ -35,7 +35,7 @@ func ParseTextToProxies(text string) []models.Proxy {
 		}
 
 		proxy := models.Proxy{
-			Port: port,
+			Port: uint16(port),
 		}
 
 		err = proxy.SetIP(ip)
