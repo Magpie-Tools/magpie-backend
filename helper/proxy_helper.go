@@ -1,6 +1,7 @@
 package helper
 
 import (
+	"fmt"
 	"magpie/models"
 	"magpie/settings"
 	"net"
@@ -93,4 +94,43 @@ func GetProxyLevel(html string) int {
 
 	//Proxy is elite
 	return 1
+}
+
+// FormatProxies formats the list of proxies according to the specified output format
+func FormatProxies(proxies []models.Proxy, outputFormat string) string {
+	var result strings.Builder
+
+	for _, proxy := range proxies {
+		line := outputFormat
+
+		// Get the latest statistics for the proxy
+		var latestStat models.ProxyStatistic
+		if len(proxy.Statistics) > 0 {
+			latestStat = proxy.Statistics[0]
+		}
+
+		// Replace keywords with actual values
+		line = strings.ReplaceAll(line, "protocol", getProtocolName(&latestStat))
+		line = strings.ReplaceAll(line, "ip", proxy.GetIp())
+		line = strings.ReplaceAll(line, "port", fmt.Sprintf("%d", proxy.Port))
+		line = strings.ReplaceAll(line, "username", proxy.Username)
+		line = strings.ReplaceAll(line, "password", proxy.Password)
+		line = strings.ReplaceAll(line, "country", latestStat.Country)
+		line = strings.ReplaceAll(line, "alive", fmt.Sprintf("%t", latestStat.Alive))
+		line = strings.ReplaceAll(line, "type", latestStat.EstimatedType)
+		line = strings.ReplaceAll(line, "time", fmt.Sprintf("%d", latestStat.ResponseTime))
+
+		result.WriteString(line)
+		result.WriteString("\n")
+	}
+
+	return result.String()
+}
+
+// Helper function to get protocol name from statistics
+func getProtocolName(stat *models.ProxyStatistic) string {
+	if stat == nil || stat.Protocol.Name == "" {
+		return ""
+	}
+	return stat.Protocol.Name
 }

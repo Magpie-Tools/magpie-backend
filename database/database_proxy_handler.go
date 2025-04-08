@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm/clause"
 	"magpie/models"
 	"magpie/models/routeModels"
+	"strings"
 )
 
 const (
@@ -246,4 +247,102 @@ func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
 
 func DeleteProxyRelation(userId uint, proxies []int) {
 	DB.Where("proxy_id IN (?)", proxies).Where("user_id = (?)", userId).Delete(&models.UserProxy{})
+}
+
+// GetProxiesForExport retrieves proxies from the database based on export settings
+func GetProxiesForExport(userID uint, settings routeModels.ExportSettings) ([]models.Proxy, error) {
+	var proxies []models.Proxy
+
+	// Create a base query that applies proxy status regardless of filter setting
+	baseQuery := DB.Preload("Statistics", func(db *gorm.DB) *gorm.DB {
+		return db.Order("created_at DESC").Limit(1)
+	}).Preload("Statistics.Protocol").
+		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
+		Where("user_proxies.user_id = ?", userID)
+
+	// Apply proxy status filter regardless of the main filter flag
+	if settings.ProxyStatus == "alive" || settings.ProxyStatus == "dead" {
+		isAlive := settings.ProxyStatus == "alive"
+		baseQuery = baseQuery.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id").
+			Where("proxy_statistics.alive = ?", isAlive).
+			Group("proxies.id, proxy_statistics.id")
+
+		// For dead/alive status, make sure we're getting the latest statistic that matches the status
+		baseQuery = baseQuery.Where("proxy_statistics.created_at = (SELECT MAX(ps.created_at) FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id)")
+	}
+
+	// Apply specific proxy IDs if provided
+	if len(settings.Proxies) > 0 {
+		baseQuery = baseQuery.Where("proxies.id IN ?", settings.Proxies)
+	}
+
+	// If filter is enabled, apply additional filters
+	if settings.Filter {
+		return applyAdditionalFilters(baseQuery, settings)
+	} else {
+		// Just use the base query with status filter
+		err := baseQuery.Find(&proxies).Error
+		return proxies, err
+	}
+}
+
+// applyAdditionalFilters applies additional filters based on settings
+func applyAdditionalFilters(query *gorm.DB, settings routeModels.ExportSettings) ([]models.Proxy, error) {
+	var proxies []models.Proxy
+
+	// Apply protocol filters
+	if settings.Http || settings.Https || settings.Socks4 || settings.Socks5 {
+		var protocols []string
+		if settings.Http {
+			protocols = append(protocols, "http")
+		}
+		if settings.Https {
+			protocols = append(protocols, "https")
+		}
+		if settings.Socks4 {
+			protocols = append(protocols, "socks4")
+		}
+		if settings.Socks5 {
+			protocols = append(protocols, "socks5")
+		}
+
+		// Make sure we have the proxy_statistics join
+		if !strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
+			query = query.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id")
+		}
+
+		query = query.Joins("JOIN protocols ON proxy_statistics.protocol_id = protocols.id").
+			Where("protocols.name IN ?", protocols)
+	}
+
+	// Apply response time filter
+	if settings.MaxTimeout > 0 {
+		// Make sure we have the proxy_statistics join
+		if !strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
+			query = query.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id")
+		}
+		query = query.Where("proxy_statistics.response_time <= ?", settings.MaxTimeout)
+	}
+
+	// Apply retry count filter
+	if settings.MaxRetries > 0 {
+		// Make sure we have the proxy_statistics join
+		if !strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
+			query = query.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id")
+		}
+		query = query.Where("proxy_statistics.attempt <= ?", settings.MaxRetries)
+	}
+
+	// Ensure proper grouping for the query
+	if strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
+		query = query.Group("proxies.id, proxy_statistics.id")
+
+		// Add protocols to grouping if they're joined
+		if strings.Contains(query.Statement.SQL.String(), "JOIN protocols") {
+			query = query.Group("proxies.id, proxy_statistics.id, protocols.id")
+		}
+	}
+
+	err := query.Find(&proxies).Error
+	return proxies, err
 }
