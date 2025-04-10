@@ -249,38 +249,31 @@ func DeleteProxyRelation(userId uint, proxies []int) {
 	DB.Where("proxy_id IN (?)", proxies).Where("user_id = (?)", userId).Delete(&models.UserProxy{})
 }
 
-// GetProxiesForExport retrieves proxies from the database based on export settings
 func GetProxiesForExport(userID uint, settings routeModels.ExportSettings) ([]models.Proxy, error) {
 	var proxies []models.Proxy
 
-	// Create a base query that applies proxy status regardless of filter setting
 	baseQuery := DB.Preload("Statistics", func(db *gorm.DB) *gorm.DB {
-		return db.Order("created_at DESC").Limit(1)
+		return db.Order("created_at DESC")
 	}).Preload("Statistics.Protocol").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
 		Where("user_proxies.user_id = ?", userID)
 
-	// Apply proxy status filter regardless of the main filter flag
 	if settings.ProxyStatus == "alive" || settings.ProxyStatus == "dead" {
 		isAlive := settings.ProxyStatus == "alive"
-		baseQuery = baseQuery.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id").
-			Where("proxy_statistics.alive = ?", isAlive).
-			Group("proxies.id, proxy_statistics.id")
-
-		// For dead/alive status, make sure we're getting the latest statistic that matches the status
-		baseQuery = baseQuery.Where("proxy_statistics.created_at = (SELECT MAX(ps.created_at) FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id)")
+		// Use subquery to check latest proxy_statistics.alive status
+		baseQuery = baseQuery.Where(
+			"(SELECT ps.alive FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id ORDER BY ps.created_at DESC LIMIT 1) = ?",
+			isAlive,
+		)
 	}
 
-	// Apply specific proxy IDs if provided
 	if len(settings.Proxies) > 0 {
 		baseQuery = baseQuery.Where("proxies.id IN ?", settings.Proxies)
 	}
 
-	// If filter is enabled, apply additional filters
 	if settings.Filter {
 		return applyAdditionalFilters(baseQuery, settings)
 	} else {
-		// Just use the base query with status filter
 		err := baseQuery.Find(&proxies).Error
 		return proxies, err
 	}
