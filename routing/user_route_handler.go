@@ -3,6 +3,7 @@ package routing
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/charmbracelet/log"
 	"magpie/authorization"
 	"magpie/database"
 	"magpie/helper"
@@ -68,6 +69,8 @@ func exportProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Info(len(settings.Proxies))
+
 	proxies, err := database.GetProxiesForExport(userID, settings)
 
 	if err != nil {
@@ -77,8 +80,7 @@ func exportProxies(w http.ResponseWriter, r *http.Request) {
 
 	formattedProxies := helper.FormatProxies(proxies, settings.OutputFormat)
 
-	// Write the formatted proxies to the response
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Disposition", "attachment; filename=proxies.txt")
-	_, _ = w.Write([]byte(formattedProxies))
+	json.NewEncoder(w).Encode(formattedProxies)
 }
