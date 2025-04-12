@@ -48,7 +48,7 @@ type RedisProxyQueue struct {
 var PublicProxyQueue RedisProxyQueue
 
 func init() {
-	ppq, err := NewRedisProxyQueue(helper.GetEnv("redisUrl", "redis://localhost:6379"))
+	ppq, err := NewRedisProxyQueue(helper.GetEnv("redisUrl", "redis://localhost:8946"))
 	if err != nil {
 		log.Fatal("Could not connect to redis for proxy queue", "error", err)
 	}

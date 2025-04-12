@@ -16,7 +16,7 @@ services:
     image: redis:latest
     container_name: magpie_redis
     ports:
-      - "6379:6379"
+      - "8946:6379"
     restart: unless-stopped
 
 
