@@ -6,7 +6,6 @@ import (
 	"gorm.io/gorm/clause"
 	"magpie/models"
 	"magpie/models/routeModels"
-	"strings"
 )
 
 const (
@@ -283,7 +282,13 @@ func GetProxiesForExport(userID uint, settings routeModels.ExportSettings) ([]mo
 func applyAdditionalFilters(query *gorm.DB, settings routeModels.ExportSettings) ([]models.Proxy, error) {
 	var proxies []models.Proxy
 
-	// Apply protocol filters
+	// If any of the filters require proxy_statistics, join it once.
+	needsProxyStatistics := settings.Http || settings.Https || settings.Socks4 || settings.Socks5 || settings.MaxTimeout > 0 || settings.MaxRetries > 0
+	if needsProxyStatistics {
+		query = query.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id")
+	}
+
+	// Apply protocol filters using the protocols join if any protocols are selected.
 	if settings.Http || settings.Https || settings.Socks4 || settings.Socks5 {
 		var protocols []string
 		if settings.Http {
@@ -298,43 +303,31 @@ func applyAdditionalFilters(query *gorm.DB, settings routeModels.ExportSettings)
 		if settings.Socks5 {
 			protocols = append(protocols, "socks5")
 		}
-
-		// Make sure we have the proxy_statistics join
-		if !strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
-			query = query.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id")
-		}
-
+		// Add the join for protocols once.
 		query = query.Joins("JOIN protocols ON proxy_statistics.protocol_id = protocols.id").
 			Where("protocols.name IN ?", protocols)
 	}
 
-	// Apply response time filter
+	// Apply response time filter.
 	if settings.MaxTimeout > 0 {
-		// Make sure we have the proxy_statistics join
-		if !strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
-			query = query.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id")
-		}
 		query = query.Where("proxy_statistics.response_time <= ?", settings.MaxTimeout)
 	}
 
-	// Apply retry count filter
+	// Apply retry count filter.
 	if settings.MaxRetries > 0 {
-		// Make sure we have the proxy_statistics join
-		if !strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
-			query = query.Joins("JOIN proxy_statistics ON proxies.id = proxy_statistics.proxy_id")
-		}
 		query = query.Where("proxy_statistics.attempt <= ?", settings.MaxRetries)
 	}
 
-	// Ensure proper grouping for the query
-	if strings.Contains(query.Statement.SQL.String(), "JOIN proxy_statistics") {
-		query = query.Group("proxies.id, proxy_statistics.id")
-
-		// Add protocols to grouping if they're joined
-		if strings.Contains(query.Statement.SQL.String(), "JOIN protocols") {
-			query = query.Group("proxies.id, proxy_statistics.id, protocols.id")
-		}
+	// Group the results to avoid duplicates.
+	// In many cases, grouping by the primary key (proxies.id) is sufficient.
+	// If you joined protocols and proxy_statistics then you may need to group by those IDs as well.
+	groupBy := "proxies.id"
+	if settings.Http || settings.Https || settings.Socks4 || settings.Socks5 {
+		groupBy += ", protocols.id"
 	}
+	// Optionally include the proxy_statistics.id if needed to ensure uniqueness.
+	groupBy += ", proxy_statistics.id"
+	query = query.Group(groupBy)
 
 	err := query.Find(&proxies).Error
 	return proxies, err

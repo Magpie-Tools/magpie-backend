@@ -3,7 +3,6 @@ package routing
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/charmbracelet/log"
 	"magpie/authorization"
 	"magpie/database"
 	"magpie/helper"
@@ -68,8 +67,6 @@ func exportProxies(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-
-	log.Info(len(settings.Proxies))
 
 	proxies, err := database.GetProxiesForExport(userID, settings)
 
