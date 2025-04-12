@@ -48,7 +48,7 @@ type RedisScrapeSiteQueue struct {
 var PublicScrapeSiteQueue RedisScrapeSiteQueue
 
 func init() {
-	sssq, err := NewRedisScrapeSiteQueue(helper.GetEnv("redisUrl", "redis://host.docker.internal:6379"))
+	sssq, err := NewRedisScrapeSiteQueue(helper.GetEnv("redisUrl", "redis://host.docker.internal:8946"))
 	if err != nil {
 		log.Fatal("Could not connect to redis for scrape site queue", "error", err)
 	}

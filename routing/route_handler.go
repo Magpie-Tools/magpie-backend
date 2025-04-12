@@ -119,7 +119,7 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
+	json.NewEncoder(w).Encode(map[string]string{"token": token, "role": user.Role})
 }
 
 func addProxies(w http.ResponseWriter, r *http.Request) {
