@@ -10,4 +10,6 @@ type UserSettings struct {
 	UseHttpsForSocks bool   `gorm:"not null;default:true"`
 
 	SimpleUserJudges []SimpleUserJudge `json:"judges"`
+
+	ScrapingSources []string `json:"scraping_sources"`
 }

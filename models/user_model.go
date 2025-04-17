@@ -27,7 +27,7 @@ type User struct {
 	CreatedAt   time.Time    `gorm:"autoCreateTime"`
 }
 
-func (u *User) ToUserSettings(simpleUserJudges []routeModels.SimpleUserJudge) routeModels.UserSettings {
+func (u *User) ToUserSettings(simpleUserJudges []routeModels.SimpleUserJudge, scrapingSources []string) routeModels.UserSettings {
 	return routeModels.UserSettings{
 		HTTPProtocol:     u.HTTPProtocol,
 		HTTPSProtocol:    u.HTTPSProtocol,
@@ -37,6 +37,7 @@ func (u *User) ToUserSettings(simpleUserJudges []routeModels.SimpleUserJudge) ro
 		Retries:          u.Retries,
 		UseHttpsForSocks: u.UseHttpsForSocks,
 		SimpleUserJudges: simpleUserJudges,
+		ScrapingSources:  scrapingSources,
 	}
 }
 

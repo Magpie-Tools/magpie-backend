@@ -19,8 +19,9 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 
 	user := database.GetUserFromId(userID)
 	judges := database.GetUserJudges(userID)
-
-	json.NewEncoder(w).Encode(user.ToUserSettings(judges))
+	scrapingSources := database.GetScrapingSourcesOfUsers(userID)
+	
+	json.NewEncoder(w).Encode(user.ToUserSettings(judges, scrapingSources))
 }
 
 func saveUserSettings(w http.ResponseWriter, r *http.Request) {
@@ -80,4 +81,25 @@ func exportProxies(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Disposition", "attachment; filename=proxies.txt")
 	json.NewEncoder(w).Encode(formattedProxies)
+}
+
+func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
+	userID, err := authorization.GetUserIDFromRequest(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var sources []string
+	if err = json.NewDecoder(r.Body).Decode(&sources); err != nil {
+		http.Error(w, "request body must be a JSON array of strings", http.StatusBadRequest)
+		return
+	}
+
+	if err = database.SaveScrapingSourcesOfUsers(int(userID), sources); err != nil {
+		http.Error(w, "could not save sources", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent) // 204
 }

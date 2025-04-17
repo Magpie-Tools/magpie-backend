@@ -13,7 +13,7 @@ import (
 var addDefaultJudgeMutex sync.Mutex
 
 // AddDefaultJudgesToUsers gets empty judges list of users and adds the default judges (from config) to the db
-// this is the ugliest function I have ever written
+// this is the ugliest function I have ever written. I really need to make this better
 func AddDefaultJudgesToUsers() {
 	addDefaultJudgeMutex.Lock()
 	defer addDefaultJudgeMutex.Unlock()
