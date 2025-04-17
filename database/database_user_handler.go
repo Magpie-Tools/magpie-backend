@@ -1,6 +1,7 @@
 package database
 
 import (
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"magpie/models"
 	"magpie/models/routeModels"
@@ -83,23 +84,62 @@ func GetAllUserJudgeRelations() ([]models.UserJudge, []models.JudgeWithRegex) {
 	return userJudges, judgesWithRegex
 }
 
-func UpdateUserSettings(userid uint, settings routeModels.UserSettings) error {
-	updates := map[string]interface{}{
-		"HTTPProtocol":     settings.HTTPProtocol,
-		"HTTPSProtocol":    settings.HTTPSProtocol,
-		"SOCKS4Protocol":   settings.SOCKS4Protocol,
-		"SOCKS5Protocol":   settings.SOCKS5Protocol,
-		"Timeout":          settings.Timeout,
-		"Retries":          settings.Retries,
-		"UseHttpsForSocks": settings.UseHttpsForSocks,
-	}
+func UpdateUserSettings(userID uint, settings routeModels.UserSettings) error {
+	// Wrap everything in a single transaction so either all changes
+	// happen or none do.
+	return DB.Transaction(func(tx *gorm.DB) error {
 
-	result := DB.Model(&models.User{}).Where("id = ?", userid).Updates(updates)
-	if result.Error != nil {
-		return result.Error
-	}
+		/* ─── 1.  Update primitive columns on the User row ─────────────────────── */
+		updates := map[string]interface{}{
+			"HTTPProtocol":     settings.HTTPProtocol,
+			"HTTPSProtocol":    settings.HTTPSProtocol,
+			"SOCKS4Protocol":   settings.SOCKS4Protocol,
+			"SOCKS5Protocol":   settings.SOCKS5Protocol,
+			"Timeout":          settings.Timeout,
+			"Retries":          settings.Retries,
+			"UseHttpsForSocks": settings.UseHttpsForSocks,
+		}
+		if err := tx.Model(&models.User{}).
+			Where("id = ?", userID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
 
-	return nil
+		keepIDs := make([]uint, 0, len(settings.SimpleUserJudges))
+
+		for _, s := range settings.SimpleUserJudges {
+			judge := models.Judge{FullString: s.Url}
+			if err := tx.
+				Clauses(clause.OnConflict{DoNothing: true}).
+				FirstOrCreate(&judge, judge).Error; err != nil {
+				return err
+			}
+
+			keepIDs = append(keepIDs, judge.ID)
+
+			uj := models.UserJudge{
+				UserID:  userID,
+				JudgeID: judge.ID,
+				Regex:   s.Regex,
+			}
+			if err := tx.
+				Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "user_id"}, {Name: "judge_id"}},
+					DoUpdates: clause.AssignmentColumns([]string{"regex"}),
+				}).
+				Create(&uj).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.
+			Where("user_id = ? AND judge_id NOT IN ?", userID, keepIDs).
+			Delete(&models.UserJudge{}).Error; err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 func GetUserJudges(userid uint) []routeModels.SimpleUserJudge {

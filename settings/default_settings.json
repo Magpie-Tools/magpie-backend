@@ -60,7 +60,13 @@
       "hours": 10,
       "minutes": 0,
       "seconds": 0
-    }
+    },
+
+    "scrape_sites": [
+      "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/http_proxies.txt",
+      "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/socks5_proxies.txt",
+      "https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/socks4_proxies.txt"
+    ]
   },
 
   "blacklist_sources": [

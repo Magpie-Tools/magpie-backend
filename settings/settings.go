@@ -41,6 +41,8 @@ type Config struct {
 		Timeout        uint32 `json:"timeout"`
 
 		ScraperTimer Timer `json:"scraper_timer"`
+
+		ScrapeSites []string `json:"scrape_sites"`
 	} `json:"scraper"`
 
 	BlacklistSources []string `json:"blacklist_sources"`
@@ -64,9 +66,8 @@ var (
 	//go:embed default_settings.json
 	defaultConfig []byte
 
-	configValue      atomic.Value
-	protocolsToCheck atomic.Value
-	currentIp        atomic.Value
+	configValue atomic.Value
+	currentIp   atomic.Value
 
 	InProductionMode bool
 )
@@ -74,7 +75,6 @@ var (
 func init() {
 	// Initialize configValue with a default Config instance
 	configValue.Store(Config{})
-	protocolsToCheck.Store(make(map[string]int, 4))
 	currentIp.Store("")
 }
 
@@ -113,7 +113,6 @@ func ReadSettings() {
 
 	// Store the new configuration atomically
 	configValue.Store(newConfig)
-	protocolsToCheck.Store(getProtocolsOfConfig(newConfig))
 
 	log.Debug("Settings file loaded successfully")
 }
@@ -153,10 +152,6 @@ func GetCurrentIp() string {
 
 func SetCurrentIp(ip string) {
 	currentIp.Store(ip)
-}
-
-func GetProtocolsToCheck() map[string]int {
-	return protocolsToCheck.Load().(map[string]int)
 }
 
 func getProtocolsOfConfig(cfg Config) map[string]int {
