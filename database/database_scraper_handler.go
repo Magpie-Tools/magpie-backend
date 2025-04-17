@@ -1,7 +1,6 @@
 package database
 
 import (
-	"errors"
 	"gorm.io/gorm"
 
 	"magpie/models"
@@ -23,10 +22,6 @@ func GetScrapingSourcesOfUsers(userID uint) []string {
 
 // SaveScrapingSourcesOfUsers replaces the user’s current list with `sources`.
 func SaveScrapingSourcesOfUsers(userID int, sources []string) error {
-	if len(sources) == 0 {
-		return errors.New("no sources provided")
-	}
-
 	return DB.Transaction(func(tx *gorm.DB) error {
 		// 1. Load / create every ScrapeSite referenced in `sources`
 		sites := make([]models.ScrapeSite, 0, len(sources))
