@@ -30,7 +30,7 @@ func OpenRoutes(port int) {
 	router := http.NewServeMux()
 	router.HandleFunc("POST /register", registerUser)
 	router.HandleFunc("POST /login", loginUser)
-	router.Handle("POST /saveSettings", authorization.RequireRole("admin")(http.HandlerFunc(saveSettings)))
+	router.Handle("POST /saveSettings", authorization.IsAdmin(http.HandlerFunc(saveSettings)))
 	router.Handle("POST /addProxies", authorization.RequireAuth(http.HandlerFunc(addProxies)))
 
 	router.Handle("GET /getProxyCount", authorization.RequireAuth(http.HandlerFunc(getProxyCount)))
