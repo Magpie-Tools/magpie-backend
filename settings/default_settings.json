@@ -50,7 +50,7 @@
   },
 
   "scraper": {
-    "dynamic_threads": false,
+    "dynamic_threads": true,
     "threads": 250,
     "retries": 2,
     "timeout": 7500,
