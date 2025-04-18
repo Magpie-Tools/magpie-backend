@@ -2,59 +2,161 @@ package scraper
 
 import (
 	"fmt"
+	"magpie/database"
+	"magpie/helper"
+	"magpie/models"
+	"math"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/stealth"
+	"magpie/scraper/redis_queue"
 	"magpie/settings"
 )
 
 var (
-	browser        *rod.Browser
-	pagePool       chan *rod.Page
-	currentPages   atomic.Int32
-	stopPageSignal = make(chan struct{})
+	/* ─────────────────────────────  thread control  ─────────────────────────── */
+	currentThreads atomic.Uint32
+	stopThread     = make(chan struct{}) // signals a worker to exit
+
+	/* ─────────────────────────────  page pool  ─────────────────────────────── */
+	browser      *rod.Browser
+	pagePool     chan *rod.Page
+	currentPages atomic.Int32
+	stopPage     = make(chan struct{}) // signals that a page should be closed
 )
 
+/*──────────────────────────────────────────────────────────────────────────────*/
+
 func init() {
-	// Launch the browser with default settings
 	browser = rod.New().MustConnect()
-
-	// Initialize the page pool
-	pagePool = make(chan *rod.Page, 2000) // Buffer size large enough for maximum expected usage
-
-	// Start the page pool manager
-	go managePagePool()
+	pagePool = make(chan *rod.Page, 2000) // hard cap – raise if you really need more
 }
 
-func managePagePool() {
+/*─────────────────────────────  dynamic dispatcher  ──────────────────────────*/
+
+func ThreadDispatcher() {
 	for {
 		cfg := settings.GetConfig()
 
-		targetPages := calculateRequiredPages(cfg)
+		var target uint32
+		if cfg.Scraper.DynamicThreads {
+			target = autoThreadCount(cfg)
+		} else {
+			target = cfg.Scraper.Threads
+		}
 
-		// Add pages if needed
+		/* spawn */
+		for currentThreads.Load() < target {
+			go scrapeWorker()
+			currentThreads.Add(1)
+		}
+
+		/* retire */
+		for currentThreads.Load() > target {
+			stopThread <- struct{}{}
+			currentThreads.Add(^uint32(0)) // decrement
+		}
+
+		log.Debug("scraper threads", "active", currentThreads.Load(), "target", target)
+		time.Sleep(15 * time.Second)
+	}
+}
+
+/*──────────────────────────────  worker goroutine  ───────────────────────────*/
+
+func scrapeWorker() {
+	for {
+		select {
+		case <-stopThread:
+			return
+		default:
+		}
+
+		site, due, err := redis_queue.PublicScrapeSiteQueue.GetNextScrapeSite()
+		if err != nil {
+			log.Error("pop scrape site", "err", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		cfg := settings.GetConfig()
+		timeout := time.Duration(cfg.Scraper.Timeout) * time.Millisecond
+
+		html, err := ScraperRequest(site.URL, timeout)
+		if err != nil {
+			log.Warn("scrape failed", "url", site.URL, "err", err)
+		} else {
+			go handleScrapedHTML(site, html) // do your parsing/storage elsewhere
+		}
+
+		if err := redis_queue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due); err != nil {
+			log.Error("requeue site", "err", err)
+		}
+	}
+}
+
+/*───────────────────────────────  auto‑sizing  ───────────────────────────────*/
+
+func autoThreadCount(cfg settings.Config) uint32 {
+	totalSites, err := redis_queue.PublicScrapeSiteQueue.GetScrapeSiteCount()
+	if err != nil {
+		log.Error("count sites", "err", err)
+		return 1
+	}
+
+	instances, err := redis_queue.PublicScrapeSiteQueue.GetActiveInstances()
+	if err != nil || instances == 0 {
+		instances = 1
+	}
+
+	perInstance := (totalSites + int64(instances) - 1) / int64(instances)
+
+	period := settings.CalculateMillisecondsOfCheckingPeriod(cfg.Scraper.ScraperTimer)
+	if period == 0 {
+		log.Warn("scraper period 0 → forcing 1 day")
+		period = 86_400_000
+	}
+
+	numerator := uint64(perInstance) * uint64(cfg.Scraper.Timeout) * uint64(cfg.Scraper.Retries+1)
+	threads := (numerator + period - 1) / period
+
+	switch {
+	case threads == 0 && perInstance > 0:
+		threads = 1
+	case threads > math.MaxUint32:
+		threads = math.MaxUint32
+	}
+	return uint32(threads)
+}
+
+/*──────────────────────────────  page‑pool logic  ────────────────────────────*/
+
+func ManagePagePool() {
+	for {
+		cfg := settings.GetConfig()
+		targetPages := calcRequiredPages(cfg)
+
+		/* add pages */
 		for currentPages.Load() < targetPages {
-			if err := addPageToPool(); err != nil {
-				log.Error("Failed to add page to pool", "error", err)
+			if err := addPage(); err != nil {
+				log.Error("add page", "err", err)
 				time.Sleep(1 * time.Second)
 				continue
 			}
 		}
 
-		// Remove pages if we have too many
+		/* shed pages */
 		for currentPages.Load() > targetPages {
 			select {
-			case page := <-pagePool:
-				page.MustClose()
+			case p := <-pagePool:
+				p.MustClose()
 				currentPages.Add(-1)
-			case stopPageSignal <- struct{}{}:
-				// Signal sent to reduce pages
 			default:
-				// If no pages are available in the pool right now, wait and try again
-				time.Sleep(100 * time.Millisecond)
+				stopPage <- struct{}{}
 			}
 		}
 
@@ -62,61 +164,70 @@ func managePagePool() {
 	}
 }
 
-func calculateRequiredPages(cfg settings.Config) int32 {
-	// You can adapt this to your specific needs based on:
-	// 1. Number of scraping targets
-	// 2. Frequency of scraping
-	// 3. Average scraping time
+func calcRequiredPages(cfg settings.Config) int32 {
+	count := uint64(1) // default
 
-	// Get metrics about your scraping workload
-	targetCount := getTargetCount()                                                                // Number of sites to scrape
-	scrapingIntervalMs := settings.CalculateMillisecondsOfCheckingPeriod(cfg.Scraper.ScraperTimer) // Time between scrapes
-	avgScrapingTimeMs := getAverageScrapingTime(cfg)                                               // Average time to complete a scrape
-
-	// Basic calculation: enough pages to handle all targets within the interval
-	requiredPages := (targetCount * avgScrapingTimeMs) / scrapingIntervalMs
-
-	// Ensure we have at least 1 page
-	if requiredPages < 1 && targetCount > 0 {
-		requiredPages = 1
+	if n, err := redis_queue.PublicScrapeSiteQueue.GetScrapeSiteCount(); err == nil {
+		count = uint64(n)
 	}
 
-	// Cap at some reasonable maximum
-	maxPages := 2000
-	if requiredPages > uint64(maxPages) {
-		requiredPages = uint64(maxPages)
+	interval := settings.CalculateMillisecondsOfCheckingPeriod(cfg.Scraper.ScraperTimer)
+	if interval == 0 {
+		interval = 86_400_000
 	}
+	avg := uint64(cfg.Scraper.Timeout * (cfg.Scraper.Retries + 1)) // ms
 
-	return int32(requiredPages)
+	required := (count * avg) / uint64(interval)
+	if required < 1 && count > 0 {
+		required = 1
+	}
+	if required > 2000 {
+		required = 2000
+	}
+	return int32(required)
 }
 
-// These functions would need to be implemented based on your specific needs
-func getTargetCount() uint64 {
-	// Return the number of sites you need to scrape
-	// Could come from a database, config, etc.
-	return 100 // Example value
-}
-
-func getAverageScrapingTime(cfg settings.Config) uint64 {
-	// Return the average time in ms it takes to scrape a site
-	// Could be calculated from historical data
-	return uint64(cfg.Scraper.Timeout * cfg.Scraper.Retries) // Example: 5 seconds
-}
-
-func addPageToPool() error {
-	page, err := stealth.Page(browser)
+func addPage() error {
+	p, err := stealth.Page(browser)
 	if err != nil {
-		return fmt.Errorf("failed to create stealth page: %w", err)
+		return fmt.Errorf("stealth page: %w", err)
 	}
-
 	select {
-	case pagePool <- page:
+	case pagePool <- p:
 		currentPages.Add(1)
 	default:
-		// If the channel is full, close the page
-		page.MustClose()
-		return fmt.Errorf("page pool is full")
+		p.MustClose()
+		return fmt.Errorf("pool full")
+	}
+	return nil
+}
+
+/*───────────────────────────────  helpers  ───────────────────────────────────*/
+
+func recyclePage(p *rod.Page) {
+	select {
+	case <-stopPage:
+		p.MustClose()
+		currentPages.Add(-1)
+	default:
+		if err := resetPage(p); err != nil {
+			p.MustClose()
+			_ = addPage()
+		} else {
+			pagePool <- p
+		}
+	}
+}
+
+func handleScrapedHTML(site models.ScrapeSite, rawHTML string) {
+	proxyList := helper.GetProxiesOfHTML(rawHTML)
+
+	proxies := helper.ParseTextToProxies(strings.Join(proxyList, "\n"))
+
+	err := database.InsertProxies(proxies, helper.GetUserIdsFromList(site.Users)...)
+	if err != nil {
+		log.Error("insert proxies from scraping failed", "err", err)
 	}
 
-	return nil
+	log.Info(fmt.Sprintf("Found %d proxies", len(proxies)), "url", site.URL)
 }

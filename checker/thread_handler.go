@@ -19,7 +19,7 @@ var (
 	stopChannel    = make(chan struct{}) // Signal to stop threads
 )
 
-func Dispatcher() {
+func ThreadDispatcher() {
 	for {
 		cfg := settings.GetConfig()
 
@@ -42,7 +42,7 @@ func Dispatcher() {
 			currentThreads.Add(^uint32(0)) // Decrement by 1
 		}
 
-		log.Info("Thread", "count", currentThreads.Load())
+		log.Debug("Checker thread", "count", currentThreads.Load())
 		time.Sleep(15 * time.Second)
 	}
 }

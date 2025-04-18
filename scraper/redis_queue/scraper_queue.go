@@ -21,22 +21,27 @@ const (
 )
 
 var luaScrapePopScript = `
-local result = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
-if #result == 0 then return nil end
+local popped = redis.call('ZPOPMIN', KEYS[1], 1)
+if #popped == 0 then
+  return nil                                  -- queue empty
+end
 
-local member = result[1]
-local score = tonumber(result[2])
-local current_time = tonumber(ARGV[1])
+local member = popped[1]                      -- site url
+local score  = tonumber(popped[2])            -- next‑due timestamp
+local now    = tonumber(ARGV[1])
 
-if score > current_time then return nil end
+-- If the next‑due time is still in the future, push it back and exit
+if score > now then
+  redis.call('ZADD', KEYS[1], score, member)  -- restore exactly as it was
+  return nil
+end
 
-local site_key = KEYS[2] .. member
+-- Fetch the cached site definition, then delete the key
+local site_key  = KEYS[2] .. member
 local site_data = redis.call('GET', site_key)
-
-if redis.call('ZREM', KEYS[1], member) == 0 then return nil end
 redis.call('DEL', site_key)
 
-return {member, site_data, score}
+return { member, site_data, score }
 `
 
 type RedisScrapeSiteQueue struct {
@@ -48,7 +53,7 @@ type RedisScrapeSiteQueue struct {
 var PublicScrapeSiteQueue RedisScrapeSiteQueue
 
 func init() {
-	sssq, err := NewRedisScrapeSiteQueue(helper.GetEnv("redisUrl", "redis://host.docker.internal:8946"))
+	sssq, err := NewRedisScrapeSiteQueue(helper.GetEnv("redisUrl", "redis://localhost:8946"))
 	if err != nil {
 		log.Fatal("Could not connect to redis for scrape site queue", "error", err)
 	}
@@ -77,7 +82,7 @@ func NewRedisScrapeSiteQueue(redisURL string) (*RedisScrapeSiteQueue, error) {
 
 func (rssq *RedisScrapeSiteQueue) AddToQueue(sites []models.ScrapeSite) error {
 	pipe := rssq.client.Pipeline()
-	interval := settings.GetTimeBetweenChecks()
+	interval := settings.GetTimeBetweenScrapes()
 	now := time.Now()
 	sitesLenDuration := time.Duration(len(sites))
 	batchSize := 50

@@ -16,6 +16,50 @@ const (
 	proxiesPerPage = 40
 )
 
+func InsertProxies(proxies []models.Proxy, userIDs ...uint) error {
+	if len(proxies) == 0 {
+		return nil
+	}
+
+	if len(userIDs) == 0 {
+		batchSize := calculateBatchSize(len(proxies))
+		return DB.
+			Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "hash"}},
+				DoNothing: true,
+			}).
+			CreateInBatches(proxies, batchSize).
+			Error
+	}
+
+	uniqueProxies := deduplicateProxies(proxies)
+	if len(uniqueProxies) == 0 {
+		return nil
+	}
+
+	batchSize := calculateBatchSize(len(uniqueProxies))
+
+	tx := DB.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	defer transactionRollbackHandler(tx)
+
+	// Insert proxies and populate their IDs (including existing ones)
+	if err := insertProxies(tx, uniqueProxies, batchSize); err != nil {
+		return err
+	}
+
+	// Create associations for each user
+	for _, userID := range userIDs {
+		if err := createUserAssociations(tx, uniqueProxies, userID, batchSize); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit().Error
+}
+
 func InsertAndGetProxies(proxies []models.Proxy, userID uint) ([]models.Proxy, error) {
 	uniqueProxies := deduplicateProxies(proxies)
 	if len(uniqueProxies) == 0 {

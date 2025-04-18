@@ -7,6 +7,7 @@ import (
 	"magpie/database"
 	"magpie/helper"
 	"magpie/models/routeModels"
+	"magpie/scraper/redis_queue"
 	"net/http"
 )
 
@@ -20,7 +21,7 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 	user := database.GetUserFromId(userID)
 	judges := database.GetUserJudges(userID)
 	scrapingSources := database.GetScrapingSourcesOfUsers(userID)
-	
+
 	json.NewEncoder(w).Encode(user.ToUserSettings(judges, scrapingSources))
 }
 
@@ -96,10 +97,13 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = database.SaveScrapingSourcesOfUsers(int(userID), sources); err != nil {
+	sites, err := database.SaveScrapingSourcesOfUsers(int(userID), sources)
+	if err != nil {
 		http.Error(w, "could not save sources", http.StatusInternalServerError)
 		return
 	}
+
+	redis_queue.PublicScrapeSiteQueue.AddToQueue(sites)
 
 	w.WriteHeader(http.StatusNoContent) // 204
 }

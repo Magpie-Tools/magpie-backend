@@ -6,6 +6,7 @@ import (
 	"github.com/joho/godotenv"
 	"magpie/checker/redis_queue"
 	"magpie/routing"
+	redis_queue2 "magpie/scraper/redis_queue"
 	"magpie/settings"
 	"magpie/setup"
 	"os"
@@ -41,12 +42,15 @@ func main() {
 
 	setup.Setup()
 
-	defer func(PublicProxyQueue *redis_queue.RedisProxyQueue) {
-		err := PublicProxyQueue.Close()
-		if err != nil {
-			log.Warn(err)
+	defer func() {
+		if err := redis_queue.PublicProxyQueue.Close(); err != nil {
+			log.Warn("error closing proxy queue", "error", err)
 		}
-	}(&redis_queue.PublicProxyQueue)
+
+		if err := redis_queue2.PublicScrapeSiteQueue.Close(); err != nil {
+			log.Warn("error closing scrape‑site queue", "error", err)
+		}
+	}()
 
 	routing.OpenRoutes(port)
 }

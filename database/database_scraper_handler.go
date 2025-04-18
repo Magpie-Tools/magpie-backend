@@ -2,6 +2,7 @@ package database
 
 import (
 	"gorm.io/gorm"
+	"magpie/helper"
 
 	"magpie/models"
 )
@@ -21,27 +22,52 @@ func GetScrapingSourcesOfUsers(userID uint) []string {
 }
 
 // SaveScrapingSourcesOfUsers replaces the user’s current list with `sources`.
-func SaveScrapingSourcesOfUsers(userID int, sources []string) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
-		// 1. Load / create every ScrapeSite referenced in `sources`
-		sites := make([]models.ScrapeSite, 0, len(sources))
-		for _, url := range sources {
-			if url == "" {
+func SaveScrapingSourcesOfUsers(userID int, sources []string) ([]models.ScrapeSite, error) {
+	var sites []models.ScrapeSite
+
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		sites = make([]models.ScrapeSite, 0, len(sources))
+
+		for _, raw := range sources {
+			if raw == "" || !helper.IsValidURL(raw) {
 				continue
 			}
+
 			var site models.ScrapeSite
-			if err := tx.Where("url = ?", url).
-				FirstOrCreate(&site, &models.ScrapeSite{URL: url}).Error; err != nil {
+			if err := tx.
+				Where("url = ?", raw).
+				FirstOrCreate(&site, &models.ScrapeSite{URL: raw}).Error; err != nil {
 				return err
 			}
 			sites = append(sites, site)
 		}
 
-		// 2. Attach them to the user, replacing any previous association
 		var user models.User
 		if err := tx.First(&user, userID).Error; err != nil {
 			return err
 		}
-		return tx.Model(&user).Association("ScrapeSites").Replace(&sites)
+		return tx.Model(&user).
+			Association("ScrapeSites").
+			Replace(&sites)
 	})
+
+	return sites, err
+}
+
+func GetAllScrapeSites() ([]models.ScrapeSite, error) {
+	var allProxies []models.ScrapeSite
+	const batchSize = maxParamsPerBatch
+
+	collectedProxies := make([]models.ScrapeSite, 0)
+
+	err := DB.Preload("Users").Order("id").FindInBatches(&allProxies, batchSize, func(tx *gorm.DB, batch int) error {
+		collectedProxies = append(collectedProxies, allProxies...)
+		return nil
+	})
+
+	if err.Error != nil {
+		return nil, err.Error
+	}
+
+	return collectedProxies, nil
 }
