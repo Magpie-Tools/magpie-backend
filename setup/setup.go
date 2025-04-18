@@ -65,8 +65,8 @@ func Setup() {
 	go judges.StartJudgeRoutine()
 	go database.StartProxyStatisticsRoutine()
 	go checker.ThreadDispatcher()
-	go scraper.ThreadDispatcher()
 	go scraper.ManagePagePool()
+	go scraper.ThreadDispatcher()
 }
 
 func judgeSetup() {

@@ -61,7 +61,7 @@ func ThreadDispatcher() {
 			currentThreads.Add(^uint32(0)) // decrement
 		}
 
-		log.Debug("scraper threads", "active", currentThreads.Load(), "target", target)
+		log.Debug("scraper threads", "active", currentThreads.Load())
 		time.Sleep(15 * time.Second)
 	}
 }
@@ -86,11 +86,22 @@ func scrapeWorker() {
 		cfg := settings.GetConfig()
 		timeout := time.Duration(cfg.Scraper.Timeout) * time.Millisecond
 
-		html, err := ScraperRequest(site.URL, timeout)
-		if err != nil {
-			log.Warn("scrape failed", "url", site.URL, "err", err)
+		var html string
+		var scrapeErr error
+
+		for attempts := 0; attempts < 3; attempts++ {
+			html, scrapeErr = ScraperRequest(site.URL, timeout)
+			if scrapeErr == nil || !strings.Contains(scrapeErr.Error(), "timeout waiting for available page") {
+				break
+			}
+			log.Debug("retrying after page timeout", "url", site.URL, "attempt", attempts+1)
+			time.Sleep(1 * time.Second)
+		}
+
+		if scrapeErr != nil {
+			log.Warn("scrape failed", "url", site.URL, "err", scrapeErr)
 		} else {
-			go handleScrapedHTML(site, html) // do your parsing/storage elsewhere
+			go handleScrapedHTML(site, html)
 		}
 
 		if err := redis_queue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due); err != nil {
@@ -211,10 +222,24 @@ func recyclePage(p *rod.Page) {
 		currentPages.Add(-1)
 	default:
 		if err := resetPage(p); err != nil {
+			log.Debug("page reset failed, replacing", "err", err)
 			p.MustClose()
-			_ = addPage()
+			currentPages.Add(-1)
+			// Always add a replacement when a page is closed
+			go func() {
+				if err := addPage(); err != nil {
+					log.Error("add replacement page", "err", err)
+				}
+			}()
 		} else {
-			pagePool <- p
+			select {
+			case pagePool <- p:
+				// Successfully recycled
+			default:
+				// Pool is full, close the page
+				p.MustClose()
+				currentPages.Add(-1)
+			}
 		}
 	}
 }
@@ -222,11 +247,16 @@ func recyclePage(p *rod.Page) {
 func handleScrapedHTML(site models.ScrapeSite, rawHTML string) {
 	proxyList := helper.GetProxiesOfHTML(rawHTML)
 
-	proxies := helper.ParseTextToProxies(strings.Join(proxyList, "\n"))
+	parsedProxies := helper.ParseTextToProxies(strings.Join(proxyList, "\n"))
 
-	err := database.InsertProxies(proxies, helper.GetUserIdsFromList(site.Users)...)
+	proxies, err := database.InsertAndGetProxies(parsedProxies, helper.GetUserIdsFromList(site.Users)...)
 	if err != nil {
 		log.Error("insert proxies from scraping failed", "err", err)
+	}
+
+	err = database.AssociateProxiesToScrapeSite(site.ID, proxies)
+	if err != nil {
+		log.Warn("associate proxies to ScrapeSite failed", "err", err)
 	}
 
 	log.Info(fmt.Sprintf("Found %d proxies", len(proxies)), "url", site.URL)

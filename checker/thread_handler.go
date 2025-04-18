@@ -42,7 +42,7 @@ func ThreadDispatcher() {
 			currentThreads.Add(^uint32(0)) // Decrement by 1
 		}
 
-		log.Debug("Checker thread", "count", currentThreads.Load())
+		log.Debug("Checker threads", "active", currentThreads.Load())
 		time.Sleep(15 * time.Second)
 	}
 }

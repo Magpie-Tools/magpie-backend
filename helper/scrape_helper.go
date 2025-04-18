@@ -16,7 +16,7 @@ func GetProxiesOfHTML(rawHTML string) []string {
 	replacements := []struct{ old, new string }{
 		// entity replacements
 		{"&colon;", ":"},
-		{"&nbsp;", ":"},
+		{"&nbsp;", " "},
 		{"</td><td>", ":"},
 		{"<td>", ":"},
 		{"</td>", ":"},
@@ -24,7 +24,7 @@ func GetProxiesOfHTML(rawHTML string) []string {
 		{"</th>", ":"},
 		{"<tr>", ":"},
 		{"</tr>", ":"},
-		{" ", ":"},
+		{" ", " "},
 	}
 	normalized := rawHTML
 	for _, r := range replacements {

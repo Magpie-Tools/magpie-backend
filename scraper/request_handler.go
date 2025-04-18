@@ -18,51 +18,57 @@ signals from managePagePool). This keeps the request code tiny while
 all pool housekeeping lives in thread_handler.go.
 */
 func ScraperRequest(url string, timeout time.Duration) (string, error) {
-	/* ---------------------- acquire a page ---------------------- */
-	var page *rod.Page
+	// 1) acquire a page with timeout
+	var p *rod.Page
 	select {
-	case page = <-pagePool:
-	case <-time.After(5 * time.Second):
+	case p = <-pagePool:
+	case <-time.After(timeout):
 		return "", fmt.Errorf("timeout waiting for available page")
 	}
 
-	/* ---------------------- recycle on exit --------------------- */
-	defer recyclePage(page)
+	// 2) ensure we recycle it back (or close+re-add on error)
+	defer recyclePage(p)
 
-	/* ---------------------- navigate & read --------------------- */
-	if err := page.Timeout(timeout).Navigate(url); err != nil {
-		return "", fmt.Errorf("navigation failed: %w", err)
+	// 3) apply per-request timeout
+	p = p.Timeout(timeout)
+	if err := p.Navigate(url); err != nil {
+		return "", err
 	}
-	if err := page.WaitLoad(); err != nil {
-		return "", fmt.Errorf("wait load failed: %w", err)
-	}
+	p.WaitLoad()
 
-	html, err := page.HTML()
+	// 4) grab the HTML
+	html, err := p.HTML()
 	if err != nil {
-		return "", fmt.Errorf("failed to get HTML: %w", err)
+		return "", err
 	}
 	return html, nil
 }
 
 func resetPage(page *rod.Page) error {
+	// Clear cookies
 	err := proto.NetworkClearBrowserCookies{}.Call(page)
 	if err != nil {
 		return fmt.Errorf("clear cookies: %w", err)
 	}
 
-	if _, err := page.Eval(`() => {
-		localStorage.clear();
-		sessionStorage.clear();
-		return true;
-	}`); err != nil {
-		return fmt.Errorf("clear storage: %w", err)
-	}
+	// Navigate to about:blank first
 	if err := page.Navigate("about:blank"); err != nil {
 		return fmt.Errorf("navigate blank: %w", err)
 	}
 	if err := page.WaitLoad(); err != nil {
 		return fmt.Errorf("wait blank: %w", err)
 	}
+
+	_, _ = page.Eval(`() => {
+        try {
+            localStorage.clear();
+            sessionStorage.clear();
+        } catch (e) {
+            // Silently ignore security errors
+        }
+        return true;
+    }`)
+
 	return nil
 }
 

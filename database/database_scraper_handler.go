@@ -2,6 +2,7 @@ package database
 
 import (
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"magpie/helper"
 
 	"magpie/models"
@@ -70,4 +71,27 @@ func GetAllScrapeSites() ([]models.ScrapeSite, error) {
 	}
 
 	return collectedProxies, nil
+}
+
+func AssociateProxiesToScrapeSite(siteID uint64, proxies []models.Proxy) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if len(proxies) == 0 {
+			return nil
+		}
+
+		assoc := make([]models.ProxyScrapeSite, len(proxies))
+		for i, p := range proxies {
+			assoc[i] = models.ProxyScrapeSite{
+				ProxyID:      p.ID,
+				ScrapeSiteID: siteID,
+			}
+		}
+
+		return tx.
+			Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "proxy_id"}, {Name: "scrape_site_id"}},
+				DoNothing: true,
+			}).
+			Create(&assoc).Error
+	})
 }
