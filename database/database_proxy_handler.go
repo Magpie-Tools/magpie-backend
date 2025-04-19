@@ -252,7 +252,7 @@ func GetAllProxies() ([]models.Proxy, error) {
 	return collectedProxies, nil
 }
 
-func GetProxyPage(userId uint, page int) []routeModels.ProxyInfo {
+func GetProxyInfoPage(userId uint, page int) []routeModels.ProxyInfo {
 	offset := (page - 1) * proxiesPerPage
 
 	subQuery := DB.Model(&models.ProxyStatistic{}).

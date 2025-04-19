@@ -4,9 +4,12 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"magpie/helper"
+	"magpie/models/routeModels"
 
 	"magpie/models"
 )
+
+const scrapeSitesPerPage = 20
 
 // GetScrapingSourcesOfUsers returns all URLs associated with the given user.
 func GetScrapingSourcesOfUsers(userID uint) []string {
@@ -113,4 +116,47 @@ func AssociateProxiesToScrapeSite(siteID uint64, proxies []models.Proxy) error {
 			}).
 			Create(&assoc).Error
 	})
+}
+
+func GetAllScrapeSiteCountOfUser(userId uint) int64 {
+	var count int64
+	DB.Model(&models.ScrapeSite{}).
+		Joins(
+			"JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id AND uss.user_id = ?",
+			userId,
+		).
+		Count(&count)
+	return count
+}
+
+func GetScrapeSiteInfoPage(userId uint, page int) []routeModels.ScrapeSiteInfo {
+	offset := (page - 1) * scrapeSitesPerPage
+
+	// subquery: for each scrape_site_id, count only the proxies that this user has
+	subQuery := DB.
+		Model(&models.ProxyScrapeSite{}).
+		Select("scrape_site_id, COUNT(*) AS proxy_count").
+		Joins("JOIN user_proxies up ON up.proxy_id = proxy_scrape_site.proxy_id AND up.user_id = ?", userId).
+		Group("scrape_site_id")
+
+	var results []routeModels.ScrapeSiteInfo
+
+	DB.
+		Model(&models.ScrapeSite{}).
+		Select(
+			"scrape_sites.id         AS id, "+
+				"scrape_sites.url        AS url, "+
+				"COALESCE(pc.proxy_count, 0) AS proxy_count, "+
+				"uss.created_at          AS added_at",
+		).
+		// only the sites this user has added
+		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id AND uss.user_id = ?", userId).
+		// attach the per-site, per-user proxy counts
+		Joins("LEFT JOIN (?) AS pc ON pc.scrape_site_id = scrape_sites.id", subQuery).
+		Order("uss.created_at DESC").
+		Offset(offset).
+		Limit(scrapeSitesPerPage).
+		Scan(&results)
+
+	return results
 }
