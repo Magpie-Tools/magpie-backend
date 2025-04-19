@@ -123,7 +123,7 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 	// Parse the merged content into a slice of sources
 	sources := helper.ParseTextToSources(mergedContent)
 
-	sites, err := database.SaveScrapingSourcesOfUsers(int(userID), sources)
+	sites, err := database.SaveScrapingSourcesOfUsers(userID, sources)
 	if err != nil {
 		log.Error("Could not save sources to database", "error", err.Error())
 		http.Error(w, "Could not save sources to database", http.StatusInternalServerError)

@@ -26,7 +26,7 @@ func GetScrapingSourcesOfUsers(userID uint) []string {
 }
 
 // SaveScrapingSourcesOfUsers replaces the user’s current list with `sources`.
-func SaveScrapingSourcesOfUsers(userID int, sources []string) ([]models.ScrapeSite, error) {
+func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]models.ScrapeSite, error) {
 	var sites []models.ScrapeSite
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		// Prepare slices to collect sites and their IDs
