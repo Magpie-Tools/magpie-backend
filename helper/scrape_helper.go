@@ -42,3 +42,23 @@ func GetProxiesOfHTML(rawHTML string) []string {
 
 	return proxyRe.FindAllString(text, -1)
 }
+
+func ParseTextToSources(text string) []string {
+	lines := strings.Split(text, "\n")
+	var sources []string
+
+	for _, line := range lines {
+		// Trim whitespace and skip empty lines
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Only add valid URLs
+		if IsValidURL(line) {
+			sources = append(sources, line)
+		}
+	}
+
+	return sources
+}

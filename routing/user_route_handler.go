@@ -3,6 +3,8 @@ package routing
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/charmbracelet/log"
+	"io"
 	"magpie/authorization"
 	"magpie/database"
 	"magpie/helper"
@@ -91,19 +93,45 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var sources []string
-	if err = json.NewDecoder(r.Body).Decode(&sources); err != nil {
-		http.Error(w, "request body must be a JSON array of strings", http.StatusBadRequest)
+	textareaContent := r.FormValue("sourcesTextarea") // Match the key sent by frontend
+	clipboardContent := r.FormValue("clipboardSources")
+	file, fileHeader, err := r.FormFile("file") // "file" is the key of the form field
+
+	var fileContent []byte
+
+	if err == nil {
+		defer file.Close()
+
+		log.Debugf("Uploaded file: %s (%d bytes)", fileHeader.Filename, fileHeader.Size)
+
+		fileContent, err = io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Failed to read file", http.StatusInternalServerError)
+			return
+		}
+
+	} else if len(textareaContent) == 0 && len(clipboardContent) == 0 {
+		http.Error(w, "Failed to retrieve sources from any input method", http.StatusBadRequest)
 		return
 	}
 
+	// Merge the file content and the textarea content
+	mergedContent := string(fileContent) + "\n" + textareaContent + "\n" + clipboardContent
+
+	log.Infof("Sources content received: %d bytes", len(mergedContent))
+
+	// Parse the merged content into a slice of sources
+	sources := helper.ParseTextToSources(mergedContent)
+
 	sites, err := database.SaveScrapingSourcesOfUsers(int(userID), sources)
 	if err != nil {
-		http.Error(w, "could not save sources", http.StatusInternalServerError)
+		log.Error("Could not save sources to database", "error", err.Error())
+		http.Error(w, "Could not save sources to database", http.StatusInternalServerError)
 		return
 	}
 
 	redis_queue.PublicScrapeSiteQueue.AddToQueue(sites)
 
-	w.WriteHeader(http.StatusNoContent) // 204
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]int{"sourceCount": len(sites)})
 }

@@ -25,31 +25,50 @@ func GetScrapingSourcesOfUsers(userID uint) []string {
 // SaveScrapingSourcesOfUsers replaces the user’s current list with `sources`.
 func SaveScrapingSourcesOfUsers(userID int, sources []string) ([]models.ScrapeSite, error) {
 	var sites []models.ScrapeSite
-
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		// Prepare slices to collect sites and their IDs
 		sites = make([]models.ScrapeSite, 0, len(sources))
+		siteIDs := make([]uint64, 0, len(sources))
 
+		// Create or find each ScrapeSite
 		for _, raw := range sources {
 			if raw == "" || !helper.IsValidURL(raw) {
 				continue
 			}
 
 			var site models.ScrapeSite
-			if err := tx.
-				Where("url = ?", raw).
+			if err := tx.Where("url = ?", raw).
 				FirstOrCreate(&site, &models.ScrapeSite{URL: raw}).Error; err != nil {
 				return err
 			}
 			sites = append(sites, site)
+			siteIDs = append(siteIDs, site.ID)
 		}
 
+		// Load the user
 		var user models.User
 		if err := tx.First(&user, userID).Error; err != nil {
 			return err
 		}
-		return tx.Model(&user).
+
+		// Replace association to the new list of ScrapeSites
+		if err := tx.Model(&user).
 			Association("ScrapeSites").
-			Replace(&sites)
+			Replace(&sites); err != nil {
+			return err
+		}
+
+		// Reload all sites with Users preloaded
+		var loaded []models.ScrapeSite
+		if err := tx.Preload("Users").
+			Where("id IN ?", siteIDs).
+			Find(&loaded).Error; err != nil {
+			return err
+		}
+		// Overwrite the sites slice with the fully loaded records
+		sites = loaded
+
+		return nil
 	})
 
 	return sites, err
