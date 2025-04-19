@@ -31,15 +31,16 @@ func OpenRoutes(port int) {
 	router.HandleFunc("POST /register", registerUser)
 	router.HandleFunc("POST /login", loginUser)
 	router.Handle("POST /saveSettings", authorization.IsAdmin(http.HandlerFunc(saveSettings)))
-	router.Handle("POST /addProxies", authorization.RequireAuth(http.HandlerFunc(addProxies)))
 
 	router.Handle("GET /getProxyCount", authorization.RequireAuth(http.HandlerFunc(getProxyCount)))
 	router.Handle("GET /getProxyPage/{page}", authorization.RequireAuth(http.HandlerFunc(getProxyPage)))
+	router.Handle("POST /addProxies", authorization.RequireAuth(http.HandlerFunc(addProxies)))
 	router.Handle("DELETE /proxies", authorization.RequireAuth(http.HandlerFunc(deleteProxies)))
 
 	router.Handle("GET /getScrapingSourcesCount", authorization.RequireAuth(http.HandlerFunc(getScrapeSourcesCount)))
 	router.Handle("GET /getScrapingSourcesPage/{page}", authorization.RequireAuth(http.HandlerFunc(getScrapeSourcePage)))
 	router.Handle("POST /scrapingSources", authorization.RequireAuth(http.HandlerFunc(saveScrapingSources)))
+	router.Handle("DELETE /scrapingSources", authorization.RequireAuth(http.HandlerFunc(deleteScrapingSources)))
 
 	router.Handle("GET /user/settings", authorization.RequireAuth(http.HandlerFunc(getUserSettings)))
 	router.Handle("POST /user/settings", authorization.RequireAuth(http.HandlerFunc(saveUserSettings)))

@@ -268,3 +268,22 @@ func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(scrapeSiteInfoPages)
 }
+
+func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(r)
+	if userErr != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var scrapingSource []int
+
+	if err := json.NewDecoder(r.Body).Decode(&scrapingSource); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	database.DeleteScrapeSiteRelation(userID, scrapingSource)
+
+	json.NewEncoder(w).Encode("Scraping Sources deleted successfully")
+}

@@ -160,3 +160,7 @@ func GetScrapeSiteInfoPage(userId uint, page int) []routeModels.ScrapeSiteInfo {
 
 	return results
 }
+
+func DeleteScrapeSiteRelation(userId uint, scrapeSite []int) {
+	DB.Where("scrape_site_id IN (?)", scrapeSite).Where("user_id = (?)", userId).Delete(&models.UserScrapeSite{})
+}
