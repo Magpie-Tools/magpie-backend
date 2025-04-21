@@ -147,3 +147,15 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 func getGlobalSettings(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(settings.GetConfig())
 }
+
+func getDashboardInfo(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(r)
+	if userErr != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	dashInfo := database.GetDashboardInfo(userID)
+
+	json.NewEncoder(w).Encode(dashInfo)
+}

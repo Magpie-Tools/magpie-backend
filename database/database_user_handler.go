@@ -155,3 +155,73 @@ func GetUserJudges(userid uint) []routeModels.SimpleUserJudge {
 
 	return results
 }
+
+func GetDashboardInfo(userid uint) routeModels.DashboardInfo {
+	var info routeModels.DashboardInfo
+	// cut‑off for “this week”
+	weekAgo := time.Now().AddDate(0, 0, -7)
+
+	// 1) TotalChecks
+	DB.Model(&models.ProxyStatistic{}).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
+		Where("up.user_id = ?", userid).
+		Count(&info.TotalChecks)
+
+	// 2) TotalChecksWeek
+	DB.Model(&models.ProxyStatistic{}).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
+		Where("up.user_id = ? AND proxy_statistics.created_at >= ?", userid, weekAgo).
+		Count(&info.TotalChecksWeek)
+
+	// 3) TotalScraped
+	DB.Table("proxy_scrape_site AS ps").
+		Joins("JOIN user_proxies up ON up.proxy_id = ps.proxy_id").
+		Where("up.user_id = ?", userid).
+		Count(&info.TotalScraped)
+
+	// 4) TotalScrapedWeek
+	DB.Table("proxy_scrape_site AS ps").
+		Joins("JOIN user_proxies up ON up.proxy_id = ps.proxy_id").
+		Where("up.user_id = ? AND ps.created_at >= ?", userid, weekAgo).
+		Count(&info.TotalScrapedWeek)
+
+	// 5) JudgeValidProxies – one row per judge, with counts by anonymity level
+	type jvp struct {
+		JudgeUrl           string `json:"judge_url"`
+		EliteProxies       uint   `json:"elite_proxies"`
+		AnonymousProxies   uint   `json:"anonymous_proxies"`
+		TransparentProxies uint   `json:"transparent_proxies"`
+	}
+	var tmp []jvp
+
+	DB.Model(&models.ProxyStatistic{}).
+		Select(
+			"j.full_string AS judge_url, "+
+				"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+
+				"SUM(CASE WHEN al.name = 'anonymous' THEN 1 ELSE 0 END)   AS anonymous_proxies, "+
+				"SUM(CASE WHEN al.name = 'transparent' THEN 1 ELSE 0 END) AS transparent_proxies",
+		).
+		Joins("JOIN user_judges uj ON uj.judge_id = proxy_statistics.judge_id").
+		Joins("JOIN judges j ON j.id = proxy_statistics.judge_id").
+		Joins("JOIN anonymity_levels al ON al.id = proxy_statistics.level_id").
+		Where("uj.user_id = ? AND proxy_statistics.alive = TRUE", userid).
+		Group("j.id, j.full_string").
+		Scan(&tmp)
+
+	// assign into the routeModels struct
+	for _, row := range tmp {
+		info.JudgeValidProxies = append(info.JudgeValidProxies, struct {
+			JudgeUrl           string `json:"judge_url"`
+			EliteProxies       uint   `json:"elite_proxies"`
+			AnonymousProxies   uint   `json:"anonymous_proxies"`
+			TransparentProxies uint   `json:"transparent_proxies"`
+		}{
+			JudgeUrl:           row.JudgeUrl,
+			EliteProxies:       row.EliteProxies,
+			AnonymousProxies:   row.AnonymousProxies,
+			TransparentProxies: row.TransparentProxies,
+		})
+	}
+
+	return info
+}
