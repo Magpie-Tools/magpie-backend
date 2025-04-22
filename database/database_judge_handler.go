@@ -49,6 +49,14 @@ func GetJudgesFromString(judges []*models.Judge) []*models.Judge {
 	return judges
 }
 
+func GetJudgeFromString(judge string) *models.Judge {
+	var realJudge *models.Judge
+
+	DB.Where("full_string = ?", judge).First(&realJudge)
+
+	return realJudge
+}
+
 func AddJudges(judges []*models.Judge) error {
 	result := DB.Create(judges)
 	return result.Error

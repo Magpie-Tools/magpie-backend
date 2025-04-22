@@ -28,16 +28,23 @@ func main() {
 
 	debug.SetMaxThreads(9999999999)
 
-	portFlag := flag.Int("port", 8082, "Port to listen on")
+	apiPortFlag := flag.Int("backend-port", 8082, "Port for API server")
+	frontendPortFlag := flag.Int("frontend-portBackend", 8084, "Port for frontend static server")
 	productionFlag := flag.Bool("production", false, "Run in production mode")
 	flag.Parse()
 
 	settings.SetProductionMode(*productionFlag)
 
-	port, err := strconv.Atoi(os.Getenv("PORT"))
+	portBackend, err := strconv.Atoi(os.Getenv("backend-port"))
 
-	if err != nil || port == 0 {
-		port = *portFlag
+	if err != nil || portBackend == 0 {
+		portBackend = *apiPortFlag
+	}
+
+	portFrontend, err := strconv.Atoi(os.Getenv("frontend-portBackend"))
+
+	if err != nil || portFrontend == 0 {
+		portFrontend = *frontendPortFlag
 	}
 
 	setup.Setup()
@@ -52,5 +59,6 @@ func main() {
 		}
 	}()
 
-	routing.OpenRoutes(port)
+	go routing.ServeFrontend(portFrontend)
+	routing.OpenRoutes(portBackend)
 }

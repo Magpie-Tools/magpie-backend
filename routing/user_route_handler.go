@@ -6,8 +6,10 @@ import (
 	"github.com/charmbracelet/log"
 	"io"
 	"magpie/authorization"
+	"magpie/checker/judges"
 	"magpie/database"
 	"magpie/helper"
+	"magpie/models"
 	"magpie/models/routeModels"
 	"magpie/scraper/redis_queue"
 	"net/http"
@@ -43,6 +45,24 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	if err := database.UpdateUserSettings(userID, settings); err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
+
+	var jwrList []models.JudgeWithRegex
+	for _, uj := range settings.SimpleUserJudges {
+		judgeModel := database.GetJudgeFromString(uj.Url)
+		if judgeModel == nil {
+			log.Warnf("cannot load judge %d for user %d", uj.Url, userID)
+			continue
+		}
+		judgeModel.SetUp()
+		judgeModel.UpdateIp()
+		jwrList = append(jwrList, models.JudgeWithRegex{
+			Judge: judgeModel,
+			Regex: uj.Regex,
+		})
+	}
+
+	// atomically replace this user's judges in the global map
+	judges.SetUserJudges(userID, jwrList)
 
 	json.NewEncoder(w).Encode(map[string]string{"message": "Settings saved successfully"})
 }

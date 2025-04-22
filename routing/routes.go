@@ -5,6 +5,8 @@ import (
 	"github.com/charmbracelet/log"
 	"magpie/authorization"
 	"net/http"
+	"os"
+	"path/filepath"
 )
 
 func enableCORS(next http.Handler) http.Handler {
@@ -23,6 +25,32 @@ func enableCORS(next http.Handler) http.Handler {
 		// Pass the request to the next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+func ServeFrontend(port int) {
+	distDir := "../frontend/dist/frontend/browser"
+	if abs, err := filepath.Abs(distDir); err == nil {
+		log.Debugf("➡️  Serving static from: %s", abs)
+	} else {
+		log.Warnf("couldn’t resolve %q: %v", distDir, err)
+	}
+
+	mux := http.NewServeMux()
+	fs := http.FileServer(http.Dir(distDir))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fp := filepath.Join(distDir, filepath.Clean(r.URL.Path))
+		if info, err := os.Stat(fp); err == nil && !info.IsDir() {
+			fs.ServeHTTP(w, r)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(distDir, "index.csr.html"))
+	})
+
+	addr := fmt.Sprintf(":%d", port)
+	log.Infof("Starting frontend static server on port %s", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		log.Fatalf("Frontend server failed: %v", err)
+	}
 }
 
 func OpenRoutes(port int) {

@@ -167,3 +167,39 @@ func AddJudgesToUsers(userIDs []uint, judgesWithRegex []models.JudgeWithRegex) {
 
 	updateJudges(newMap)
 }
+
+// SetUserJudges replaces *all* judges for a single user, in one atomic swap.
+func SetUserJudges(userID uint, judgesWithRegex []models.JudgeWithRegex) {
+	judgesMutex.Lock()
+	defer judgesMutex.Unlock()
+
+	// copy the top‑level map
+	currentMap := judges.Load().(map[uint]map[string]*judgeEntry)
+	newMap := copyMap(currentMap)
+
+	// build a fresh protocol→entry map for this user
+	protoMap := make(map[string]*judgeEntry, len(judgesWithRegex))
+	for _, jwr := range judgesWithRegex {
+		scheme := jwr.Judge.GetScheme()
+		if entry := protoMap[scheme]; entry != nil {
+			// append to existing entry
+			newList := append(entry.list, jwr)
+			protoMap[scheme] = &judgeEntry{
+				list:    newList,
+				length:  entry.length + 1,
+				counter: atomic.LoadUint32(&entry.counter),
+			}
+		} else {
+			// first judge for this scheme
+			protoMap[scheme] = &judgeEntry{
+				list:    []models.JudgeWithRegex{jwr},
+				length:  1,
+				counter: 0,
+			}
+		}
+	}
+
+	// replace entire user entry
+	newMap[userID] = protoMap
+	updateJudges(newMap)
+}
