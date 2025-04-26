@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 )
 
+const distDir = "../frontend/dist/frontend/browser"
+
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
@@ -28,7 +30,6 @@ func enableCORS(next http.Handler) http.Handler {
 }
 
 func ServeFrontend(port int) {
-	distDir := "../frontend/dist/frontend/browser"
 	if abs, err := filepath.Abs(distDir); err == nil {
 		log.Debugf("➡️  Serving static from: %s", abs)
 	} else {
@@ -53,7 +54,7 @@ func ServeFrontend(port int) {
 	}
 }
 
-func OpenRoutes(port int) {
+func OpenRoutes(port int, serveStatic bool) {
 
 	router := http.NewServeMux()
 	router.HandleFunc("POST /register", registerUser)
@@ -77,6 +78,28 @@ func OpenRoutes(port int) {
 	router.Handle("POST /user/export", authorization.RequireAuth(http.HandlerFunc(exportProxies)))
 
 	router.Handle("GET /global/settings", authorization.IsAdmin(http.HandlerFunc(getGlobalSettings)))
+
+	// ---------------
+	// FRONTEND
+	// ---------------
+	if serveStatic {
+		fs := http.FileServer(http.Dir(distDir))
+
+		router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				http.NotFound(w, r)
+			}
+			path := filepath.Join(distDir, filepath.Clean(r.URL.Path))
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				fs.ServeHTTP(w, r)
+				return
+			}
+			http.ServeFile(w, r, filepath.Join(distDir, "index.csr.html"))
+		})
+
+		log.Debugf("➡️  Frontend assets served from %s on same port", distDir)
+	}
+
 	log.Debug("Routes opened")
 
 	server := http.Server{

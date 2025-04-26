@@ -30,6 +30,7 @@ func main() {
 
 	apiPortFlag := flag.Int("backend-port", 8082, "Port for API server")
 	frontendPortFlag := flag.Int("frontend-portBackend", 8084, "Port for frontend static server")
+	serveFEFlag := flag.Bool("serve-frontend", true, "Serve the Angular bundle on the API port")
 	productionFlag := flag.Bool("production", false, "Run in production mode")
 	flag.Parse()
 
@@ -47,6 +48,10 @@ func main() {
 		portFrontend = *frontendPortFlag
 	}
 
+	if v := os.Getenv("SERVE_FRONTEND"); v == "false" {
+		*serveFEFlag = false
+	}
+
 	setup.Setup()
 
 	defer func() {
@@ -59,6 +64,9 @@ func main() {
 		}
 	}()
 
-	go routing.ServeFrontend(portFrontend)
-	routing.OpenRoutes(portBackend)
+	if !*serveFEFlag {
+		go routing.ServeFrontend(portFrontend)
+	}
+
+	routing.OpenRoutes(portBackend, *serveFEFlag)
 }
