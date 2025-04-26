@@ -90,17 +90,17 @@ func getCachedDNS(ip string) []string {
 
 func GetCountryCode(ipAddress string) string {
 	if !initSuccess {
-		return "unknown"
+		return "N/A"
 	}
 
 	ip := net.ParseIP(ipAddress)
 	if ip == nil {
-		return "unknown"
+		return "N/A"
 	}
 
 	record, err := countryDB.Country(ip)
 	if err != nil {
-		return "unknown"
+		return "N/A"
 	}
 
 	return record.Country.IsoCode
