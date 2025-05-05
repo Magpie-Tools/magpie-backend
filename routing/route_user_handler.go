@@ -113,8 +113,8 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	textareaContent := r.FormValue("sourcesTextarea") // Match the key sent by frontend
-	clipboardContent := r.FormValue("clipboardSources")
+	textareaContent := r.FormValue("scrapeSourceTextarea") // Match the key sent by frontend
+	clipboardContent := r.FormValue("clipboardScrapeSources")
 	file, fileHeader, err := r.FormFile("file") // "file" is the key of the form field
 
 	var fileContent []byte
