@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"fmt"
+	redis_queue2 "magpie/checker/redis_queue"
 	"magpie/database"
 	"magpie/helper"
 	"magpie/models"
@@ -259,5 +260,10 @@ func handleScrapedHTML(site models.ScrapeSite, rawHTML string) {
 		log.Warn("associate proxies to ScrapeSite failed", "err", err)
 	}
 
-	log.Info(fmt.Sprintf("Found %d proxies", len(proxies)), "url", site.URL)
+	err = redis_queue2.PublicProxyQueue.AddToQueue(proxies)
+	if err != nil {
+		log.Error("adding scraped proxies to queue failed", "err", err)
+	}
+
+	log.Info(fmt.Sprintf("Found %d unique proxies that users don't have", len(proxies)), "url", site.URL)
 }
