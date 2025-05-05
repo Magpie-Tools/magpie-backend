@@ -21,18 +21,14 @@ func GetProxiesOfHTML(rawHTML string) []string {
 
 	set := make(map[string]struct{})
 
-	// ------------------------------------------------------------------
 	// 1. Literal "ip:port" or "ip &colon; port" occurrences.
-	// ------------------------------------------------------------------
 	ipPortRe := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\s*(?::|&colon;)\s*\d{1,5}\b`)
 	for _, m := range ipPortRe.FindAllString(decoded, -1) {
 		candidate := strings.ReplaceAll(strings.ReplaceAll(m, "&colon;", ":"), " ", "")
 		set[candidate] = struct{}{}
 	}
 
-	// ------------------------------------------------------------------
 	// 2. Table‑aware extraction where IP and port are split across cells.
-	// ------------------------------------------------------------------
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(decoded))
 	if err == nil {
 		ipOnlyRe := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
@@ -56,9 +52,7 @@ func GetProxiesOfHTML(rawHTML string) []string {
 			})
 		})
 
-		// ------------------------------------------------------------------
 		// 3. Consecutive‑token scan of the plain text.
-		// ------------------------------------------------------------------
 		plain := strings.TrimSpace(doc.Text())
 		words := strings.Fields(plain)
 		for i := 0; i+1 < len(words); i++ {
@@ -70,9 +64,7 @@ func GetProxiesOfHTML(rawHTML string) []string {
 		}
 	}
 
-	// ------------------------------------------------------------------
 	// 4. Convert set → sorted slice.
-	// ------------------------------------------------------------------
 	proxies := make([]string, 0, len(set))
 	for p := range set {
 		proxies = append(proxies, p)
