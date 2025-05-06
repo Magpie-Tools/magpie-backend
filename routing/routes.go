@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-const distDir = "../frontend/dist/frontend/browser"
+const distDir = "./static/frontend/browser"
 
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
