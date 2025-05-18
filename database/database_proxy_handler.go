@@ -52,6 +52,54 @@ func InsertAndGetProxies(proxies []models.Proxy, userIDs ...uint) ([]models.Prox
 	return uniqueProxies, nil
 }
 
+// InsertAndGetProxyIDs behaves like InsertAndGetProxies, but it returns the
+// primary-key of every (new *and* existing) proxy instead of the full structs.
+func InsertAndGetProxyIDs(proxies []models.Proxy, userIDs ...uint) ([]uint64, error) {
+	inserted, err := InsertAndGetProxies(proxies, userIDs...)
+	if err != nil || len(inserted) == 0 {
+		return nil, err
+	}
+
+	var missingHashes [][]byte
+	for _, p := range inserted {
+		if p.ID == 0 {
+			missingHashes = append(missingHashes, p.Hash)
+		}
+	}
+
+	if len(missingHashes) > 0 {
+		var existing []struct {
+			ID   uint64
+			Hash []byte
+		}
+		if err := DB.
+			Select("id, hash").
+			Where("hash IN ?", missingHashes).
+			Find(&existing).Error; err != nil {
+			return nil, err
+		}
+
+		hashToID := make(map[string]uint64, len(existing))
+		for _, e := range existing {
+			hashToID[string(e.Hash)] = e.ID
+		}
+
+		for i, p := range inserted {
+			if p.ID == 0 {
+				if id, ok := hashToID[string(p.Hash)]; ok {
+					inserted[i].ID = id
+				}
+			}
+		}
+	}
+
+	out := make([]uint64, len(inserted))
+	for i, p := range inserted {
+		out[i] = p.ID
+	}
+	return out, nil
+}
+
 func InsertAndGetProxiesWithUser(proxies []models.Proxy, userIDs ...uint) ([]models.Proxy, error) {
 	if len(proxies) == 0 || len(userIDs) == 0 {
 		return nil, nil

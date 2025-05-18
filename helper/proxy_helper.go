@@ -115,9 +115,9 @@ func FormatProxies(proxies []models.Proxy, outputFormat string) string {
 		line = strings.ReplaceAll(line, "port", fmt.Sprintf("%d", proxy.Port))
 		line = strings.ReplaceAll(line, "username", proxy.Username)
 		line = strings.ReplaceAll(line, "password", proxy.Password)
-		line = strings.ReplaceAll(line, "country", latestStat.Country)
+		line = strings.ReplaceAll(line, "country", proxy.Country)
 		line = strings.ReplaceAll(line, "alive", fmt.Sprintf("%t", latestStat.Alive))
-		line = strings.ReplaceAll(line, "type", latestStat.EstimatedType)
+		line = strings.ReplaceAll(line, "type", proxy.EstimatedType)
 		line = strings.ReplaceAll(line, "time", fmt.Sprintf("%d", latestStat.ResponseTime))
 
 		result.WriteString(line)

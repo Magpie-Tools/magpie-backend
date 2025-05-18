@@ -48,6 +48,8 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 
 	proxyList := helper.ParseTextToProxies(mergedContent)
 
+	database.EnrichProxiesWithCountryAndType(&proxyList)
+
 	proxyList, err = database.InsertAndGetProxiesWithUser(proxyList, userID)
 	if err != nil {
 		log.Error("Could not add proxies to database", "error", err.Error())

@@ -3,6 +3,7 @@ package database
 import (
 	_ "embed"
 	"golang.org/x/sync/singleflight"
+	"magpie/models"
 	"net"
 	"regexp"
 	"strings"
@@ -86,6 +87,14 @@ func getCachedDNS(ip string) []string {
 		expires: now.Add(dnsCacheTTL),
 	})
 	return names
+}
+
+func EnrichProxiesWithCountryAndType(proxies *[]models.Proxy) {
+	for i := range *proxies {
+		ip := (*proxies)[i].GetIp()
+		(*proxies)[i].Country = GetCountryCode(ip)
+		(*proxies)[i].EstimatedType = DetermineProxyType(ip)
+	}
 }
 
 func GetCountryCode(ipAddress string) string {

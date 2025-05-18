@@ -20,6 +20,9 @@ type Proxy struct {
 	Username string `gorm:"default:''"`
 	Password string `gorm:"default:''"`
 
+	Country       string `gorm:"size:3;not null"`  // ISO 3166-1 alpha-2
+	EstimatedType string `gorm:"size:20;not null"` // ISP, Datacenter, Residential
+
 	// Relationships
 	Statistics  []ProxyStatistic `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	ScrapeSites []ScrapeSite     `gorm:"many2many:proxy_scrape_site;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`

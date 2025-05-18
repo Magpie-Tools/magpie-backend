@@ -62,7 +62,7 @@ func ThreadDispatcher() {
 			currentThreads.Add(^uint32(0)) // decrement
 		}
 
-		log.Debug("scraper threads", "active", currentThreads.Load())
+		log.Debug("Scraper threads", "active", currentThreads.Load())
 		time.Sleep(15 * time.Second)
 	}
 }

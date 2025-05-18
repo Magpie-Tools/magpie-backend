@@ -101,7 +101,6 @@ func work() {
 				time.Sleep(3 * time.Second)
 				continue
 			}
-			ip := proxy.GetIp()
 
 			// Group judge requests by judge ID and protocol
 			judgeRequests := make(map[string]struct {
@@ -171,14 +170,12 @@ func work() {
 				// Process each regex against the response
 				for regex, protocolId := range item.regexToProto {
 					statistic := models.ProxyStatistic{
-						Alive:         false,
-						ResponseTime:  uint16(responseTime),
-						Attempt:       attempt,
-						Country:       database.GetCountryCode(ip),
-						EstimatedType: database.DetermineProxyType(ip),
-						ProxyID:       proxy.ID,
-						ProtocolID:    protocolId,
-						JudgeID:       item.judge.ID,
+						Alive:        false,
+						ResponseTime: uint16(responseTime),
+						Attempt:      attempt,
+						ProxyID:      proxy.ID,
+						ProtocolID:   protocolId,
+						JudgeID:      item.judge.ID,
 					}
 
 					if err == nil && CheckForValidResponse(html, regex) {
