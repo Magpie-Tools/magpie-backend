@@ -16,6 +16,10 @@ import (
 	"net/http"
 )
 
+func checkLogin(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
 func registerUser(w http.ResponseWriter, r *http.Request) {
 	var credentials routeModels.Credentials
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {

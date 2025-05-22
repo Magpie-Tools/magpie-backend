@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var jwtKey = []byte(helper.GetEnv("JWT_SECRET", "magpie-secret"))
+var jwtKey = []byte(helper.GetEnv("JWT_SECRET", "magpie3-secret"))
 
 func GenerateJWT(userId uint, role string) (string, error) {
 	claims := jwt.MapClaims{

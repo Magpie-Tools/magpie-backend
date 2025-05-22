@@ -59,6 +59,7 @@ func OpenRoutes(port int, serveStatic bool) {
 	router := http.NewServeMux()
 	router.HandleFunc("POST /register", registerUser)
 	router.HandleFunc("POST /login", loginUser)
+	router.Handle("GET /checkLogin", authorization.RequireAuth(http.HandlerFunc(checkLogin)))
 	router.Handle("POST /saveSettings", authorization.IsAdmin(http.HandlerFunc(saveSettings)))
 	router.Handle("GET /getDashboardInfo", authorization.RequireAuth(http.HandlerFunc(getDashboardInfo)))
 
@@ -97,7 +98,7 @@ func OpenRoutes(port int, serveStatic bool) {
 			http.ServeFile(w, r, filepath.Join(distDir, "index.csr.html"))
 		})
 
-		log.Debugf("➡️  Frontend assets served from %s on same port", distDir)
+		log.Debugf("Frontend assets served from %s on the same port", distDir)
 	}
 
 	log.Debug("Routes opened")
