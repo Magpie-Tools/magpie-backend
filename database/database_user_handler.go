@@ -225,3 +225,8 @@ func GetDashboardInfo(userid uint) routeModels.DashboardInfo {
 
 	return info
 }
+
+func ChangePassword(userID uint, password string) error {
+	err := DB.Model(&models.User{}).Where("ID = ?", userID).Update("password", password).Error
+	return err
+}

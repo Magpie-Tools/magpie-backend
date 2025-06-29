@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/log"
 	"magpie/authorization"
@@ -10,6 +11,16 @@ import (
 )
 
 const distDir = "./static/frontend/browser"
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
 
 func enableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +71,7 @@ func OpenRoutes(port int, serveStatic bool) {
 	router.HandleFunc("POST /register", registerUser)
 	router.HandleFunc("POST /login", loginUser)
 	router.Handle("GET /checkLogin", authorization.RequireAuth(http.HandlerFunc(checkLogin)))
+	router.Handle("POST /changePassword", authorization.RequireAuth(http.HandlerFunc(changePassword)))
 	router.Handle("POST /saveSettings", authorization.IsAdmin(http.HandlerFunc(saveSettings)))
 	router.Handle("GET /getDashboardInfo", authorization.RequireAuth(http.HandlerFunc(getDashboardInfo)))
 

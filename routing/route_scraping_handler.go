@@ -3,8 +3,11 @@ package routing
 import (
 	"encoding/json"
 	"github.com/charmbracelet/log"
+	"io"
 	"magpie/authorization"
 	"magpie/database"
+	"magpie/helper"
+	"magpie/scraper/redis_queue"
 	"net/http"
 	"strconv"
 )
@@ -55,4 +58,54 @@ func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
 	database.DeleteScrapeSiteRelation(userID, scrapingSource)
 
 	json.NewEncoder(w).Encode("Scraping Sources deleted successfully")
+}
+
+func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
+	userID, err := authorization.GetUserIDFromRequest(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	textareaContent := r.FormValue("scrapeSourceTextarea") // Match the key sent by frontend
+	clipboardContent := r.FormValue("clipboardScrapeSources")
+	file, fileHeader, err := r.FormFile("file") // "file" is the key of the form field
+
+	var fileContent []byte
+
+	if err == nil {
+		defer file.Close()
+
+		log.Debugf("Uploaded file: %s (%d bytes)", fileHeader.Filename, fileHeader.Size)
+
+		fileContent, err = io.ReadAll(file)
+		if err != nil {
+			http.Error(w, "Failed to read file", http.StatusInternalServerError)
+			return
+		}
+
+	} else if len(textareaContent) == 0 && len(clipboardContent) == 0 {
+		http.Error(w, "Failed to retrieve sources from any input method", http.StatusBadRequest)
+		return
+	}
+
+	// Merge the file content and the textarea content
+	mergedContent := string(fileContent) + "\n" + textareaContent + "\n" + clipboardContent
+
+	log.Infof("Sources content received: %d bytes", len(mergedContent))
+
+	// Parse the merged content into a slice of sources
+	sources := helper.ParseTextToSources(mergedContent)
+
+	sites, err := database.SaveScrapingSourcesOfUsers(userID, sources)
+	if err != nil {
+		log.Error("Could not save sources to database", "error", err.Error())
+		http.Error(w, "Could not save sources to database", http.StatusInternalServerError)
+		return
+	}
+
+	redis_queue.PublicScrapeSiteQueue.AddToQueue(sites)
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]int{"sourceCount": len(sites)})
 }

@@ -34,7 +34,7 @@ var (
 
 func init() {
 	browser = rod.New().MustConnect()
-	pagePool = make(chan *rod.Page, 2000) // hard cap – raise if you really need more
+	pagePool = make(chan *rod.Page, 2000)
 }
 
 /*─────────────────────────────  dynamic dispatcher  ──────────────────────────*/

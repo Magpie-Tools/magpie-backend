@@ -2,12 +2,14 @@ package routing
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/charmbracelet/log"
 	"io"
 	"magpie/authorization"
 	"magpie/checker/redis_queue"
 	"magpie/database"
 	"magpie/helper"
+	"magpie/models/routeModels"
 	"net/http"
 	"strconv"
 )
@@ -108,4 +110,31 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 	database.DeleteProxyRelation(userID, proxies)
 
 	json.NewEncoder(w).Encode("Proxies deleted successfully")
+}
+
+func exportProxies(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := authorization.GetUserIDFromRequest(r)
+	if userErr != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var settings routeModels.ExportSettings
+	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	proxies, err := database.GetProxiesForExport(userID, settings)
+
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	formattedProxies := helper.FormatProxies(proxies, settings.OutputFormat)
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Disposition", "attachment; filename=proxies.txt")
+	json.NewEncoder(w).Encode(formattedProxies)
 }
