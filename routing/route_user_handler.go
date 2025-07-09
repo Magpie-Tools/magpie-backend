@@ -24,7 +24,7 @@ func checkLogin(w http.ResponseWriter, r *http.Request) {
 func registerUser(w http.ResponseWriter, r *http.Request) {
 	var credentials routeModels.Credentials
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request")
+		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
@@ -35,20 +35,20 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 
 	// Validate email format
 	if !authorization.IsValidEmail(user.Email) {
-		writeError(w, http.StatusBadRequest, "Invalid email format")
+		writeError(w, "Invalid email format", http.StatusBadRequest)
 		return
 	}
 
 	// Check if password is provided
 	if len(user.Password) < 8 {
-		writeError(w, http.StatusBadRequest, "Password must be at least 8 characters long")
+		writeError(w, "Password must be at least 8 characters long", http.StatusBadRequest)
 		return
 	}
 
 	// Hash the password
 	hashedPassword, err := helper.HashPassword(user.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to hash password")
+		writeError(w, "Failed to hash password", http.StatusInternalServerError)
 		return
 	}
 	user.Password = hashedPassword
@@ -56,10 +56,10 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 	// Check if email already exists
 	var existingUser models.User
 	if err = database.DB.Where("email = ?", user.Email).First(&existingUser).Error; err == nil {
-		writeError(w, http.StatusConflict, "Email already in use")
+		writeError(w, "Email already in use", http.StatusConflict)
 		return
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		writeError(w, http.StatusInternalServerError, "Failed to query database")
+		writeError(w, "Failed to query database", http.StatusInternalServerError)
 		return
 	}
 
@@ -80,7 +80,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 
 	// Save user to the database
 	if err = database.DB.Create(&user).Error; err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to create user")
+		writeError(w, "Failed to create user", http.StatusInternalServerError)
 		return
 	}
 
@@ -94,7 +94,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 
 	token, err := authorization.GenerateJWT(user.ID, user.Role)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to generate token")
+		writeError(w, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
 
@@ -105,26 +105,26 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 func loginUser(w http.ResponseWriter, r *http.Request) {
 	var credentials routeModels.Credentials
 	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
 	var user models.User
 	if err := database.DB.Where("email = ?", credentials.Email).First(&user).Error; err != nil {
-		http.Error(w, "User not found", http.StatusUnauthorized)
+		writeError(w, "User not found", http.StatusUnauthorized)
 		return
 	}
 
 	// Compare passwords
 	if !helper.CheckPasswordHash(credentials.Password, user.Password) {
-		http.Error(w, "Invalid password", http.StatusUnauthorized)
+		writeError(w, "Invalid password", http.StatusUnauthorized)
 		return
 	}
 
 	// Generate token
 	token, err := authorization.GenerateJWT(user.ID, user.Role)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		writeError(w, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
 
@@ -133,14 +133,14 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 
 func saveSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var newConfig settings.Config
 	if err := json.NewDecoder(r.Body).Decode(&newConfig); err != nil {
 		log.Error("Error decoding request body:", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		writeError(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
@@ -152,7 +152,7 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 func getUserSettings(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -166,22 +166,22 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	var settings routeModels.UserSettings
-	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+	var userSettings routeModels.UserSettings
+	if err := json.NewDecoder(r.Body).Decode(&userSettings); err != nil {
+		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	if err := database.UpdateUserSettings(userID, settings); err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	if err := database.UpdateUserSettings(userID, userSettings); err != nil {
+		writeError(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 
 	var jwrList []models.JudgeWithRegex
-	for _, uj := range settings.SimpleUserJudges {
+	for _, uj := range userSettings.SimpleUserJudges {
 		judgeModel := database.GetJudgeFromString(uj.Url)
 		if judgeModel == nil {
 			log.Warnf("cannot load judge %d for user %d", uj.Url, userID)
@@ -204,7 +204,7 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 func getUserRole(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -216,7 +216,7 @@ func getUserRole(w http.ResponseWriter, r *http.Request) {
 func changePassword(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -224,24 +224,24 @@ func changePassword(w http.ResponseWriter, r *http.Request) {
 
 	var changeUserPassword routeModels.ChangePassword
 	if err := json.NewDecoder(r.Body).Decode(&changeUserPassword); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
 	if !helper.CheckPasswordHash(changeUserPassword.OldPassword, user.Password) {
-		http.Error(w, "Invalid old password", http.StatusUnauthorized)
+		writeError(w, "Invalid old password", http.StatusUnauthorized)
 		return
 	}
 
 	hashed, err := helper.HashPassword(changeUserPassword.NewPassword)
 	if err != nil {
-		http.Error(w, "Failed to hash password", http.StatusInternalServerError)
+		writeError(w, "Failed to hash password", http.StatusInternalServerError)
 		return
 	}
 
 	err = database.ChangePassword(userID, hashed)
 	if err != nil {
-		http.Error(w, "Failed to change password", http.StatusInternalServerError)
+		writeError(w, "Failed to change password", http.StatusInternalServerError)
 		log.Error(err)
 		return
 	}

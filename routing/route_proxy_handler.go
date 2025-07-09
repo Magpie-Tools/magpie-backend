@@ -17,7 +17,7 @@ import (
 func addProxies(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -34,12 +34,12 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 
 		fileContent, err = io.ReadAll(file)
 		if err != nil {
-			http.Error(w, "Failed to read file", http.StatusInternalServerError)
+			writeError(w, "Failed to read file", http.StatusInternalServerError)
 			return
 		}
 
 	} else if len(textareaContent) == 0 && len(clipboardContent) == 0 {
-		http.Error(w, "Failed to retrieve file", http.StatusBadRequest)
+		writeError(w, "Failed to retrieve file", http.StatusBadRequest)
 		return
 	}
 
@@ -55,7 +55,7 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 	proxyList, err = database.InsertAndGetProxiesWithUser(proxyList, userID)
 	if err != nil {
 		log.Error("Could not add proxies to database", "error", err.Error())
-		http.Error(w, "Could not add proxies to database", http.StatusInternalServerError)
+		writeError(w, "Could not add proxies to database", http.StatusInternalServerError)
 		return
 	}
 	redis_queue.PublicProxyQueue.AddToQueue(proxyList)
@@ -67,14 +67,14 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 func getProxyPage(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	page, err := strconv.Atoi(r.PathValue("page"))
 	if err != nil {
 		log.Error("error converting page to int", "error", err.Error())
-		http.Error(w, "Invalid page", http.StatusBadRequest)
+		writeError(w, "Invalid page", http.StatusBadRequest)
 		return
 	}
 
@@ -86,7 +86,7 @@ func getProxyPage(w http.ResponseWriter, r *http.Request) {
 func getProxyCount(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -96,14 +96,14 @@ func getProxyCount(w http.ResponseWriter, r *http.Request) {
 func deleteProxies(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	var proxies []int
 
 	if err := json.NewDecoder(r.Body).Decode(&proxies); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
@@ -115,20 +115,20 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 func exportProxies(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	var settings routeModels.ExportSettings
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
 	proxies, err := database.GetProxiesForExport(userID, settings)
 
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
+		writeError(w, fmt.Sprintf("Database error: %v", err), http.StatusInternalServerError)
 		return
 	}
 

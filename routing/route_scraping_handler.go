@@ -15,7 +15,7 @@ import (
 func getScrapeSourcesCount(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -25,14 +25,14 @@ func getScrapeSourcesCount(w http.ResponseWriter, r *http.Request) {
 func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	page, err := strconv.Atoi(r.PathValue("page"))
 	if err != nil {
 		log.Error("error converting page to int", "error", err.Error())
-		http.Error(w, "Invalid page", http.StatusBadRequest)
+		writeError(w, "Invalid page", http.StatusBadRequest)
 		return
 	}
 
@@ -44,14 +44,14 @@ func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
 func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	var scrapingSource []int
 
 	if err := json.NewDecoder(r.Body).Decode(&scrapingSource); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
@@ -63,7 +63,7 @@ func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
 func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 	userID, err := authorization.GetUserIDFromRequest(r)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -80,12 +80,12 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 
 		fileContent, err = io.ReadAll(file)
 		if err != nil {
-			http.Error(w, "Failed to read file", http.StatusInternalServerError)
+			writeError(w, "Failed to read file", http.StatusInternalServerError)
 			return
 		}
 
 	} else if len(textareaContent) == 0 && len(clipboardContent) == 0 {
-		http.Error(w, "Failed to retrieve sources from any input method", http.StatusBadRequest)
+		writeError(w, "Failed to retrieve sources from any input method", http.StatusBadRequest)
 		return
 	}
 
@@ -100,7 +100,7 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 	sites, err := database.SaveScrapingSourcesOfUsers(userID, sources)
 	if err != nil {
 		log.Error("Could not save sources to database", "error", err.Error())
-		http.Error(w, "Could not save sources to database", http.StatusInternalServerError)
+		writeError(w, "Could not save sources to database", http.StatusInternalServerError)
 		return
 	}
 

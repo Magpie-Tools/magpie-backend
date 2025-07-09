@@ -15,7 +15,7 @@ func getGlobalSettings(w http.ResponseWriter, r *http.Request) {
 func getDashboardInfo(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := authorization.GetUserIDFromRequest(r)
 	if userErr != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
