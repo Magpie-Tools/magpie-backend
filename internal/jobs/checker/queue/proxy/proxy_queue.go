@@ -48,33 +48,21 @@ type RedisProxyQueue struct {
 var PublicProxyQueue RedisProxyQueue
 
 func init() {
-	ppq, err := NewRedisProxyQueue(support.GetEnv("redisUrl", "redis://localhost:8946"))
+	client, err := support.GetRedisClient()
 	if err != nil {
 		log.Fatal("Could not connect to redis for proxy queue", "error", err)
 	}
-	PublicProxyQueue = *ppq
+	PublicProxyQueue = *NewRedisProxyQueue(client)
 
 	go startInstanceHeartbeat()
 }
 
-func NewRedisProxyQueue(redisURL string) (*RedisProxyQueue, error) {
-	opt, err := redis.ParseURL(redisURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse Redis URL: %w", err)
-	}
-
-	client := redis.NewClient(opt)
-	ctx := context.Background()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
-	}
-
+func NewRedisProxyQueue(client *redis.Client) *RedisProxyQueue {
 	return &RedisProxyQueue{
 		client:    client,
-		ctx:       ctx,
+		ctx:       context.Background(),
 		popScript: redis.NewScript(luaPopScript),
-	}, nil
+	}
 }
 
 func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
@@ -176,5 +164,5 @@ func (rpq *RedisProxyQueue) GetActiveInstances() (int, error) {
 }
 
 func (rpq *RedisProxyQueue) Close() error {
-	return rpq.client.Close()
+	return support.CloseRedisClient()
 }

@@ -54,31 +54,19 @@ type RedisScrapeSiteQueue struct {
 var PublicScrapeSiteQueue RedisScrapeSiteQueue
 
 func init() {
-	sssq, err := NewRedisScrapeSiteQueue(support.GetEnv("redisUrl", "redis://localhost:8946"))
+	client, err := support.GetRedisClient()
 	if err != nil {
 		log.Fatal("Could not connect to redis for scrape site queue", "error", err)
 	}
-	PublicScrapeSiteQueue = *sssq
+	PublicScrapeSiteQueue = *NewRedisScrapeSiteQueue(client)
 }
 
-func NewRedisScrapeSiteQueue(redisURL string) (*RedisScrapeSiteQueue, error) {
-	opt, err := redis.ParseURL(redisURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse Redis URL: %w", err)
-	}
-
-	client := redis.NewClient(opt)
-	ctx := context.Background()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
-	}
-
+func NewRedisScrapeSiteQueue(client *redis.Client) *RedisScrapeSiteQueue {
 	return &RedisScrapeSiteQueue{
 		client:    client,
-		ctx:       ctx,
+		ctx:       context.Background(),
 		popScript: redis.NewScript(luaScrapePopScript),
-	}, nil
+	}
 }
 
 func (rssq *RedisScrapeSiteQueue) AddToQueue(sites []domain.ScrapeSite) error {
@@ -178,5 +166,5 @@ func (rssq *RedisScrapeSiteQueue) GetActiveInstances() (int, error) {
 }
 
 func (rssq *RedisScrapeSiteQueue) Close() error {
-	return rssq.client.Close()
+	return support.CloseRedisClient()
 }
