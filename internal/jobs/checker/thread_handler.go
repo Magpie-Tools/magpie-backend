@@ -170,12 +170,14 @@ func work() {
 				// Process each regex against the response
 				for regex, protocolId := range item.regexToProto {
 					statistic := domain.ProxyStatistic{
-						Alive:        false,
-						ResponseTime: uint16(responseTime),
-						Attempt:      attempt,
-						ProxyID:      proxy.ID,
-						ProtocolID:   protocolId,
-						JudgeID:      item.judge.ID,
+						Alive:         false,
+						ResponseTime:  uint16(responseTime),
+						Attempt:       attempt,
+						ProxyID:       proxy.ID,
+						Country:       proxy.Country,
+						EstimatedType: proxy.EstimatedType,
+						ProtocolID:    protocolId,
+						JudgeID:       item.judge.ID,
 					}
 
 					if err == nil && CheckForValidResponse(html, regex) {
