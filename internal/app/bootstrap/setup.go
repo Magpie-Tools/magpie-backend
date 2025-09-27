@@ -16,7 +16,9 @@ import (
 func Setup() {
 	config.ReadSettings()
 
-	database.SetupDB()
+	if _, err := database.SetupDB(); err != nil {
+		log.Fatalf("failed to set up database: %v", err)
+	}
 	config.SetBetweenTime()
 
 	judgeSetup()

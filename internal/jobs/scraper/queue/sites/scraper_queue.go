@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/charmbracelet/log"
-	"github.com/redis/go-redis/v9"
 	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/support"
+
+	"github.com/charmbracelet/log"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
