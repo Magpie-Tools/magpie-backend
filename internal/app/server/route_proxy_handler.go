@@ -8,7 +8,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
 	"magpie/internal/database"
-	proxyqueue "magpie/internal/jobs/checker/queue/proxy"
+	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"magpie/internal/support"
 	"net/http"
 	"strconv"

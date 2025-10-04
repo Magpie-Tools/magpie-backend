@@ -6,9 +6,9 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/jobs/checker"
 	"magpie/internal/jobs/checker/judges"
-	proxyqueue "magpie/internal/jobs/checker/queue/proxy"
+	proxyqueue "magpie/internal/jobs/queue/proxy"
+	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/jobs/scraper"
-	sitequeue "magpie/internal/jobs/scraper/queue/sites"
 	"magpie/internal/support"
 	"time"
 )

@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/charmbracelet/log"
-	"github.com/redis/go-redis/v9"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/jobs/runtime"
 	"magpie/internal/support"
+
+	"github.com/charmbracelet/log"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -38,8 +40,6 @@ func init() {
 		log.Fatal("Could not connect to redis for proxy queue", "error", err)
 	}
 	PublicProxyQueue = *NewRedisProxyQueue(client)
-
-	go startInstanceHeartbeat()
 }
 
 func NewRedisProxyQueue(client *redis.Client) *RedisProxyQueue {
@@ -141,11 +141,7 @@ func (rpq *RedisProxyQueue) GetProxyCount() (int64, error) {
 }
 
 func (rpq *RedisProxyQueue) GetActiveInstances() (int, error) {
-	keys, err := rpq.client.Keys(rpq.ctx, "magpie:instance:*").Result()
-	if err != nil {
-		return 0, err
-	}
-	return len(keys), nil
+	return runtime.CountActiveInstances(rpq.ctx, rpq.client)
 }
 
 func (rpq *RedisProxyQueue) Close() error {

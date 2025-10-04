@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"flag"
+	"fmt"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -13,8 +15,10 @@ import (
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/app/server"
 	"magpie/internal/config"
-	proxyqueue "magpie/internal/jobs/checker/queue/proxy"
-	sitequeue "magpie/internal/jobs/scraper/queue/sites"
+	proxyqueue "magpie/internal/jobs/queue/proxy"
+	sitequeue "magpie/internal/jobs/queue/sites"
+	"magpie/internal/jobs/runtime"
+	"magpie/internal/support"
 )
 
 const (
@@ -45,6 +49,14 @@ func Run() error {
 	if v := os.Getenv("SERVE_FRONTEND"); strings.EqualFold(v, "false") {
 		serveFrontend = false
 	}
+
+	redisClient, err := support.GetRedisClient()
+	if err != nil {
+		return fmt.Errorf("failed to get redis client: %w", err)
+	}
+
+	heartbeatCancel := runtime.LaunchInstanceHeartbeat(context.Background(), redisClient)
+	defer heartbeatCancel()
 
 	bootstrap.Setup()
 

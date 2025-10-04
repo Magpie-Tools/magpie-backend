@@ -6,7 +6,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
-	proxyqueue "magpie/internal/jobs/checker/queue/proxy"
+	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"magpie/internal/support"
 	"math"
 	"strconv"

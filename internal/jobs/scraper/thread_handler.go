@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"magpie/internal/database"
 	"magpie/internal/domain"
-	proxyqueue "magpie/internal/jobs/checker/queue/proxy"
+	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"magpie/internal/support"
 	"math"
 	"strings"
@@ -15,7 +15,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/stealth"
 	"magpie/internal/config"
-	sitequeue "magpie/internal/jobs/scraper/queue/sites"
+	sitequeue "magpie/internal/jobs/queue/sites"
 )
 
 var (

@@ -3,7 +3,7 @@ package database
 import (
 	"github.com/charmbracelet/log"
 	"magpie/internal/domain"
-	proxyqueue "magpie/internal/jobs/checker/queue/proxy"
+	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"sync/atomic"
 	"time"
 )

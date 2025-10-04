@@ -12,7 +12,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
-	sitequeue "magpie/internal/jobs/scraper/queue/sites"
+	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/support"
 	"net/http"
 )

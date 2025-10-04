@@ -6,7 +6,7 @@ import (
 	"io"
 	"magpie/internal/auth"
 	"magpie/internal/database"
-	sitequeue "magpie/internal/jobs/scraper/queue/sites"
+	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/support"
 	"net/http"
 	"strconv"

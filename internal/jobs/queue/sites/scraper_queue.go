@@ -10,6 +10,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/jobs/runtime"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -138,11 +139,7 @@ func (rssq *RedisScrapeSiteQueue) GetScrapeSiteCount() (int64, error) {
 }
 
 func (rssq *RedisScrapeSiteQueue) GetActiveInstances() (int, error) {
-	keys, err := rssq.client.Keys(rssq.ctx, "magpie:instance:*").Result()
-	if err != nil {
-		return 0, err
-	}
-	return len(keys), nil
+	return runtime.CountActiveInstances(rssq.ctx, rssq.client)
 }
 
 func (rssq *RedisScrapeSiteQueue) Close() error {
