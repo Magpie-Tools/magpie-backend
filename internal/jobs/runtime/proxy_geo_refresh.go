@@ -6,17 +6,18 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"magpie/internal/config"
 	"magpie/internal/database"
 )
-
-const proxyGeoRefreshInterval = 24 * time.Hour
 
 func StartProxyGeoRefreshRoutine(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	ticker := time.NewTicker(proxyGeoRefreshInterval)
+	intervalUpdates := config.ProxyGeoRefreshIntervalUpdates()
+	currentInterval := <-intervalUpdates
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	refreshOnce(ctx)
@@ -27,6 +28,26 @@ func StartProxyGeoRefreshRoutine(ctx context.Context) {
 			return
 		case <-ticker.C:
 			refreshOnce(ctx)
+		case newInterval := <-intervalUpdates:
+			if newInterval <= 0 {
+				continue
+			}
+			if newInterval == currentInterval {
+				continue
+			}
+			drainTicker(ticker)
+			currentInterval = newInterval
+			ticker.Reset(currentInterval)
+		}
+	}
+}
+
+func drainTicker(ticker *time.Ticker) {
+	for {
+		select {
+		case <-ticker.C:
+		default:
+			return
 		}
 	}
 }

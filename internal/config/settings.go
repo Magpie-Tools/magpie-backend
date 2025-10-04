@@ -3,9 +3,10 @@ package config
 import (
 	_ "embed"
 	"encoding/json"
-	"github.com/charmbracelet/log"
 	"os"
 	"sync/atomic"
+
+	"github.com/charmbracelet/log"
 )
 
 type Config struct {
@@ -44,6 +45,10 @@ type Config struct {
 
 		ScrapeSites []string `json:"scrape_sites"`
 	} `json:"scraper"`
+
+	Runtime struct {
+		ProxyGeoRefreshTimer Timer `json:"proxy_geo_refresh_timer"`
+	} `json:"runtime"`
 
 	BlacklistSources []string `json:"blacklist_sources"`
 }
@@ -152,23 +157,4 @@ func GetCurrentIp() string {
 
 func SetCurrentIp(ip string) {
 	currentIp.Store(ip)
-}
-
-func getProtocolsOfConfig(cfg Config) map[string]int {
-	protocols := make(map[string]int)
-
-	if cfg.Protocols.HTTP {
-		protocols["http"] = 1
-	}
-	if cfg.Protocols.HTTPS {
-		protocols["https"] = 2
-	}
-	if cfg.Protocols.Socks4 {
-		protocols["socks4"] = 3
-	}
-	if cfg.Protocols.Socks5 {
-		protocols["socks5"] = 4
-	}
-
-	return protocols
 }
