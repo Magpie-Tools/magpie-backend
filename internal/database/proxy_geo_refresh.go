@@ -6,19 +6,21 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/charmbracelet/log"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 	"magpie/internal/domain"
 )
 
 const (
-	proxyGeoRefreshInterval    = 24 * time.Hour
 	proxyGeoRefreshBatchSize   = 2000
 	proxyGeoRefreshUpdateChunk = 500
 	proxyGeoRefreshWorkerLimit = 16
+)
+
+var (
+	ErrProxyGeoRefreshDatabaseNotInitialized = errors.New("proxy geo refresh skipped: database not initialized")
+	ErrProxyGeoRefreshGeoLiteUnavailable     = errors.New("proxy geo refresh skipped: GeoLite databases unavailable")
 )
 
 type proxyGeoUpdate struct {
@@ -31,55 +33,25 @@ func (proxyGeoUpdate) TableName() string {
 	return "proxies"
 }
 
-func StartProxyGeoRefreshRoutine(ctx context.Context) {
+func RunProxyGeoRefresh(ctx context.Context, batchSize int) (int64, int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	ticker := time.NewTicker(proxyGeoRefreshInterval)
-	defer ticker.Stop()
-
-	runProxyGeoRefresh(ctx)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			runProxyGeoRefresh(ctx)
-		}
-	}
-}
-
-func runProxyGeoRefresh(ctx context.Context) {
 	if DB == nil {
-		log.Warn("Proxy geo refresh skipped: database not initialized")
-		return
+		return 0, 0, ErrProxyGeoRefreshDatabaseNotInitialized
 	}
 
 	if !initSuccess {
-		log.Warn("Proxy geo refresh skipped: GeoLite databases unavailable")
-		return
+		return 0, 0, ErrProxyGeoRefreshGeoLiteUnavailable
 	}
 
-	start := time.Now()
-
-	scanned, updated, err := refreshProxyGeoData(ctx, proxyGeoRefreshBatchSize)
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			log.Info("Proxy geo refresh canceled", "duration", time.Since(start))
-			return
-		}
-		log.Error("Proxy geo refresh failed", "error", err)
-		return
-	}
-
-	log.Info("Proxy geo refresh completed", "scanned", scanned, "updated", updated, "duration", time.Since(start))
+	return refreshProxyGeoData(ctx, batchSize)
 }
 
 func refreshProxyGeoData(ctx context.Context, batchSize int) (int64, int64, error) {
 	if DB == nil {
-		return 0, 0, errors.New("database not initialized")
+		return 0, 0, ErrProxyGeoRefreshDatabaseNotInitialized
 	}
 
 	if batchSize <= 0 {

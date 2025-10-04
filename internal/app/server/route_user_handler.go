@@ -3,8 +3,6 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"github.com/charmbracelet/log"
-	"gorm.io/gorm"
 	"magpie/internal/api/dto"
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/auth"
@@ -15,6 +13,9 @@ import (
 	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/support"
 	"net/http"
+
+	"github.com/charmbracelet/log"
+	"gorm.io/gorm"
 )
 
 func checkLogin(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +185,7 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	for _, uj := range userSettings.SimpleUserJudges {
 		judgeModel := database.GetJudgeFromString(uj.Url)
 		if judgeModel == nil {
-			log.Warnf("cannot load judge %d for user %d", uj.Url, userID)
+			log.Warnf("cannot load judge %s for user %d", uj.Url, userID)
 			continue
 		}
 		judgeModel.SetUp()

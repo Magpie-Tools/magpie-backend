@@ -3,10 +3,10 @@ package checker
 import (
 	"github.com/charmbracelet/log"
 	"magpie/internal/config"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
+	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/support"
 	"math"
 	"strconv"
@@ -186,7 +186,7 @@ func work() {
 						statistic.Alive = true
 					}
 
-					database.AddProxyStatistic(statistic)
+					jobruntime.AddProxyStatistic(statistic)
 				}
 			}
 
