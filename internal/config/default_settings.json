@@ -66,6 +66,15 @@
     ]
   },
 
+  "runtime": {
+    "proxy_geo_refresh_timer": {
+      "days": 1,
+      "hours": 0,
+      "minutes": 0,
+      "seconds": 0
+    }
+  },
+
   "blacklist_sources": [
     "https://www.spamhaus.org/drop/drop.txt",
     "https://www.spamhaus.org/drop/edrop.txt",
