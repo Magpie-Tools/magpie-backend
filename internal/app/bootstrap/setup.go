@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"github.com/charmbracelet/log"
 	"magpie/internal/config"
 	"magpie/internal/database"
@@ -66,6 +67,7 @@ func Setup() {
 
 	go judges.StartJudgeRoutine()
 	go database.StartProxyStatisticsRoutine()
+	go database.StartProxyGeoRefreshRoutine(context.Background())
 	go checker.ThreadDispatcher()
 	go scraper.ManagePagePool()
 	go scraper.ThreadDispatcher()
