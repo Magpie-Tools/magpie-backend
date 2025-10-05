@@ -3,11 +3,13 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/charmbracelet/log"
-	"magpie/internal/auth"
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/charmbracelet/log"
+
+	"magpie/internal/auth"
 )
 
 const distDir = "./static/frontend/browser"
@@ -66,29 +68,40 @@ func ServeFrontend(port int) error {
 func OpenRoutes(port int, serveStatic bool) error {
 
 	router := http.NewServeMux()
-	router.HandleFunc("POST /register", registerUser)
-	router.HandleFunc("POST /login", loginUser)
-	router.Handle("GET /checkLogin", auth.RequireAuth(http.HandlerFunc(checkLogin)))
-	router.Handle("POST /changePassword", auth.RequireAuth(http.HandlerFunc(changePassword)))
-	router.Handle("POST /saveSettings", auth.IsAdmin(http.HandlerFunc(saveSettings)))
-	router.Handle("GET /getDashboardInfo", auth.RequireAuth(http.HandlerFunc(getDashboardInfo)))
 
-	router.Handle("GET /getProxyCount", auth.RequireAuth(http.HandlerFunc(getProxyCount)))
-	router.Handle("GET /getProxyPage/{page}", auth.RequireAuth(http.HandlerFunc(getProxyPage)))
-	router.Handle("POST /addProxies", auth.RequireAuth(http.HandlerFunc(addProxies)))
-	router.Handle("DELETE /proxies", auth.RequireAuth(http.HandlerFunc(deleteProxies)))
+	gqlHandler, err := getGraphQLHandler()
+	if err != nil {
+		return fmt.Errorf("failed to initialize graphql handler: %w", err)
+	}
 
-	router.Handle("GET /getScrapingSourcesCount", auth.RequireAuth(http.HandlerFunc(getScrapeSourcesCount)))
-	router.Handle("GET /getScrapingSourcesPage/{page}", auth.RequireAuth(http.HandlerFunc(getScrapeSourcePage)))
-	router.Handle("POST /scrapingSources", auth.RequireAuth(http.HandlerFunc(saveScrapingSources)))
-	router.Handle("DELETE /scrapingSources", auth.RequireAuth(http.HandlerFunc(deleteScrapingSources)))
+	apiMux := http.NewServeMux()
+	apiMux.Handle("/graphql", gqlHandler)
+	apiMux.HandleFunc("POST /register", registerUser)
+	apiMux.HandleFunc("POST /login", loginUser)
+	apiMux.Handle("GET /checkLogin", auth.RequireAuth(http.HandlerFunc(checkLogin)))
+	apiMux.Handle("POST /changePassword", auth.RequireAuth(http.HandlerFunc(changePassword)))
+	apiMux.Handle("POST /saveSettings", auth.IsAdmin(http.HandlerFunc(saveSettings)))
+	apiMux.Handle("GET /getDashboardInfo", auth.RequireAuth(http.HandlerFunc(getDashboardInfo)))
 
-	router.Handle("GET /user/settings", auth.RequireAuth(http.HandlerFunc(getUserSettings)))
-	router.Handle("POST /user/settings", auth.RequireAuth(http.HandlerFunc(saveUserSettings)))
-	router.Handle("GET /user/role", auth.RequireAuth(http.HandlerFunc(getUserRole)))
-	router.Handle("POST /user/export", auth.RequireAuth(http.HandlerFunc(exportProxies)))
+	apiMux.Handle("GET /getProxyCount", auth.RequireAuth(http.HandlerFunc(getProxyCount)))
+	apiMux.Handle("GET /getProxyPage/{page}", auth.RequireAuth(http.HandlerFunc(getProxyPage)))
+	apiMux.Handle("POST /addProxies", auth.RequireAuth(http.HandlerFunc(addProxies)))
+	apiMux.Handle("DELETE /proxies", auth.RequireAuth(http.HandlerFunc(deleteProxies)))
 
-	router.Handle("GET /global/settings", auth.IsAdmin(http.HandlerFunc(getGlobalSettings)))
+	apiMux.Handle("GET /getScrapingSourcesCount", auth.RequireAuth(http.HandlerFunc(getScrapeSourcesCount)))
+	apiMux.Handle("GET /getScrapingSourcesPage/{page}", auth.RequireAuth(http.HandlerFunc(getScrapeSourcePage)))
+	apiMux.Handle("POST /scrapingSources", auth.RequireAuth(http.HandlerFunc(saveScrapingSources)))
+	apiMux.Handle("DELETE /scrapingSources", auth.RequireAuth(http.HandlerFunc(deleteScrapingSources)))
+
+	apiMux.Handle("GET /user/settings", auth.RequireAuth(http.HandlerFunc(getUserSettings)))
+	apiMux.Handle("POST /user/settings", auth.RequireAuth(http.HandlerFunc(saveUserSettings)))
+	apiMux.Handle("GET /user/role", auth.RequireAuth(http.HandlerFunc(getUserRole)))
+	apiMux.Handle("POST /user/export", auth.RequireAuth(http.HandlerFunc(exportProxies)))
+
+	apiMux.Handle("GET /global/settings", auth.IsAdmin(http.HandlerFunc(getGlobalSettings)))
+
+	router.Handle("/api", http.StripPrefix("/api", apiMux))
+	router.Handle("/api/", http.StripPrefix("/api", apiMux))
 
 	// ---------------
 	// FRONTEND
