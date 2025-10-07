@@ -6,6 +6,11 @@ type DashboardInfo struct {
 	TotalChecksWeek  int64 `json:"total_checks_week"`
 	TotalScrapedWeek int64 `json:"total_scraped_week"`
 
+	CountryBreakdown []struct {
+		Country string `json:"country"`
+		Count   uint   `json:"count"`
+	} `json:"country_breakdown"`
+
 	JudgeValidProxies []struct {
 		JudgeUrl           string `json:"judge_url"`
 		EliteProxies       uint   `json:"elite_proxies"`

@@ -2,13 +2,14 @@ package database
 
 import (
 	_ "embed"
-	"golang.org/x/sync/singleflight"
 	"magpie/internal/domain"
 	"net"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/oschwald/geoip2-golang"
 )
@@ -112,7 +113,15 @@ func GetCountryCode(ipAddress string) string {
 		return "N/A"
 	}
 
-	return record.Country.IsoCode
+	if name := record.Country.Names["en"]; name != "" {
+		return name
+	}
+
+	if record.Country.IsoCode != "" {
+		return strings.ToUpper(record.Country.IsoCode)
+	}
+
+	return "N/A"
 }
 
 func DetermineProxyType(ipAddress string) string {

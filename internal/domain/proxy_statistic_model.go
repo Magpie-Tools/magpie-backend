@@ -7,7 +7,7 @@ type ProxyStatistic struct {
 	Alive         bool   `gorm:"not null"`
 	Attempt       uint8  `gorm:"not null"`
 	ResponseTime  uint16 `gorm:"not null"` // Milliseconds
-	Country       string `gorm:"size:3;not null"`
+	Country       string `gorm:"size:56;not null"`
 	EstimatedType string `gorm:"size:20;not null"`
 
 	// Relationships

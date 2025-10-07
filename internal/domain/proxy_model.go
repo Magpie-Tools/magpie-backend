@@ -4,10 +4,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"gorm.io/gorm"
 	"net"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type Proxy struct {
@@ -20,7 +21,7 @@ type Proxy struct {
 	Username string `gorm:"default:''"`
 	Password string `gorm:"default:''"`
 
-	Country       string `gorm:"size:3;not null"`  // ISO 3166-1 alpha-2
+	Country       string `gorm:"size:56;not null"` // Human-readable country name
 	EstimatedType string `gorm:"size:20;not null"` // ISP, Datacenter, Residential
 
 	// Relationships

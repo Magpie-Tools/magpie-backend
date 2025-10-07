@@ -76,6 +76,14 @@ func NewSchema() (gql.Schema, error) {
 		},
 	})
 
+	countryBreakdownType := gql.NewObject(gql.ObjectConfig{
+		Name: "ProxyCountryBreakdown",
+		Fields: gql.Fields{
+			"country": &gql.Field{Type: gql.NewNonNull(gql.String)},
+			"count":   &gql.Field{Type: gql.NewNonNull(gql.Int)},
+		},
+	})
+
 	dashboardType := gql.NewObject(gql.ObjectConfig{
 		Name: "DashboardInfo",
 		Fields: gql.Fields{
@@ -83,6 +91,9 @@ func NewSchema() (gql.Schema, error) {
 			"totalScraped":     &gql.Field{Type: gql.NewNonNull(gql.Int)},
 			"totalChecksWeek":  &gql.Field{Type: gql.NewNonNull(gql.Int)},
 			"totalScrapedWeek": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"countryBreakdown": &gql.Field{
+				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(countryBreakdownType))),
+			},
 			"judgeValidProxies": &gql.Field{
 				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(judgeValidProxyType))),
 			},
@@ -386,6 +397,14 @@ func buildScrapeSitePage(userID uint, page int) map[string]interface{} {
 }
 
 func buildDashboard(info dto.DashboardInfo) map[string]interface{} {
+	countries := make([]map[string]interface{}, 0, len(info.CountryBreakdown))
+	for _, entry := range info.CountryBreakdown {
+		countries = append(countries, map[string]interface{}{
+			"country": entry.Country,
+			"count":   int(entry.Count),
+		})
+	}
+
 	entries := make([]map[string]interface{}, 0, len(info.JudgeValidProxies))
 	for _, entry := range info.JudgeValidProxies {
 		entries = append(entries, map[string]interface{}{
@@ -401,6 +420,7 @@ func buildDashboard(info dto.DashboardInfo) map[string]interface{} {
 		"totalScraped":      int(info.TotalScraped),
 		"totalChecksWeek":   int(info.TotalChecksWeek),
 		"totalScrapedWeek":  int(info.TotalScrapedWeek),
+		"countryBreakdown":  countries,
 		"judgeValidProxies": entries,
 	}
 }

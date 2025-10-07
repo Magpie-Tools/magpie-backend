@@ -59,7 +59,7 @@ func TestFindIP(t *testing.T) {
 }
 
 func TestFormatProxies(t *testing.T) {
-	proxy := domain.Proxy{Port: 3128, Username: "user", Password: "pass", Country: "US", EstimatedType: "Residential"}
+	proxy := domain.Proxy{Port: 3128, Username: "user", Password: "pass", Country: "United States", EstimatedType: "Residential"}
 	if err := proxy.SetIP("10.0.0.5"); err != nil {
 		t.Fatalf("SetIP returned error: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestFormatProxies(t *testing.T) {
 
 	format := "protocol ip:port username password country alive type time"
 	got := FormatProxies([]domain.Proxy{proxy}, format)
-	expected := "https 10.0.0.5:3128 user pass US true Residential 150\n"
+	expected := "https 10.0.0.5:3128 user pass United States true Residential 150\n"
 
 	if got != expected {
 		t.Fatalf("FormatProxies returned %q, want %q", got, expected)

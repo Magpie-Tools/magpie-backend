@@ -185,6 +185,42 @@ func GetDashboardInfo(userid uint) dto.DashboardInfo {
 		Where("up.user_id = ? AND ps.created_at >= ?", userid, weekAgo).
 		Count(&info.TotalScrapedWeek)
 
+	// 5) Country breakdown – latest known country per proxy assigned to the user
+	type countryCount struct {
+		Country string `gorm:"column:country"`
+		Count   uint   `gorm:"column:count"`
+	}
+
+	var countries []countryCount
+
+	countrySubQuery := DB.Model(&domain.ProxyStatistic{}).
+		Select("DISTINCT ON (proxy_id) proxy_id, country").
+		Order("proxy_id, created_at DESC")
+
+	const countryExpr = "COALESCE(NULLIF(ps.country, ''), NULLIF(proxies.country, ''), 'Unknown')"
+
+	DB.Model(&domain.Proxy{}).
+		Select(countryExpr+" AS country, COUNT(*) AS count").
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userid).
+		Joins("LEFT JOIN (?) AS ps ON ps.proxy_id = proxies.id", countrySubQuery).
+		Group(countryExpr).
+		Order("count DESC, country ASC").
+		Scan(&countries)
+
+	for _, row := range countries {
+		country := row.Country
+		if country == "" || country == "N/A" {
+			country = "Unknown"
+		}
+		info.CountryBreakdown = append(info.CountryBreakdown, struct {
+			Country string `json:"country"`
+			Count   uint   `json:"count"`
+		}{
+			Country: country,
+			Count:   row.Count,
+		})
+	}
+
 	// 5) JudgeValidProxies – one row per judge, with counts by anonymity level
 	type jvp struct {
 		JudgeUrl           string `json:"judge_url"`
