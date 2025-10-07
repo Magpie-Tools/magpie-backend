@@ -18,6 +18,12 @@ import (
 func Setup() {
 	config.ReadSettings()
 
+	if redisClient, err := support.GetRedisClient(); err != nil {
+		log.Warn("Config synchronization disabled", "error", err)
+	} else {
+		config.EnableRedisSynchronization(context.Background(), redisClient)
+	}
+
 	if _, err := database.SetupDB(); err != nil {
 		log.Fatalf("failed to set up database: %v", err)
 	}

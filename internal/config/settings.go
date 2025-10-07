@@ -3,7 +3,9 @@ package config
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"os"
+	"sync"
 	"sync/atomic"
 
 	"github.com/charmbracelet/log"
@@ -73,6 +75,7 @@ var (
 
 	configValue atomic.Value
 	currentIp   atomic.Value
+	configMu    sync.Mutex
 
 	InProductionMode bool
 )
@@ -116,30 +119,67 @@ func ReadSettings() {
 		return
 	}
 
-	// Store the new configuration atomically
-	configValue.Store(newConfig)
+	if err := applyConfigUpdate(newConfig, configUpdateOptions{source: "file"}); err != nil {
+		log.Error("Error applying configuration from settings file:", err)
+		return
+	}
 
 	log.Debug("Settings file loaded successfully")
 }
 
 func SetConfig(newConfig Config) {
-	// Update the Config atomically
-	configValue.Store(newConfig)
-
-	// Write the new configuration to the file
-	data, err := json.MarshalIndent(newConfig, "", "  ")
-	if err != nil {
-		log.Error("Error marshalling new configuration:", err)
+	if err := applyConfigUpdate(newConfig, configUpdateOptions{persistToFile: true, broadcast: true, source: "local"}); err != nil {
+		log.Error("Error applying configuration update:", err)
 		return
 	}
 
-	err = os.WriteFile(settingsFilePath, data, os.ModePerm)
-	if err != nil {
-		log.Error("Error writing new configuration to file:", err)
-		return
-	}
-	SetBetweenTime()
 	log.Debug("Default Configuration updated and written to file successfully")
+}
+
+type configUpdateOptions struct {
+	persistToFile bool
+	broadcast     bool
+	source        string
+}
+
+func applyConfigUpdate(newConfig Config, opts configUpdateOptions) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	configValue.Store(newConfig)
+	SetBetweenTime()
+
+	var errs []error
+
+	if opts.persistToFile {
+		data, err := json.MarshalIndent(newConfig, "", "  ")
+		if err != nil {
+			log.Error("Error marshalling new configuration:", err)
+			errs = append(errs, err)
+		} else if err := os.WriteFile(settingsFilePath, data, os.ModePerm); err != nil {
+			log.Error("Error writing new configuration to file:", err)
+			errs = append(errs, err)
+		}
+	}
+
+	if opts.broadcast {
+		payload, err := json.Marshal(newConfig)
+		if err != nil {
+			log.Error("Error serializing configuration for broadcast:", err)
+			errs = append(errs, err)
+		} else if err := broadcastConfigUpdate(payload); err != nil {
+			log.Error("Error broadcasting configuration update:", err)
+			errs = append(errs, err)
+		}
+	}
+
+	if opts.source != "" {
+		log.Debug("Configuration applied", "source", opts.source)
+	} else {
+		log.Debug("Configuration applied")
+	}
+
+	return errors.Join(errs...)
 }
 
 func GetConfig() Config {
