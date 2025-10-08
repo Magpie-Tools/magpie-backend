@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"magpie/internal/security"
 )
 
 type Proxy struct {
@@ -19,7 +20,9 @@ type Proxy struct {
 	IP4      uint8  `gorm:"not null;index:idx_proxy_addr,priority:4"`
 	Port     uint16 `gorm:"not null;index:idx_proxy_addr,priority:5"`
 	Username string `gorm:"default:''"`
-	Password string `gorm:"default:''"`
+	Password string `gorm:"-" json:"password"`
+
+	PasswordEncrypted string `gorm:"column:password;default:''" json:"-"`
 
 	Country       string `gorm:"size:56;not null"` // Human-readable country name
 	EstimatedType string `gorm:"size:20;not null"` // ISP, Datacenter, Residential
@@ -34,10 +37,32 @@ type Proxy struct {
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
-func (proxy *Proxy) BeforeCreate(_ *gorm.DB) error {
+func (proxy *Proxy) BeforeSave(_ *gorm.DB) error {
 	if len(proxy.Hash) == 0 {
 		proxy.GenerateHash()
 	}
+
+	if proxy.Password == "" {
+		proxy.PasswordEncrypted = ""
+		return nil
+	}
+
+	encrypted, err := security.EncryptProxySecret(proxy.Password)
+	if err != nil {
+		return err
+	}
+
+	proxy.PasswordEncrypted = encrypted
+	return nil
+}
+
+func (proxy *Proxy) AfterFind(_ *gorm.DB) error {
+	plain, _, err := security.DecryptProxySecret(proxy.PasswordEncrypted)
+	if err != nil {
+		return err
+	}
+
+	proxy.Password = plain
 	return nil
 }
 

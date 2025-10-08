@@ -3,12 +3,13 @@ package database
 import (
 	"fmt"
 
+	"magpie/internal/domain"
+	"magpie/internal/support"
+
 	"github.com/charmbracelet/log"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	"magpie/internal/domain"
-	"magpie/internal/support"
 )
 
 var (

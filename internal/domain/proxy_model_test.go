@@ -3,6 +3,8 @@ package domain
 import (
 	"bytes"
 	"testing"
+
+	"magpie/internal/security"
 )
 
 func TestProxySetIP(t *testing.T) {
@@ -67,5 +69,31 @@ func TestProxyGetters(t *testing.T) {
 	proxy.Password = ""
 	if proxy.HasAuth() {
 		t.Fatal("HasAuth returned true when password missing")
+	}
+}
+
+func TestProxyBeforeSaveEncryptsAndAfterFindDecrypts(t *testing.T) {
+	t.Setenv("PROXY_ENCRYPTION_KEY", "unit-test-encryption-key")
+	security.ResetProxyCipherForTests()
+
+	proxy := Proxy{Port: 8080, Username: "user", Password: "secret"}
+
+	if err := proxy.BeforeSave(nil); err != nil {
+		t.Fatalf("BeforeSave returned error: %v", err)
+	}
+
+	if proxy.PasswordEncrypted == "" {
+		t.Fatal("BeforeSave did not populate PasswordEncrypted")
+	}
+	if !security.IsProxySecretEncrypted(proxy.PasswordEncrypted) {
+		t.Fatalf("PasswordEncrypted %q does not have encryption prefix", proxy.PasswordEncrypted)
+	}
+
+	decrypted := Proxy{PasswordEncrypted: proxy.PasswordEncrypted}
+	if err := decrypted.AfterFind(nil); err != nil {
+		t.Fatalf("AfterFind returned error: %v", err)
+	}
+	if decrypted.Password != "secret" {
+		t.Fatalf("AfterFind returned password %q, want secret", decrypted.Password)
 	}
 }
