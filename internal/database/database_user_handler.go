@@ -1,11 +1,12 @@
 package database
 
 import (
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func GetUserFromId(id uint) domain.User {

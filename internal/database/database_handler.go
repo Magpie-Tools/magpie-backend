@@ -107,6 +107,7 @@ func defaultMigrations() []any {
 		domain.User{},
 		domain.Proxy{},
 		domain.UserProxy{},
+		domain.ProxyHistory{},
 		domain.ProxyStatistic{},
 		domain.AnonymityLevel{},
 		domain.Judge{},

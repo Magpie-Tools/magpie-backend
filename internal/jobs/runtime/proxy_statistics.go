@@ -3,9 +3,10 @@ package runtime
 import (
 	"time"
 
-	"github.com/charmbracelet/log"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+
+	"github.com/charmbracelet/log"
 )
 
 const (

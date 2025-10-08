@@ -21,10 +21,11 @@ type User struct {
 	UseHttpsForSocks bool   `gorm:"not null;default:true"`
 
 	//Relations
-	Judges      []Judge      `gorm:"many2many:user_judges;"`
-	Proxies     []Proxy      `gorm:"many2many:user_proxies;"`
-	ScrapeSites []ScrapeSite `gorm:"many2many:user_scrape_site;"`
-	CreatedAt   time.Time    `gorm:"autoCreateTime"`
+	Judges       []Judge        `gorm:"many2many:user_judges;"`
+	Proxies      []Proxy        `gorm:"many2many:user_proxies;"`
+	ProxyHistory []ProxyHistory `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	ScrapeSites  []ScrapeSite   `gorm:"many2many:user_scrape_site;"`
+	CreatedAt    time.Time      `gorm:"autoCreateTime"`
 }
 
 func (u *User) ToUserSettings(simpleUserJudges []dto.SimpleUserJudge, scrapingSources []string) dto.UserSettings {

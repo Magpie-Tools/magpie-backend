@@ -74,6 +74,7 @@ func Setup() {
 
 	go judges.StartJudgeRoutine()
 	go jobruntime.StartProxyStatisticsRoutine()
+	go jobruntime.StartProxyHistoryRoutine(context.Background())
 	go jobruntime.StartProxyGeoRefreshRoutine(context.Background())
 	go checker.ThreadDispatcher()
 	go scraper.ManagePagePool()
