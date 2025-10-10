@@ -194,16 +194,11 @@ func GetDashboardInfo(userid uint) dto.DashboardInfo {
 
 	var countries []countryCount
 
-	countrySubQuery := DB.Model(&domain.ProxyStatistic{}).
-		Select("DISTINCT ON (proxy_id) proxy_id, country").
-		Order("proxy_id, created_at DESC")
-
-	const countryExpr = "COALESCE(NULLIF(ps.country, ''), NULLIF(proxies.country, ''), 'Unknown')"
+	const countryExpr = "COALESCE(NULLIF(proxies.country, ''), 'Unknown')"
 
 	DB.Model(&domain.Proxy{}).
 		Select(countryExpr+" AS country, COUNT(*) AS count").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userid).
-		Joins("LEFT JOIN (?) AS ps ON ps.proxy_id = proxies.id", countrySubQuery).
 		Group(countryExpr).
 		Order("count DESC, country ASC").
 		Scan(&countries)

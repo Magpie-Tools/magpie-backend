@@ -314,9 +314,9 @@ func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
 			"proxies.id AS id, "+
 				"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4) AS ip, "+
 				"proxies.port AS port, "+
-				"COALESCE(ps.estimated_type, 'N/A') AS estimated_type, "+
+				"COALESCE(NULLIF(proxies.estimated_type, ''), 'N/A') AS estimated_type, "+
 				"COALESCE(ps.response_time, 0) AS response_time, "+
-				"COALESCE(ps.country, 'N/A') AS country, "+
+				"COALESCE(NULLIF(proxies.country, ''), 'N/A') AS country, "+
 				"COALESCE(al.name, 'N/A') AS anonymity_level, "+
 				"COALESCE(pr.name, 'N/A') AS protocol, "+
 				"COALESCE(ps.alive, false) AS alive, "+
