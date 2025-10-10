@@ -91,12 +91,30 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 }
 
 func (rpq *RedisProxyQueue) GetNextProxy() (domain.Proxy, time.Time, error) {
+	return rpq.GetNextProxyContext(rpq.ctx)
+}
+
+func (rpq *RedisProxyQueue) GetNextProxyContext(ctx context.Context) (domain.Proxy, time.Time, error) {
+	if ctx == nil {
+		ctx = rpq.ctx
+	}
+
 	for {
+		select {
+		case <-ctx.Done():
+			return domain.Proxy{}, time.Time{}, ctx.Err()
+		default:
+		}
+
 		currentTime := time.Now().Unix()
-		result, err := rpq.popScript.Run(rpq.ctx, rpq.client, []string{queueKey, proxyKeyPrefix}, currentTime).Result()
+		result, err := rpq.popScript.Run(ctx, rpq.client, []string{queueKey, proxyKeyPrefix}, currentTime).Result()
 
 		if errors.Is(err, redis.Nil) {
-			time.Sleep(emptyQueueSleep)
+			select {
+			case <-ctx.Done():
+				return domain.Proxy{}, time.Time{}, ctx.Err()
+			case <-time.After(emptyQueueSleep):
+			}
 			continue
 		} else if err != nil {
 			return domain.Proxy{}, time.Time{}, fmt.Errorf("lua script failed: %w", err)

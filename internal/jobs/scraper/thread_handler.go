@@ -1,6 +1,8 @@
 package scraper
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -70,15 +72,29 @@ func ThreadDispatcher() {
 /*──────────────────────────────  worker goroutine  ───────────────────────────*/
 
 func scrapeWorker() {
-	for {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
 		select {
 		case <-stopThread:
-			return
-		default:
+			cancel()
+		case <-ctx.Done():
 		}
+	}()
 
-		site, due, err := sitequeue.PublicScrapeSiteQueue.GetNextScrapeSite()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	for {
+		site, due, err := sitequeue.PublicScrapeSiteQueue.GetNextScrapeSiteContext(ctx)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
 			log.Error("pop scrape site", "err", err)
 			time.Sleep(2 * time.Second)
 			continue

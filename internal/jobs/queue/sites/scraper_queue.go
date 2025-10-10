@@ -90,12 +90,30 @@ func (rssq *RedisScrapeSiteQueue) AddToQueue(sites []domain.ScrapeSite) error {
 }
 
 func (rssq *RedisScrapeSiteQueue) GetNextScrapeSite() (domain.ScrapeSite, time.Time, error) {
+	return rssq.GetNextScrapeSiteContext(rssq.ctx)
+}
+
+func (rssq *RedisScrapeSiteQueue) GetNextScrapeSiteContext(ctx context.Context) (domain.ScrapeSite, time.Time, error) {
+	if ctx == nil {
+		ctx = rssq.ctx
+	}
+
 	for {
+		select {
+		case <-ctx.Done():
+			return domain.ScrapeSite{}, time.Time{}, ctx.Err()
+		default:
+		}
+
 		currentTime := time.Now().Unix()
-		result, err := rssq.popScript.Run(rssq.ctx, rssq.client, []string{scrapesiteQueueKey, scrapesiteKeyPrefix}, currentTime).Result()
+		result, err := rssq.popScript.Run(ctx, rssq.client, []string{scrapesiteQueueKey, scrapesiteKeyPrefix}, currentTime).Result()
 
 		if errors.Is(err, redis.Nil) {
-			time.Sleep(emptyQueueSleep)
+			select {
+			case <-ctx.Done():
+				return domain.ScrapeSite{}, time.Time{}, ctx.Err()
+			case <-time.After(emptyQueueSleep):
+			}
 			continue
 		} else if err != nil {
 			return domain.ScrapeSite{}, time.Time{}, fmt.Errorf("lua script failed: %w", err)

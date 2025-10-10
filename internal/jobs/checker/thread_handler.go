@@ -1,6 +1,8 @@
 package checker
 
 import (
+	"context"
+	"errors"
 	"github.com/charmbracelet/log"
 	"magpie/internal/config"
 	"magpie/internal/domain"
@@ -90,107 +92,120 @@ func getAutoThreads(cfg config.Config) uint32 {
 }
 
 func work() {
-	for {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
 		select {
 		case <-stopChannel:
-			// Exit the work loop if a stop signal is received
-			return
-		default:
-			proxy, scheduledTime, err := proxyqueue.PublicProxyQueue.GetNextProxy()
-			if err != nil {
-				time.Sleep(3 * time.Second)
-				continue
-			}
-
-			// Group judge requests by judge ID and protocol
-			judgeRequests := make(map[string]struct {
-				judge        *domain.Judge
-				protocol     string
-				regexToProto map[string]int // Maps regex to protocolId
-			})
-
-			var maxTimeout uint16 = 0
-			var maxRetries uint8 = 0
-
-			// Prefetch data
-			for _, user := range proxy.Users {
-				if user.Timeout > maxTimeout {
-					maxTimeout = user.Timeout
-				}
-				if user.Retries > maxRetries {
-					maxRetries = user.Retries
-				}
-
-				for protocol, protocolId := range user.GetProtocolMap() {
-					var (
-						nextJudge       *domain.Judge
-						regex           string
-						requestProtocol string
-					)
-
-					// Determine which protocol to use for request
-					if protocolId > 2 { // Socks protocol
-						if user.UseHttpsForSocks {
-							requestProtocol = "https"
-						} else {
-							requestProtocol = "http"
-						}
-					} else {
-						requestProtocol = protocol
-					}
-
-					nextJudge, regex = judges.GetNextJudge(user.ID, requestProtocol)
-
-					// Create a unique key for each judge+request_protocol combination
-					judgeKey := strconv.Itoa(int(nextJudge.ID)) + "_" + requestProtocol
-
-					if existingRequest, found := judgeRequests[judgeKey]; found {
-						// If we already plan to check this judge with this protocol, just add the regex
-						existingRequest.regexToProto[regex] = protocolId
-						judgeRequests[judgeKey] = existingRequest
-					} else {
-						// First time seeing this judge+protocol, create new entry
-						judgeRequests[judgeKey] = struct {
-							judge        *domain.Judge
-							protocol     string
-							regexToProto map[string]int
-						}{
-							judge:        nextJudge,
-							protocol:     requestProtocol,
-							regexToProto: map[string]int{regex: protocolId},
-						}
-					}
-				}
-			}
-
-			// Now make one request per judge/protocol and check all relevant regexes
-			for _, item := range judgeRequests {
-				html, err, responseTime, attempt := CheckProxyWithRetries(proxy, item.judge, item.protocol, maxTimeout, maxRetries)
-
-				// Process each regex against the response
-				for regex, protocolId := range item.regexToProto {
-					statistic := domain.ProxyStatistic{
-						Alive:        false,
-						ResponseTime: uint16(responseTime),
-						Attempt:      attempt,
-						ProxyID:      proxy.ID,
-						ProtocolID:   protocolId,
-						JudgeID:      item.judge.ID,
-					}
-
-					if err == nil && CheckForValidResponse(html, regex) {
-						lvl := support.GetProxyLevel(html)
-						statistic.LevelID = &lvl
-						statistic.Alive = true
-					}
-
-					jobruntime.AddProxyStatistic(statistic)
-				}
-			}
-
-			// Requeue the proxy for the next check
-			proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
+			cancel()
+		case <-ctx.Done():
 		}
+	}()
+
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	for {
+		proxy, scheduledTime, err := proxyqueue.PublicProxyQueue.GetNextProxyContext(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
+		judgeRequests := make(map[string]struct {
+			judge        *domain.Judge
+			protocol     string
+			regexToProto map[string]int // Maps regex to protocolId
+		})
+
+		var maxTimeout uint16
+		var maxRetries uint8
+
+		// Prefetch data
+		for _, user := range proxy.Users {
+			if user.Timeout > maxTimeout {
+				maxTimeout = user.Timeout
+			}
+			if user.Retries > maxRetries {
+				maxRetries = user.Retries
+			}
+
+			for protocol, protocolId := range user.GetProtocolMap() {
+				var (
+					nextJudge       *domain.Judge
+					regex           string
+					requestProtocol string
+				)
+
+				// Determine which protocol to use for request
+				if protocolId > 2 { // Socks protocol
+					if user.UseHttpsForSocks {
+						requestProtocol = "https"
+					} else {
+						requestProtocol = "http"
+					}
+				} else {
+					requestProtocol = protocol
+				}
+
+				nextJudge, regex = judges.GetNextJudge(user.ID, requestProtocol)
+
+				// Create a unique key for each judge+request_protocol combination
+				judgeKey := strconv.Itoa(int(nextJudge.ID)) + "_" + requestProtocol
+
+				if existingRequest, found := judgeRequests[judgeKey]; found {
+					// If we already plan to check this judge with this protocol, just add the regex
+					existingRequest.regexToProto[regex] = protocolId
+					judgeRequests[judgeKey] = existingRequest
+				} else {
+					// First time seeing this judge+protocol, create new entry
+					judgeRequests[judgeKey] = struct {
+						judge        *domain.Judge
+						protocol     string
+						regexToProto map[string]int
+					}{
+						judge:        nextJudge,
+						protocol:     requestProtocol,
+						regexToProto: map[string]int{regex: protocolId},
+					}
+				}
+			}
+		}
+
+		// Now make one request per judge/protocol and check all relevant regexes
+		for _, item := range judgeRequests {
+			html, err, responseTime, attempt := CheckProxyWithRetries(proxy, item.judge, item.protocol, maxTimeout, maxRetries)
+
+			// Process each regex against the response
+			for regex, protocolId := range item.regexToProto {
+				statistic := domain.ProxyStatistic{
+					Alive:        false,
+					ResponseTime: uint16(responseTime),
+					Attempt:      attempt,
+					ProxyID:      proxy.ID,
+					ProtocolID:   protocolId,
+					JudgeID:      item.judge.ID,
+				}
+
+				if err == nil && CheckForValidResponse(html, regex) {
+					lvl := support.GetProxyLevel(html)
+					statistic.LevelID = &lvl
+					statistic.Alive = true
+				}
+
+				jobruntime.AddProxyStatistic(statistic)
+			}
+		}
+
+		// Requeue the proxy for the next check
+		proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
 	}
 }
 
