@@ -4,15 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/auth"
 )
-
-const distDir = "./static/frontend/browser"
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -42,30 +38,7 @@ func enableCORS(next http.Handler) http.Handler {
 	})
 }
 
-func ServeFrontend(port int) error {
-	if abs, err := filepath.Abs(distDir); err == nil {
-		log.Debugf("➡️  Serving static from: %s", abs)
-	} else {
-		log.Warnf("couldn’t resolve %q: %v", distDir, err)
-	}
-
-	mux := http.NewServeMux()
-	fs := http.FileServer(http.Dir(distDir))
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fp := filepath.Join(distDir, filepath.Clean(r.URL.Path))
-		if info, err := os.Stat(fp); err == nil && !info.IsDir() {
-			fs.ServeHTTP(w, r)
-			return
-		}
-		http.ServeFile(w, r, filepath.Join(distDir, "index.csr.html"))
-	})
-
-	addr := fmt.Sprintf(":%d", port)
-	log.Infof("Starting frontend static server on port %s", addr)
-	return http.ListenAndServe(addr, mux)
-}
-
-func OpenRoutes(port int, serveStatic bool) error {
+func OpenRoutes(port int) error {
 
 	router := http.NewServeMux()
 
@@ -102,27 +75,6 @@ func OpenRoutes(port int, serveStatic bool) error {
 
 	router.Handle("/api", http.StripPrefix("/api", apiMux))
 	router.Handle("/api/", http.StripPrefix("/api", apiMux))
-
-	// ---------------
-	// FRONTEND
-	// ---------------
-	if serveStatic {
-		fs := http.FileServer(http.Dir(distDir))
-
-		router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				http.NotFound(w, r)
-			}
-			path := filepath.Join(distDir, filepath.Clean(r.URL.Path))
-			if info, err := os.Stat(path); err == nil && !info.IsDir() {
-				fs.ServeHTTP(w, r)
-				return
-			}
-			http.ServeFile(w, r, filepath.Join(distDir, "index.csr.html"))
-		})
-
-		log.Debugf("Frontend assets served from %s on the same port", distDir)
-	}
 
 	log.Debug("Routes opened")
 

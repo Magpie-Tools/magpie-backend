@@ -7,7 +7,6 @@ import (
 	"os"
 	"runtime/debug"
 	"strconv"
-	"strings"
 
 	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
@@ -22,8 +21,7 @@ import (
 )
 
 const (
-	defaultBackendPort  = 8082
-	defaultFrontendPort = 8084
+	defaultBackendPort = 8082
 )
 
 func Run() error {
@@ -35,20 +33,12 @@ func Run() error {
 	debug.SetMaxThreads(9999999999)
 
 	backendPortFlag := flag.Int("backend-port", defaultBackendPort, "Port for API server")
-	frontendPortFlag := flag.Int("frontend-port", defaultFrontendPort, "Port for frontend static server")
-	serveFEFlag := flag.Bool("serve-frontend", true, "Serve the Angular bundle on the API port")
 	productionFlag := flag.Bool("production", false, "Run in production mode")
 	flag.Parse()
 
 	config.SetProductionMode(*productionFlag)
 
 	backendPort := resolvePort("BACKEND_PORT", "backend-port", *backendPortFlag)
-	frontendPort := resolvePort("FRONTEND_PORT", "frontend-port", *frontendPortFlag)
-
-	serveFrontend := *serveFEFlag
-	if v := os.Getenv("SERVE_FRONTEND"); strings.EqualFold(v, "false") {
-		serveFrontend = false
-	}
 
 	redisClient, err := support.GetRedisClient()
 	if err != nil {
@@ -69,15 +59,7 @@ func Run() error {
 		}
 	}()
 
-	if !serveFrontend {
-		go func() {
-			if err := server.ServeFrontend(frontendPort); err != nil {
-				log.Error("frontend server terminated", "error", err)
-			}
-		}()
-	}
-
-	return server.OpenRoutes(backendPort, serveFrontend)
+	return server.OpenRoutes(backendPort)
 }
 
 func resolvePort(primaryEnv, legacyEnv string, fallback int) int {

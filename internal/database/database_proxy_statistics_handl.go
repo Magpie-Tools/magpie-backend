@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/charmbracelet/log"
 	"magpie/internal/domain"
+
+	"github.com/charmbracelet/log"
 )
 
 var proxyStatisticFieldCount atomic.Int32
