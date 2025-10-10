@@ -1,11 +1,14 @@
 package database
 
 import (
+	"time"
+
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/security"
 )
 
 const (
@@ -307,12 +310,25 @@ func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
 		Select("DISTINCT ON (proxy_id) *").
 		Order("proxy_id, created_at DESC")
 
-	var results []dto.ProxyInfo
+	type proxyInfoRow struct {
+		Id             int       `gorm:"column:id"`
+		IPEncrypted    string    `gorm:"column:ip_encrypted"`
+		Port           uint16    `gorm:"column:port"`
+		EstimatedType  string    `gorm:"column:estimated_type"`
+		ResponseTime   int16     `gorm:"column:response_time"`
+		Country        string    `gorm:"column:country"`
+		AnonymityLevel string    `gorm:"column:anonymity_level"`
+		Protocol       string    `gorm:"column:protocol"`
+		Alive          bool      `gorm:"column:alive"`
+		LatestCheck    time.Time `gorm:"column:latest_check"`
+	}
+
+	rows := make([]proxyInfoRow, 0, proxiesPerPage)
 
 	DB.Model(&domain.Proxy{}).
 		Select(
 			"proxies.id AS id, "+
-				"CONCAT(proxies.ip1, '.', proxies.ip2, '.', proxies.ip3, '.', proxies.ip4) AS ip, "+
+				"proxies.ip AS ip_encrypted, "+
 				"proxies.port AS port, "+
 				"COALESCE(NULLIF(proxies.estimated_type, ''), 'N/A') AS estimated_type, "+
 				"COALESCE(ps.response_time, 0) AS response_time, "+
@@ -329,7 +345,29 @@ func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
 		Order("alive DESC, latest_check DESC").
 		Offset(offset).
 		Limit(proxiesPerPage).
-		Scan(&results)
+		Scan(&rows)
+
+	results := make([]dto.ProxyInfo, 0, len(rows))
+	for _, row := range rows {
+		ip, _, err := security.DecryptProxySecret(row.IPEncrypted)
+		if err != nil {
+			log.Errorf("decrypt proxy ip: %v", err)
+			ip = ""
+		}
+
+		results = append(results, dto.ProxyInfo{
+			Id:             row.Id,
+			IP:             ip,
+			Port:           row.Port,
+			EstimatedType:  row.EstimatedType,
+			ResponseTime:   row.ResponseTime,
+			Country:        row.Country,
+			AnonymityLevel: row.AnonymityLevel,
+			Protocol:       row.Protocol,
+			Alive:          row.Alive,
+			LatestCheck:    row.LatestCheck,
+		})
+	}
 
 	return results
 }

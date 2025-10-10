@@ -77,9 +77,19 @@ func TestProxyBeforeSaveEncryptsAndAfterFindDecrypts(t *testing.T) {
 	security.ResetProxyCipherForTests()
 
 	proxy := Proxy{Port: 8080, Username: "user", Password: "secret"}
+	if err := proxy.SetIP("10.0.0.1"); err != nil {
+		t.Fatalf("SetIP returned error: %v", err)
+	}
 
 	if err := proxy.BeforeSave(nil); err != nil {
 		t.Fatalf("BeforeSave returned error: %v", err)
+	}
+
+	if proxy.IPEncrypted == "" {
+		t.Fatal("BeforeSave did not populate IPEncrypted")
+	}
+	if !security.IsProxySecretEncrypted(proxy.IPEncrypted) {
+		t.Fatalf("IPEncrypted %q does not have encryption prefix", proxy.IPEncrypted)
 	}
 
 	if proxy.PasswordEncrypted == "" {
@@ -89,9 +99,12 @@ func TestProxyBeforeSaveEncryptsAndAfterFindDecrypts(t *testing.T) {
 		t.Fatalf("PasswordEncrypted %q does not have encryption prefix", proxy.PasswordEncrypted)
 	}
 
-	decrypted := Proxy{PasswordEncrypted: proxy.PasswordEncrypted}
+	decrypted := Proxy{IPEncrypted: proxy.IPEncrypted, PasswordEncrypted: proxy.PasswordEncrypted}
 	if err := decrypted.AfterFind(nil); err != nil {
 		t.Fatalf("AfterFind returned error: %v", err)
+	}
+	if decrypted.IP != "10.0.0.1" {
+		t.Fatalf("AfterFind returned IP %q, want 10.0.0.1", decrypted.IP)
 	}
 	if decrypted.Password != "secret" {
 		t.Fatalf("AfterFind returned password %q, want secret", decrypted.Password)

@@ -67,7 +67,7 @@ func refreshProxyGeoData(ctx context.Context, batchSize int) (int64, int64, erro
 
 	result := DB.WithContext(ctx).
 		Model(&domain.Proxy{}).
-		Select("id", "ip1", "ip2", "ip3", "ip4", "country", "estimated_type").
+		Select("id", "ip", "country", "estimated_type").
 		FindInBatches(&proxies, batchSize, func(tx *gorm.DB, batch int) error {
 			if len(proxies) == 0 {
 				return nil

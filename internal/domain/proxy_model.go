@@ -13,14 +13,12 @@ import (
 )
 
 type Proxy struct {
-	ID       uint64 `gorm:"primaryKey;autoIncrement"`
-	IP1      uint8  `gorm:"not null;index:idx_proxy_addr,priority:1"`
-	IP2      uint8  `gorm:"not null;index:idx_proxy_addr,priority:2"`
-	IP3      uint8  `gorm:"not null;index:idx_proxy_addr,priority:3"`
-	IP4      uint8  `gorm:"not null;index:idx_proxy_addr,priority:4"`
-	Port     uint16 `gorm:"not null;index:idx_proxy_addr,priority:5"`
-	Username string `gorm:"default:''"`
-	Password string `gorm:"-" json:"password"`
+	ID          uint64 `gorm:"primaryKey;autoIncrement"`
+	IP          string `gorm:"-" json:"ip"`
+	IPEncrypted string `gorm:"column:ip;default:'';index:idx_proxy_addr,priority:1" json:"-"`
+	Port        uint16 `gorm:"not null;index:idx_proxy_addr,priority:2"`
+	Username    string `gorm:"default:''"`
+	Password    string `gorm:"-" json:"password"`
 
 	PasswordEncrypted string `gorm:"column:password;default:''" json:"-"`
 
@@ -38,8 +36,26 @@ type Proxy struct {
 }
 
 func (proxy *Proxy) BeforeSave(_ *gorm.DB) error {
+	if proxy.IP == "" && proxy.IPEncrypted != "" {
+		decodedIP, _, err := security.DecryptProxySecret(proxy.IPEncrypted)
+		if err != nil {
+			return err
+		}
+		proxy.IP = decodedIP
+	}
+
 	if len(proxy.Hash) == 0 {
 		proxy.GenerateHash()
+	}
+
+	if proxy.IP == "" {
+		proxy.IPEncrypted = ""
+	} else {
+		encryptedIP, err := security.EncryptProxySecret(proxy.IP)
+		if err != nil {
+			return err
+		}
+		proxy.IPEncrypted = encryptedIP
 	}
 
 	if proxy.Password == "" {
@@ -57,6 +73,12 @@ func (proxy *Proxy) BeforeSave(_ *gorm.DB) error {
 }
 
 func (proxy *Proxy) AfterFind(_ *gorm.DB) error {
+	ip, _, err := security.DecryptProxySecret(proxy.IPEncrypted)
+	if err != nil {
+		return err
+	}
+	proxy.IP = ip
+
 	plain, _, err := security.DecryptProxySecret(proxy.PasswordEncrypted)
 	if err != nil {
 		return err
@@ -87,10 +109,7 @@ func (proxy *Proxy) SetIP(ip string) error {
 	if ipv4 == nil {
 		return errors.New("only IPv4 addresses are supported")
 	}
-	proxy.IP1 = ipv4[0]
-	proxy.IP2 = ipv4[1]
-	proxy.IP3 = ipv4[2]
-	proxy.IP4 = ipv4[3]
+	proxy.IP = ipv4.String()
 	return nil
 }
 
@@ -99,7 +118,7 @@ func (proxy *Proxy) GetFullProxy() string {
 }
 
 func (proxy *Proxy) GetIp() string {
-	return fmt.Sprintf("%d.%d.%d.%d", proxy.IP1, proxy.IP2, proxy.IP3, proxy.IP4)
+	return proxy.IP
 }
 
 func (proxy *Proxy) HasAuth() bool {
