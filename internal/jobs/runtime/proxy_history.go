@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-const proxyHistoryInterval = 24 * time.Hour
+const proxyHistoryInterval = time.Hour
 
 func StartProxyHistoryRoutine(ctx context.Context) {
 	if ctx == nil {

@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/gorm"
 	"magpie/internal/security"
+
+	"gorm.io/gorm"
 )
 
 type Proxy struct {

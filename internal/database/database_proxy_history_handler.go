@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 )
 
@@ -63,4 +64,37 @@ func SaveProxyHistorySnapshot(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// GetProxyHistoryEntries returns the most recent proxy history snapshots for a user, ordered chronologically.
+func GetProxyHistoryEntries(userID uint, limit int) []dto.ProxyHistoryEntry {
+	if DB == nil {
+		return nil
+	}
+
+	if limit <= 0 {
+		limit = 24
+	}
+
+	rows := make([]domain.ProxyHistory, 0, limit)
+
+	DB.Where("user_id = ?", userID).
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&rows)
+
+	if len(rows) == 0 {
+		return nil
+	}
+
+	entries := make([]dto.ProxyHistoryEntry, len(rows))
+	for index := range rows {
+		row := rows[len(rows)-1-index]
+		entries[index] = dto.ProxyHistoryEntry{
+			Count:      row.ProxyCount,
+			RecordedAt: row.CreatedAt,
+		}
+	}
+
+	return entries
 }

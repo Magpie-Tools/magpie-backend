@@ -56,6 +56,14 @@ func NewSchema() (gql.Schema, error) {
 		},
 	})
 
+	proxyHistoryType := gql.NewObject(gql.ObjectConfig{
+		Name: "ProxyHistoryEntry",
+		Fields: gql.Fields{
+			"count":      &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"recordedAt": &gql.Field{Type: gql.NewNonNull(gql.DateTime)},
+		},
+	})
+
 	proxyPageType := gql.NewObject(gql.ObjectConfig{
 		Name: "ProxyPage",
 		Fields: gql.Fields{
@@ -214,6 +222,22 @@ func NewSchema() (gql.Schema, error) {
 					return 0, nil
 				},
 			},
+			"proxyHistory": &gql.Field{
+				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(proxyHistoryType))),
+				Args: gql.FieldConfigArgument{
+					"limit": &gql.ArgumentConfig{Type: gql.Int},
+				},
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					limit := 168
+					if raw, ok := p.Args["limit"].(int); ok && raw > 0 {
+						limit = raw
+					}
+					if data, ok := p.Source.(*viewerData); ok {
+						return buildProxyHistory(data.user.ID, limit), nil
+					}
+					return []map[string]interface{}{}, nil
+				},
+			},
 			"scrapeSources": &gql.Field{
 				Type: gql.NewNonNull(scrapeSitePageType),
 				Args: gql.FieldConfigArgument{
@@ -348,6 +372,18 @@ func buildUserSettings(user domain.User, judges []dto.SimpleUserJudge, sources [
 		"judges":           judgeList,
 		"scrapingSources":  dtoSettings.ScrapingSources,
 	}
+}
+
+func buildProxyHistory(userID uint, limit int) []map[string]interface{} {
+	entries := database.GetProxyHistoryEntries(userID, limit)
+	result := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, map[string]interface{}{
+			"count":      entry.Count,
+			"recordedAt": entry.RecordedAt,
+		})
+	}
+	return result
 }
 
 func buildProxyPage(userID uint, page int) map[string]interface{} {
