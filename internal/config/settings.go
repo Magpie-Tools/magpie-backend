@@ -48,6 +48,8 @@ type Config struct {
 		ScrapeSites []string `json:"scrape_sites"`
 	} `json:"scraper"`
 
+	ProxyLimits ProxyLimitConfig `json:"proxy_limits"`
+
 	Runtime struct {
 		ProxyGeoRefreshTimer Timer `json:"proxy_geo_refresh_timer"`
 	} `json:"runtime"`
@@ -65,6 +67,12 @@ type Timer struct {
 	Hours   uint32 `json:"hours"`
 	Minutes uint32 `json:"minutes"`
 	Seconds uint32 `json:"seconds"`
+}
+
+type ProxyLimitConfig struct {
+	Enabled       bool   `json:"enabled"`
+	MaxPerUser    uint32 `json:"max_per_user"`
+	ExcludeAdmins bool   `json:"exclude_admins"`
 }
 
 const settingsFilePath = "data/settings.json"

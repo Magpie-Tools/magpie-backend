@@ -66,6 +66,12 @@
     ]
   },
 
+  "proxy_limits": {
+    "enabled": false,
+    "max_per_user": 1000,
+    "exclude_admins": true
+  },
+
   "runtime": {
     "proxy_geo_refresh_timer": {
       "days": 1,

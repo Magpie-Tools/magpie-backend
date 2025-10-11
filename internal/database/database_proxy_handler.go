@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/security"
 
@@ -24,39 +25,7 @@ const (
 )
 
 func InsertAndGetProxies(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
-	if len(proxies) == 0 || len(userIDs) == 0 {
-		return nil, nil
-	}
-
-	uniqueProxies := deduplicateProxies(proxies)
-	if len(uniqueProxies) == 0 {
-		return nil, nil
-	}
-
-	batchSize := calculateBatchSize(len(uniqueProxies))
-
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return nil, tx.Error
-	}
-	defer transactionRollbackHandler(tx)
-
-	// Insert proxies and populate their IDs (including existing ones)
-	if err := insertProxies(tx, uniqueProxies, batchSize); err != nil {
-		return nil, err
-	}
-
-	// Create associations for each user
-	for _, userID := range userIDs {
-		if err := createUserAssociations(tx, uniqueProxies, userID, batchSize); err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit().Error; err != nil {
-		return nil, err
-	}
-
-	return uniqueProxies, nil
+	return insertAndAssociateProxies(proxies, userIDs)
 }
 
 // InsertAndGetProxyIDs behaves like InsertAndGetProxies, but it returns the
@@ -108,6 +77,20 @@ func InsertAndGetProxyIDs(proxies []domain.Proxy, userIDs ...uint) ([]uint64, er
 }
 
 func InsertAndGetProxiesWithUser(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
+	inserted, err := insertAndAssociateProxies(proxies, userIDs)
+	if err != nil || len(inserted) == 0 {
+		return inserted, err
+	}
+
+	proxiesWithUsers, err := fetchProxiesWithUsers(DB, inserted)
+	if err != nil {
+		return nil, err
+	}
+
+	return proxiesWithUsers, nil
+}
+
+func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain.Proxy, error) {
 	if len(proxies) == 0 || len(userIDs) == 0 {
 		return nil, nil
 	}
@@ -118,6 +101,7 @@ func InsertAndGetProxiesWithUser(proxies []domain.Proxy, userIDs ...uint) ([]dom
 	}
 
 	batchSize := calculateBatchSize(len(uniqueProxies))
+	limitCfg := config.GetConfig().ProxyLimits
 
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -125,28 +109,73 @@ func InsertAndGetProxiesWithUser(proxies []domain.Proxy, userIDs ...uint) ([]dom
 	}
 	defer transactionRollbackHandler(tx)
 
-	// Insert proxies and populate their IDs (including existing ones)
+	perUserHashes := make(map[uint][]string, len(userIDs))
+	allowedHashes := make(map[string]struct{})
+
+	for _, userID := range userIDs {
+		hashes, err := filterHashesForUser(tx, uniqueProxies, userID, batchSize, limitCfg)
+		if err != nil {
+			tx.Rollback()
+			return nil, err
+		}
+		if len(hashes) == 0 {
+			continue
+		}
+		perUserHashes[userID] = hashes
+		for _, hash := range hashes {
+			allowedHashes[hash] = struct{}{}
+		}
+	}
+
+	if len(allowedHashes) == 0 {
+		tx.Rollback()
+		return nil, nil
+	}
+
+	uniqueProxies = filterProxiesByHash(uniqueProxies, allowedHashes)
+
 	if err := insertProxies(tx, uniqueProxies, batchSize); err != nil {
+		tx.Rollback()
 		return nil, err
 	}
 
-	// Create associations for each user
+	if err := ensureProxyIDs(tx, uniqueProxies); err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	hashToID := make(map[string]uint64, len(uniqueProxies))
+	for i := range uniqueProxies {
+		hashToID[string(uniqueProxies[i].Hash)] = uniqueProxies[i].ID
+	}
+
 	for _, userID := range userIDs {
-		if err := createUserAssociations(tx, uniqueProxies, userID, batchSize); err != nil {
+		hashes := perUserHashes[userID]
+		if len(hashes) == 0 {
+			continue
+		}
+
+		proxyIDs := make([]uint64, 0, len(hashes))
+		for _, hash := range hashes {
+			if id, ok := hashToID[hash]; ok {
+				proxyIDs = append(proxyIDs, id)
+			}
+		}
+		if len(proxyIDs) == 0 {
+			continue
+		}
+
+		if err := createUserAssociations(tx, proxyIDs, userID, batchSize); err != nil {
+			tx.Rollback()
 			return nil, err
 		}
 	}
 
-	proxiesWithUsers, err := fetchProxiesWithUsers(tx, uniqueProxies)
-	if err != nil {
+	if err := tx.Commit().Error; err != nil {
 		return nil, err
 	}
 
-	if err = tx.Commit().Error; err != nil {
-		return nil, err
-	}
-
-	return proxiesWithUsers, nil
+	return uniqueProxies, nil
 }
 
 // Helper functions
@@ -220,12 +249,182 @@ func fetchExistingProxies(tx *gorm.DB, proxies []domain.Proxy, batchSize int) ([
 	return results, nil
 }
 
-func createUserAssociations(tx *gorm.DB, proxies []domain.Proxy, userID uint, batchSize int) error {
-	associations := make([]domain.UserProxy, len(proxies))
-	for i, p := range proxies {
+func filterHashesForUser(tx *gorm.DB, proxies []domain.Proxy, userID uint, chunkSize int, limitCfg config.ProxyLimitConfig) ([]string, error) {
+	if len(proxies) == 0 {
+		return nil, nil
+	}
+
+	if !limitCfg.Enabled {
+		return collectHashes(proxies), nil
+	}
+
+	if limitCfg.ExcludeAdmins {
+		var role string
+		if err := tx.Model(&domain.User{}).
+			Select("role").
+			Where("id = ?", userID).
+			Scan(&role).Error; err != nil {
+			return nil, err
+		}
+		if role == "admin" {
+			return collectHashes(proxies), nil
+		}
+	}
+
+	existingSet, err := getExistingHashesForUser(tx, userID, proxies, chunkSize)
+	if err != nil {
+		return nil, err
+	}
+
+	var currentCount int64
+	if err := tx.Table("user_proxies").
+		Where("user_id = ?", userID).
+		Count(&currentCount).Error; err != nil {
+		return nil, err
+	}
+
+	available := int64(limitCfg.MaxPerUser) - currentCount
+	if available < 0 {
+		available = 0
+	}
+
+	allowed := make([]string, 0, len(proxies))
+	for _, proxy := range proxies {
+		key := string(proxy.Hash)
+		if _, ok := existingSet[key]; ok {
+			allowed = append(allowed, key)
+			continue
+		}
+		if available == 0 {
+			continue
+		}
+		allowed = append(allowed, key)
+		available--
+	}
+
+	return allowed, nil
+}
+
+func collectHashes(proxies []domain.Proxy) []string {
+	if len(proxies) == 0 {
+		return nil
+	}
+
+	hashes := make([]string, len(proxies))
+	for i, proxy := range proxies {
+		hashes[i] = string(proxy.Hash)
+	}
+	return hashes
+}
+
+func getExistingHashesForUser(tx *gorm.DB, userID uint, proxies []domain.Proxy, chunkSize int) (map[string]struct{}, error) {
+	existing := make(map[string]struct{}, len(proxies))
+	if len(proxies) == 0 {
+		return existing, nil
+	}
+
+	if chunkSize <= 0 || chunkSize > maxParamsPerBatch {
+		chunkSize = maxParamsPerBatch
+		if len(proxies) < chunkSize {
+			chunkSize = len(proxies)
+		}
+		if chunkSize == 0 {
+			chunkSize = minBatchSize
+		}
+	}
+
+	hashes := make([][]byte, len(proxies))
+	for i, proxy := range proxies {
+		hashes[i] = proxy.Hash
+	}
+
+	for i := 0; i < len(hashes); i += chunkSize {
+		end := i + chunkSize
+		if end > len(hashes) {
+			end = len(hashes)
+		}
+
+		var rows [][]byte
+		err := tx.Table("user_proxies up").
+			Joins("JOIN proxies p ON up.proxy_id = p.id").
+			Where("up.user_id = ? AND p.hash IN ?", userID, hashes[i:end]).
+			Pluck("p.hash", &rows).Error
+		if err != nil {
+			return nil, err
+		}
+
+		for _, hash := range rows {
+			existing[string(hash)] = struct{}{}
+		}
+	}
+
+	return existing, nil
+}
+
+func filterProxiesByHash(proxies []domain.Proxy, allowed map[string]struct{}) []domain.Proxy {
+	if len(allowed) == 0 {
+		return nil
+	}
+
+	filtered := proxies[:0]
+	for _, proxy := range proxies {
+		if _, ok := allowed[string(proxy.Hash)]; ok {
+			filtered = append(filtered, proxy)
+		}
+	}
+	return filtered
+}
+
+func ensureProxyIDs(tx *gorm.DB, proxies []domain.Proxy) error {
+	var missing [][]byte
+	for _, proxy := range proxies {
+		if proxy.ID == 0 {
+			missing = append(missing, proxy.Hash)
+		}
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	var results []struct {
+		ID   uint64
+		Hash []byte
+	}
+	if err := tx.Model(&domain.Proxy{}).
+		Select("id, hash").
+		Where("hash IN ?", missing).
+		Find(&results).Error; err != nil {
+		return err
+	}
+
+	lookup := make(map[string]uint64, len(results))
+	for _, r := range results {
+		lookup[string(r.Hash)] = r.ID
+	}
+
+	for i, proxy := range proxies {
+		if proxy.ID != 0 {
+			continue
+		}
+		if id, ok := lookup[string(proxy.Hash)]; ok {
+			proxies[i].ID = id
+		}
+	}
+
+	return nil
+}
+
+func createUserAssociations(tx *gorm.DB, proxyIDs []uint64, userID uint, batchSize int) error {
+	if len(proxyIDs) == 0 {
+		return nil
+	}
+
+	associations := make([]domain.UserProxy, len(proxyIDs))
+	for i, id := range proxyIDs {
 		associations[i] = domain.UserProxy{
 			UserID:  userID,
-			ProxyID: p.ID,
+			ProxyID: id,
 		}
 	}
 
