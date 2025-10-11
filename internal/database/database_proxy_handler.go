@@ -1,6 +1,7 @@
 package database
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -466,6 +467,116 @@ func proxyMatchesSearch(proxy dto.ProxyInfo, search string) bool {
 	}
 
 	return false
+}
+
+func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
+	if proxyId == 0 {
+		return nil, nil
+	}
+
+	var proxy domain.Proxy
+	err := DB.
+		Preload("Statistics", func(db *gorm.DB) *gorm.DB {
+			return db.
+				Order("created_at DESC").
+				Limit(1).
+				Preload("Protocol").
+				Preload("Level").
+				Preload("Judge")
+		}).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
+		Where("up.user_id = ? AND proxies.id = ?", userId, proxyId).
+		First(&proxy).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var latestStat *dto.ProxyStatistic
+	var latestCheck *time.Time
+	if len(proxy.Statistics) > 0 {
+		mapped := mapProxyStatistic(&proxy.Statistics[0])
+		latestStat = &mapped
+		latestCheck = &proxy.Statistics[0].CreatedAt
+	}
+
+	detail := &dto.ProxyDetail{
+		Id:              int(proxy.ID),
+		IP:              proxy.GetIp(),
+		Port:            proxy.Port,
+		Username:        proxy.Username,
+		Password:        proxy.Password,
+		HasAuth:         proxy.HasAuth(),
+		EstimatedType:   normaliseDisplayValue(proxy.EstimatedType, "N/A"),
+		Country:         normaliseDisplayValue(proxy.Country, "Unknown"),
+		CreatedAt:       proxy.CreatedAt,
+		LatestCheck:     latestCheck,
+		LatestStatistic: latestStat,
+	}
+
+	return detail, nil
+}
+
+func GetProxyStatistics(userId uint, proxyId uint64, limit int) ([]dto.ProxyStatistic, error) {
+	if proxyId == 0 {
+		return []dto.ProxyStatistic{}, nil
+	}
+
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+
+	query := DB.Model(&domain.ProxyStatistic{}).
+		Preload("Protocol").
+		Preload("Level").
+		Preload("Judge").
+		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
+		Where("proxy_statistics.proxy_id = ? AND up.user_id = ?", proxyId, userId).
+		Order("proxy_statistics.created_at DESC").
+		Limit(limit)
+
+	rows := make([]domain.ProxyStatistic, 0, limit)
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	stats := make([]dto.ProxyStatistic, len(rows))
+	for index := range rows {
+		stats[index] = mapProxyStatistic(&rows[index])
+	}
+
+	return stats, nil
+}
+
+func mapProxyStatistic(stat *domain.ProxyStatistic) dto.ProxyStatistic {
+	if stat == nil {
+		return dto.ProxyStatistic{}
+	}
+
+	protocol := normaliseDisplayValue(stat.Protocol.Name, "Unknown")
+	anonymity := normaliseDisplayValue(stat.Level.Name, "Unknown")
+	judge := normaliseDisplayValue(stat.Judge.FullString, "Unknown")
+
+	return dto.ProxyStatistic{
+		Id:             stat.ID,
+		Alive:          stat.Alive,
+		Attempt:        stat.Attempt,
+		ResponseTime:   stat.ResponseTime,
+		Protocol:       protocol,
+		AnonymityLevel: anonymity,
+		Judge:          judge,
+		CreatedAt:      stat.CreatedAt,
+	}
+}
+
+func normaliseDisplayValue(value string, fallback string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fallback
+	}
+	return trimmed
 }
 
 func DeleteProxyRelation(userId uint, proxies []int) {

@@ -108,6 +108,66 @@ func getProxyCount(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(database.GetAllProxyCountOfUser(userID))
 }
 
+func getProxyDetail(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := auth.GetUserIDFromRequest(r)
+	if userErr != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	proxyID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil {
+		log.Error("error converting proxy id", "error", err.Error())
+		writeError(w, "Invalid proxy id", http.StatusBadRequest)
+		return
+	}
+
+	detail, dbErr := database.GetProxyDetail(userID, proxyID)
+	if dbErr != nil {
+		log.Error("error retrieving proxy detail", "error", dbErr.Error(), "proxy_id", proxyID)
+		writeError(w, "Failed to retrieve proxy", http.StatusInternalServerError)
+		return
+	}
+
+	if detail == nil {
+		writeError(w, "Proxy not found", http.StatusNotFound)
+		return
+	}
+
+	json.NewEncoder(w).Encode(detail)
+}
+
+func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := auth.GetUserIDFromRequest(r)
+	if userErr != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	proxyID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil {
+		log.Error("error converting proxy id", "error", err.Error())
+		writeError(w, "Invalid proxy id", http.StatusBadRequest)
+		return
+	}
+
+	limit := 100
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		if parsed, parseErr := strconv.Atoi(rawLimit); parseErr == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	statistics, dbErr := database.GetProxyStatistics(userID, proxyID, limit)
+	if dbErr != nil {
+		log.Error("error retrieving proxy statistics", "error", dbErr.Error(), "proxy_id", proxyID)
+		writeError(w, "Failed to retrieve proxy statistics", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"statistics": statistics})
+}
+
 func deleteProxies(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := auth.GetUserIDFromRequest(r)
 	if userErr != nil {
