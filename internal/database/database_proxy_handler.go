@@ -1,14 +1,17 @@
 package database
 
 import (
+	"strconv"
+	"strings"
 	"time"
+
+	"magpie/internal/api/dto"
+	"magpie/internal/domain"
+	"magpie/internal/security"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"magpie/internal/api/dto"
-	"magpie/internal/domain"
-	"magpie/internal/security"
 )
 
 const (
@@ -304,28 +307,23 @@ func GetAllProxies() ([]domain.Proxy, error) {
 }
 
 func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
-	offset := (page - 1) * proxiesPerPage
+	proxies, _ := GetProxyInfoPageWithFilters(userId, page, proxiesPerPage, "")
+	return proxies
+}
+
+func GetProxyInfoPageWithFilters(userId uint, page int, pageSize int, search string) ([]dto.ProxyInfo, int64) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = proxiesPerPage
+	}
 
 	subQuery := DB.Model(&domain.ProxyStatistic{}).
 		Select("DISTINCT ON (proxy_id) *").
 		Order("proxy_id, created_at DESC")
 
-	type proxyInfoRow struct {
-		Id             int       `gorm:"column:id"`
-		IPEncrypted    string    `gorm:"column:ip_encrypted"`
-		Port           uint16    `gorm:"column:port"`
-		EstimatedType  string    `gorm:"column:estimated_type"`
-		ResponseTime   int16     `gorm:"column:response_time"`
-		Country        string    `gorm:"column:country"`
-		AnonymityLevel string    `gorm:"column:anonymity_level"`
-		Protocol       string    `gorm:"column:protocol"`
-		Alive          bool      `gorm:"column:alive"`
-		LatestCheck    time.Time `gorm:"column:latest_check"`
-	}
-
-	rows := make([]proxyInfoRow, 0, proxiesPerPage)
-
-	DB.Model(&domain.Proxy{}).
+	query := DB.Model(&domain.Proxy{}).
 		Select(
 			"proxies.id AS id, "+
 				"proxies.ip AS ip_encrypted, "+
@@ -342,11 +340,48 @@ func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
 		Joins("LEFT JOIN (?) AS ps ON ps.proxy_id = proxies.id", subQuery).
 		Joins("LEFT JOIN anonymity_levels al ON al.id = ps.level_id").
 		Joins("LEFT JOIN protocols pr ON pr.id = ps.protocol_id").
-		Order("alive DESC, latest_check DESC").
-		Offset(offset).
-		Limit(proxiesPerPage).
-		Scan(&rows)
+		Order("alive DESC, latest_check DESC")
 
+	rows := make([]dto.ProxyInfoRow, 0)
+	normalizedSearch := strings.TrimSpace(search)
+	lowerSearch := strings.ToLower(normalizedSearch)
+
+	if normalizedSearch == "" {
+		offset := (page - 1) * pageSize
+		query = query.Offset(offset).Limit(pageSize)
+		if err := query.Scan(&rows).Error; err != nil {
+			return []dto.ProxyInfo{}, 0
+		}
+
+		proxies := proxyInfoRowsToDTO(rows)
+		total := GetAllProxyCountOfUser(userId)
+		return proxies, total
+	}
+
+	// Proxy IPs are stored encrypted, so the search needs to run after decrypting
+	// the values that came back from the database. We therefore filter in-memory
+	// once the full result set for the user has been loaded.
+	if err := query.Scan(&rows).Error; err != nil {
+		return []dto.ProxyInfo{}, 0
+	}
+
+	proxies := proxyInfoRowsToDTO(rows)
+	filtered := filterProxiesBySearch(proxies, lowerSearch)
+	total := int64(len(filtered))
+	start := (page - 1) * pageSize
+	if start >= len(filtered) {
+		return []dto.ProxyInfo{}, total
+	}
+
+	end := start + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+
+	return filtered[start:end], total
+}
+
+func proxyInfoRowsToDTO(rows []dto.ProxyInfoRow) []dto.ProxyInfo {
 	results := make([]dto.ProxyInfo, 0, len(rows))
 	for _, row := range rows {
 		ip, _, err := security.DecryptProxySecret(row.IPEncrypted)
@@ -370,6 +405,67 @@ func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
 	}
 
 	return results
+}
+
+func filterProxiesBySearch(proxies []dto.ProxyInfo, search string) []dto.ProxyInfo {
+	if search == "" {
+		return proxies
+	}
+
+	filtered := make([]dto.ProxyInfo, 0, len(proxies))
+	for _, proxy := range proxies {
+		if proxyMatchesSearch(proxy, search) {
+			filtered = append(filtered, proxy)
+		}
+	}
+
+	return filtered
+}
+
+func proxyMatchesSearch(proxy dto.ProxyInfo, search string) bool {
+	if strings.Contains(strings.ToLower(proxy.IP), search) {
+		return true
+	}
+
+	if strings.Contains(strconv.FormatUint(uint64(proxy.Port), 10), search) {
+		return true
+	}
+
+	if strings.Contains(strings.ToLower(proxy.EstimatedType), search) {
+		return true
+	}
+
+	if strings.Contains(strings.ToLower(proxy.Country), search) {
+		return true
+	}
+
+	if strings.Contains(strings.ToLower(proxy.Protocol), search) {
+		return true
+	}
+
+	if strings.Contains(strings.ToLower(proxy.AnonymityLevel), search) {
+		return true
+	}
+
+	if strings.Contains(strconv.Itoa(int(proxy.ResponseTime)), search) {
+		return true
+	}
+
+	aliveLabel := "dead"
+	if proxy.Alive {
+		aliveLabel = "alive"
+	}
+	if strings.Contains(aliveLabel, search) {
+		return true
+	}
+
+	if !proxy.LatestCheck.IsZero() {
+		if strings.Contains(strings.ToLower(proxy.LatestCheck.Format(time.RFC3339)), search) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func DeleteProxyRelation(userId uint, proxies []int) {

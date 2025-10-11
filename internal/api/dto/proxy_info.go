@@ -14,3 +14,8 @@ type ProxyInfo struct {
 	Alive          bool      `json:"alive"`
 	LatestCheck    time.Time `json:"latest_check"`
 }
+
+type ProxyPage struct {
+	Proxies []ProxyInfo `json:"proxies"`
+	Total   int64       `json:"total"`
+}

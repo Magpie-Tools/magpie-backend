@@ -12,6 +12,7 @@ import (
 	"magpie/internal/support"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 func addProxies(w http.ResponseWriter, r *http.Request) {
@@ -78,9 +79,23 @@ func getProxyPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyList := database.GetProxyInfoPage(userID, page)
+	pageSize := 0
+	if rawPageSize := r.URL.Query().Get("pageSize"); rawPageSize != "" {
+		if parsedPageSize, parseErr := strconv.Atoi(rawPageSize); parseErr == nil && parsedPageSize > 0 {
+			pageSize = parsedPageSize
+		}
+	}
 
-	json.NewEncoder(w).Encode(proxyList)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+	proxies, total := database.GetProxyInfoPageWithFilters(userID, page, pageSize, search)
+
+	response := dto.ProxyPage{
+		Proxies: proxies,
+		Total:   total,
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
 
 func getProxyCount(w http.ResponseWriter, r *http.Request) {
