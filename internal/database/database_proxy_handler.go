@@ -532,14 +532,12 @@ func GetProxyInfoPageWithFilters(userId uint, page int, pageSize int, search str
 				"COALESCE(ps.response_time, 0) AS response_time, "+
 				"COALESCE(NULLIF(proxies.country, ''), 'N/A') AS country, "+
 				"COALESCE(al.name, 'N/A') AS anonymity_level, "+
-				"COALESCE(pr.name, 'N/A') AS protocol, "+
 				"COALESCE(ps.alive, false) AS alive, "+
 				"COALESCE(ps.created_at, '0001-01-01 00:00:00'::timestamp) AS latest_check",
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userId).
 		Joins("LEFT JOIN (?) AS ps ON ps.proxy_id = proxies.id", subQuery).
 		Joins("LEFT JOIN anonymity_levels al ON al.id = ps.level_id").
-		Joins("LEFT JOIN protocols pr ON pr.id = ps.protocol_id").
 		Order("alive DESC, latest_check DESC")
 
 	rows := make([]dto.ProxyInfoRow, 0)
@@ -598,7 +596,6 @@ func proxyInfoRowsToDTO(rows []dto.ProxyInfoRow) []dto.ProxyInfo {
 			ResponseTime:   row.ResponseTime,
 			Country:        row.Country,
 			AnonymityLevel: row.AnonymityLevel,
-			Protocol:       row.Protocol,
 			Alive:          row.Alive,
 			LatestCheck:    row.LatestCheck,
 		})
@@ -636,10 +633,6 @@ func proxyMatchesSearch(proxy dto.ProxyInfo, search string) bool {
 	}
 
 	if strings.Contains(strings.ToLower(proxy.Country), search) {
-		return true
-	}
-
-	if strings.Contains(strings.ToLower(proxy.Protocol), search) {
 		return true
 	}
 

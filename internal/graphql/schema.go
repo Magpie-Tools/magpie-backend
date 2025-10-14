@@ -398,7 +398,6 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 			"responseTime":   int(proxy.ResponseTime),
 			"country":        proxy.Country,
 			"anonymityLevel": proxy.AnonymityLevel,
-			"protocol":       proxy.Protocol,
 			"alive":          proxy.Alive,
 			"latestCheck":    proxy.LatestCheck,
 		})
