@@ -7,6 +7,7 @@ type ProxyStatistic struct {
 	Alive          bool      `json:"alive"`
 	Attempt        uint8     `json:"attempt"`
 	ResponseTime   uint16    `json:"response_time"`
+	ResponseBody   string    `json:"response_body"`
 	Protocol       string    `json:"protocol"`
 	AnonymityLevel string    `json:"anonymity_level"`
 	Judge          string    `json:"judge"`

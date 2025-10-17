@@ -663,6 +663,27 @@ func GetProxyStatistics(userId uint, proxyId uint64, limit int) ([]dto.ProxyStat
 	return stats, nil
 }
 
+func GetProxyStatisticResponseBody(userId uint, proxyId uint64, statisticId uint64) (string, error) {
+	if proxyId == 0 || statisticId == 0 {
+		return "", gorm.ErrRecordNotFound
+	}
+
+	var stat domain.ProxyStatistic
+	err := DB.Model(&domain.ProxyStatistic{}).
+		Select("proxy_statistics.response_body").
+		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
+		Where("proxy_statistics.id = ? AND proxy_statistics.proxy_id = ? AND up.user_id = ?", statisticId, proxyId, userId).
+		First(&stat).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", gorm.ErrRecordNotFound
+		}
+		return "", err
+	}
+
+	return stat.ResponseBody, nil
+}
+
 func mapProxyStatistic(stat *domain.ProxyStatistic) dto.ProxyStatistic {
 	if stat == nil {
 		return dto.ProxyStatistic{}
@@ -677,6 +698,7 @@ func mapProxyStatistic(stat *domain.ProxyStatistic) dto.ProxyStatistic {
 		Alive:          stat.Alive,
 		Attempt:        stat.Attempt,
 		ResponseTime:   stat.ResponseTime,
+		ResponseBody:   stat.ResponseBody,
 		Protocol:       protocol,
 		AnonymityLevel: anonymity,
 		Judge:          judge,

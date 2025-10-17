@@ -7,6 +7,7 @@ type ProxyStatistic struct {
 	Alive        bool   `gorm:"not null"`
 	Attempt      uint8  `gorm:"not null"`
 	ResponseTime uint16 `gorm:"not null"` // Milliseconds
+	ResponseBody string `gorm:"type:text"`
 
 	// Relationships
 	ProtocolID int      `gorm:"index"`

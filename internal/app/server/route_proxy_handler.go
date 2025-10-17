@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/charmbracelet/log"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 func addProxies(w http.ResponseWriter, r *http.Request) {
@@ -166,6 +169,42 @@ func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{"statistics": statistics})
+}
+
+func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
+	userID, userErr := auth.GetUserIDFromRequest(r)
+	if userErr != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	proxyID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil {
+		log.Error("error converting proxy id", "error", err.Error())
+		writeError(w, "Invalid proxy id", http.StatusBadRequest)
+		return
+	}
+
+	statisticID, err := strconv.ParseUint(r.PathValue("statisticId"), 10, 64)
+	if err != nil {
+		log.Error("error converting statistic id", "error", err.Error())
+		writeError(w, "Invalid statistic id", http.StatusBadRequest)
+		return
+	}
+
+	responseBody, dbErr := database.GetProxyStatisticResponseBody(userID, proxyID, statisticID)
+	if dbErr != nil {
+		if errors.Is(dbErr, gorm.ErrRecordNotFound) {
+			writeError(w, "Proxy statistic not found", http.StatusNotFound)
+			return
+		}
+
+		log.Error("error retrieving proxy statistic body", "error", dbErr.Error(), "proxy_id", proxyID, "statistic_id", statisticID)
+		writeError(w, "Failed to retrieve proxy statistic body", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{"response_body": responseBody})
 }
 
 func deleteProxies(w http.ResponseWriter, r *http.Request) {

@@ -21,6 +21,8 @@ var (
 	stopChannel    = make(chan struct{}) // Signal to stop threads
 )
 
+const maxResponseBodyLength = 4096
+
 func ThreadDispatcher() {
 	for {
 		cfg := config.GetConfig()
@@ -192,6 +194,7 @@ func work() {
 					ProxyID:      proxy.ID,
 					ProtocolID:   protocolId,
 					JudgeID:      item.judge.ID,
+					ResponseBody: truncateResponseBody(html),
 				}
 
 				if err == nil && CheckForValidResponse(html, regex) {
@@ -227,4 +230,17 @@ func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol str
 	}
 
 	return html, err, responseTime, retries
+}
+
+func truncateResponseBody(body string) string {
+	if body == "" {
+		return ""
+	}
+
+	runes := []rune(body)
+	if len(runes) > maxResponseBodyLength {
+		runes = runes[:maxResponseBodyLength]
+	}
+
+	return string(runes)
 }
