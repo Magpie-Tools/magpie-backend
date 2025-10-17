@@ -25,6 +25,12 @@ const (
 	connectEstablishedResponse = "HTTP/1.1 200 Connection Established\r\nProxy-Agent: Magpie Rotator\r\n\r\n"
 )
 
+var (
+	getNextRotatingProxyFunc   = database.GetNextRotatingProxy
+	dialUpstreamFunc           = dialUpstream
+	performUpstreamConnectFunc = performUpstreamConnect
+)
+
 type proxyHandler struct {
 	rotator domain.RotatingProxy
 }
@@ -86,7 +92,7 @@ func writeProxyAuthRequired(w http.ResponseWriter) {
 }
 
 func (h *proxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	next, err := database.GetNextRotatingProxy(h.rotator.UserID, h.rotator.ID)
+	next, err := getNextRotatingProxyFunc(h.rotator.UserID, h.rotator.ID)
 	if err != nil {
 		http.Error(w, "failed to acquire upstream proxy", http.StatusBadGateway)
 		return
@@ -161,7 +167,7 @@ func (h *proxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	next, err := database.GetNextRotatingProxy(h.rotator.UserID, h.rotator.ID)
+	next, err := getNextRotatingProxyFunc(h.rotator.UserID, h.rotator.ID)
 	if err != nil {
 		writeHijackedResponse(buf, http.StatusBadGateway, "Failed to acquire upstream proxy")
 		return
@@ -172,13 +178,13 @@ func (h *proxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upConn, err := dialUpstream(next)
+	upConn, err := dialUpstreamFunc(next)
 	if err != nil {
 		writeHijackedResponse(buf, http.StatusBadGateway, "Failed to connect to upstream proxy")
 		return
 	}
 
-	if err := performUpstreamConnect(upConn, r.Host, next); err != nil {
+	if err := performUpstreamConnectFunc(upConn, r.Host, next); err != nil {
 		_ = upConn.Close()
 		writeHijackedResponse(buf, http.StatusBadGateway, "Upstream CONNECT failed")
 		return
