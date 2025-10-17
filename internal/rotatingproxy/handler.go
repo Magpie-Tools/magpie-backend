@@ -3,6 +3,7 @@ package rotatingproxy
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -210,7 +211,12 @@ func copyHeaders(dst, src http.Header) {
 }
 
 func supportedUpstream(protocol string) bool {
-	return strings.ToLower(protocol) == "http"
+	switch strings.ToLower(protocol) {
+	case "http", "https":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildHTTPTransport(next *dto.RotatingProxyNext) *http.Transport {
@@ -230,6 +236,10 @@ func buildHTTPTransport(next *dto.RotatingProxyNext) *http.Transport {
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
+	if strings.ToLower(next.Protocol) == "https" {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+
 	return transport
 }
 
@@ -240,6 +250,16 @@ func dialUpstream(next *dto.RotatingProxyNext) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if strings.ToLower(next.Protocol) == "https" {
+		tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+		if err := tlsConn.Handshake(); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return tlsConn, nil
+	}
+
 	return conn, nil
 }
 
