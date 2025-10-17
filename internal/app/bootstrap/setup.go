@@ -2,7 +2,10 @@ package bootstrap
 
 import (
 	"context"
+	"time"
+
 	"github.com/charmbracelet/log"
+
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/jobs/checker"
@@ -11,8 +14,8 @@ import (
 	sitequeue "magpie/internal/jobs/queue/sites"
 	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/jobs/scraper"
+	"magpie/internal/rotatingproxy"
 	"magpie/internal/support"
-	"time"
 )
 
 func Setup() {
@@ -69,6 +72,8 @@ func Setup() {
 		sitequeue.PublicScrapeSiteQueue.AddToQueue(scrapeSites)
 		log.Infof("Added %d scrape sites to queue", len(scrapeSites))
 	}
+
+	rotatingproxy.GlobalManager.StartAll()
 
 	// Routines
 

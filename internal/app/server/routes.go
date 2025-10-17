@@ -64,6 +64,11 @@ func OpenRoutes(port int) error {
 	apiMux.Handle("POST /addProxies", auth.RequireAuth(http.HandlerFunc(addProxies)))
 	apiMux.Handle("DELETE /proxies", auth.RequireAuth(http.HandlerFunc(deleteProxies)))
 
+	apiMux.Handle("GET /rotatingProxies", auth.RequireAuth(http.HandlerFunc(listRotatingProxies)))
+	apiMux.Handle("POST /rotatingProxies", auth.RequireAuth(http.HandlerFunc(createRotatingProxy)))
+	apiMux.Handle("DELETE /rotatingProxies/{id}", auth.RequireAuth(http.HandlerFunc(deleteRotatingProxy)))
+	apiMux.Handle("POST /rotatingProxies/{id}/next", auth.RequireAuth(http.HandlerFunc(getNextRotatingProxy)))
+
 	apiMux.Handle("GET /getScrapingSourcesCount", auth.RequireAuth(http.HandlerFunc(getScrapeSourcesCount)))
 	apiMux.Handle("GET /getScrapingSourcesPage/{page}", auth.RequireAuth(http.HandlerFunc(getScrapeSourcePage)))
 	apiMux.Handle("POST /scrapingSources", auth.RequireAuth(http.HandlerFunc(saveScrapingSources)))
