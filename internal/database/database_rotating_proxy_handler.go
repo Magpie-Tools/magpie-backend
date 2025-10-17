@@ -116,6 +116,7 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 			ListenPort:      entity.ListenPort,
 			AuthRequired:    entity.AuthRequired,
 			AuthUsername:    entity.AuthUsername,
+			AuthPassword:    strings.TrimSpace(payload.AuthPassword),
 			CreatedAt:       entity.CreatedAt,
 		}
 
@@ -176,6 +177,7 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 			ListenPort:      row.ListenPort,
 			AuthRequired:    row.AuthRequired,
 			AuthUsername:    row.AuthUsername,
+			AuthPassword:    row.AuthPassword,
 			LastRotationAt:  row.LastRotationAt,
 			LastServedProxy: lastProxy,
 			CreatedAt:       row.CreatedAt,

@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
+	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/rotatingproxy"
 )
@@ -26,6 +29,25 @@ func listRotatingProxies(w http.ResponseWriter, r *http.Request) {
 	if dbErr != nil {
 		writeError(w, "Failed to load rotating proxies", http.StatusInternalServerError)
 		return
+	}
+
+	rotatorHost := strings.TrimSpace(config.GetCurrentIp())
+	if rotatorHost == "" {
+		rotatorHost = strings.TrimSpace(r.Host)
+	}
+	if rotatorHost != "" {
+		if parsedHost, _, err := net.SplitHostPort(rotatorHost); err == nil {
+			rotatorHost = parsedHost
+		}
+	}
+
+	for idx := range proxies {
+		proxies[idx].ListenHost = rotatorHost
+		if rotatorHost != "" {
+			proxies[idx].ListenAddress = fmt.Sprintf("%s:%d", rotatorHost, proxies[idx].ListenPort)
+		} else {
+			proxies[idx].ListenAddress = fmt.Sprintf("%d", proxies[idx].ListenPort)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"rotating_proxies": proxies})
