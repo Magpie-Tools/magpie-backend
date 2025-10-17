@@ -192,7 +192,7 @@ func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseBody, dbErr := database.GetProxyStatisticResponseBody(userID, proxyID, statisticID)
+	responseDetail, dbErr := database.GetProxyStatisticResponseBody(userID, proxyID, statisticID)
 	if dbErr != nil {
 		if errors.Is(dbErr, gorm.ErrRecordNotFound) {
 			writeError(w, "Proxy statistic not found", http.StatusNotFound)
@@ -204,7 +204,7 @@ func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]any{"response_body": responseBody})
+	json.NewEncoder(w).Encode(responseDetail)
 }
 
 func deleteProxies(w http.ResponseWriter, r *http.Request) {

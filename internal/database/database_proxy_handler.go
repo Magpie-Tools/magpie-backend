@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"errors"
 	"strconv"
 	"strings"
@@ -663,25 +664,39 @@ func GetProxyStatistics(userId uint, proxyId uint64, limit int) ([]dto.ProxyStat
 	return stats, nil
 }
 
-func GetProxyStatisticResponseBody(userId uint, proxyId uint64, statisticId uint64) (string, error) {
+type proxyStatisticBodyRow struct {
+	ResponseBody string
+	Regex        sql.NullString
+}
+
+func GetProxyStatisticResponseBody(userId uint, proxyId uint64, statisticId uint64) (dto.ProxyStatisticDetail, error) {
 	if proxyId == 0 || statisticId == 0 {
-		return "", gorm.ErrRecordNotFound
+		return dto.ProxyStatisticDetail{}, gorm.ErrRecordNotFound
 	}
 
-	var stat domain.ProxyStatistic
-	err := DB.Model(&domain.ProxyStatistic{}).
-		Select("proxy_statistics.response_body").
+	var row proxyStatisticBodyRow
+	err := DB.Table("proxy_statistics").
+		Select("proxy_statistics.response_body", "user_judges.regex").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
+		Joins("LEFT JOIN user_judges ON user_judges.judge_id = proxy_statistics.judge_id AND user_judges.user_id = up.user_id").
 		Where("proxy_statistics.id = ? AND proxy_statistics.proxy_id = ? AND up.user_id = ?", statisticId, proxyId, userId).
-		First(&stat).Error
+		First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", gorm.ErrRecordNotFound
+			return dto.ProxyStatisticDetail{}, gorm.ErrRecordNotFound
 		}
-		return "", err
+		return dto.ProxyStatisticDetail{}, err
 	}
 
-	return stat.ResponseBody, nil
+	regex := ""
+	if row.Regex.Valid {
+		regex = strings.TrimSpace(row.Regex.String)
+	}
+
+	return dto.ProxyStatisticDetail{
+		ResponseBody: row.ResponseBody,
+		Regex:        regex,
+	}, nil
 }
 
 func mapProxyStatistic(stat *domain.ProxyStatistic) dto.ProxyStatistic {

@@ -13,3 +13,8 @@ type ProxyStatistic struct {
 	Judge          string    `json:"judge"`
 	CreatedAt      time.Time `json:"created_at"`
 }
+
+type ProxyStatisticDetail struct {
+	ResponseBody string `json:"response_body"`
+	Regex        string `json:"regex"`
+}
