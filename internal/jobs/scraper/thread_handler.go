@@ -4,42 +4,53 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
+	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/support"
 	"math"
+	"net"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/stealth"
-	"magpie/internal/config"
-	sitequeue "magpie/internal/jobs/queue/sites"
 )
 
+/* ─────────────────────────────  thread control  ─────────────────────────── */
+
 var (
-	/* ─────────────────────────────  thread control  ─────────────────────────── */
 	currentThreads atomic.Uint32
 	stopThread     = make(chan struct{}) // signals a worker to exit
+)
 
-	/* ─────────────────────────────  page pool  ─────────────────────────────── */
+/* ─────────────────────────────  browser & page pool  ───────────────────── */
+
+var (
 	browser      *rod.Browser
 	pagePool     chan *rod.Page
 	currentPages atomic.Int32
+
 	stopPage     = make(chan struct{}) // signals that a page should be closed
+	browserAlive atomic.Bool
+	restartCh    = make(chan struct{}, 1) // coalesced restart signal
 )
 
-/*──────────────────────────────────────────────────────────────────────────────*/
+/* ─────────────────────────────  init  ───────────────────────────────────── */
 
 func init() {
-	browser = rod.New().MustConnect()
 	pagePool = make(chan *rod.Page, 2000)
+	mustRestartBrowser() // initial bring-up
+	go BrowserWatchdog() // listen for restart requests
+	go ManagePagePool()  // keep pool aligned with demand
 }
 
-/*─────────────────────────────  dynamic dispatcher  ──────────────────────────*/
+/* ─────────────────────────────  dispatcher  ─────────────────────────────── */
 
 func ThreadDispatcher() {
 	for {
@@ -52,13 +63,10 @@ func ThreadDispatcher() {
 			target = cfg.Scraper.Threads
 		}
 
-		/* spawn */
 		for currentThreads.Load() < target {
 			go scrapeWorker()
 			currentThreads.Add(1)
 		}
-
-		/* retire */
 		for currentThreads.Load() > target {
 			stopThread <- struct{}{}
 			currentThreads.Add(^uint32(0)) // decrement
@@ -69,7 +77,7 @@ func ThreadDispatcher() {
 	}
 }
 
-/*──────────────────────────────  worker goroutine  ───────────────────────────*/
+/* ─────────────────────────────  worker  ─────────────────────────────────── */
 
 func scrapeWorker() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -108,6 +116,13 @@ func scrapeWorker() {
 
 		for attempts := 0; attempts < 3; attempts++ {
 			html, scrapeErr = ScraperRequest(site.URL, timeout)
+			if isConnClosed(scrapeErr) {
+				// Treat DevTools socket loss as transient infra failure, not site failure.
+				browserAlive.Store(false)
+				requestRestartBrowser()
+				time.Sleep(1 * time.Second)
+				continue
+			}
 			if scrapeErr == nil || !strings.Contains(scrapeErr.Error(), "timeout waiting for available page") {
 				break
 			}
@@ -127,7 +142,7 @@ func scrapeWorker() {
 	}
 }
 
-/*───────────────────────────────  auto‑sizing  ───────────────────────────────*/
+/* ─────────────────────────────  auto-sizing  ────────────────────────────── */
 
 func autoThreadCount(cfg config.Config) uint32 {
 	totalSites, err := sitequeue.PublicScrapeSiteQueue.GetScrapeSiteCount()
@@ -161,27 +176,29 @@ func autoThreadCount(cfg config.Config) uint32 {
 	return uint32(threads)
 }
 
-/*──────────────────────────────  page‑pool logic  ────────────────────────────*/
+/* ─────────────────────────────  page-pool mgmt  ─────────────────────────── */
 
 func ManagePagePool() {
 	for {
 		cfg := config.GetConfig()
 		targetPages := calcRequiredPages(cfg)
 
-		/* add pages */
 		for currentPages.Load() < targetPages {
 			if err := addPage(); err != nil {
+				if isConnClosed(err) {
+					browserAlive.Store(false)
+					requestRestartBrowser()
+				}
 				log.Error("add page", "err", err)
 				time.Sleep(1 * time.Second)
 				continue
 			}
 		}
 
-		/* shed pages */
 		for currentPages.Load() > targetPages {
 			select {
 			case p := <-pagePool:
-				p.MustClose()
+				_ = safeClosePage(p)
 				currentPages.Add(-1)
 			default:
 				stopPage <- struct{}{}
@@ -193,8 +210,7 @@ func ManagePagePool() {
 }
 
 func calcRequiredPages(cfg config.Config) int32 {
-	count := uint64(1) // default
-
+	count := uint64(1)
 	if n, err := sitequeue.PublicScrapeSiteQueue.GetScrapeSiteCount(); err == nil {
 		count = uint64(n)
 	}
@@ -216,54 +232,175 @@ func calcRequiredPages(cfg config.Config) int32 {
 }
 
 func addPage() error {
+	if err := ensureBrowser(); err != nil {
+		return err
+	}
 	p, err := stealth.Page(browser)
 	if err != nil {
+		if isConnClosed(err) {
+			browserAlive.Store(false)
+			requestRestartBrowser()
+		}
 		return fmt.Errorf("stealth page: %w", err)
 	}
 	select {
 	case pagePool <- p:
 		currentPages.Add(1)
+		return nil
 	default:
-		p.MustClose()
+		_ = safeClosePage(p)
 		return fmt.Errorf("pool full")
 	}
-	return nil
 }
-
-/*───────────────────────────────  supports  ───────────────────────────────────*/
 
 func recyclePage(p *rod.Page) {
 	select {
 	case <-stopPage:
-		p.MustClose()
+		_ = safeClosePage(p)
 		currentPages.Add(-1)
+		return
 	default:
-		if err := resetPage(p); err != nil {
-			log.Debug("page reset failed, replacing", "err", err)
-			p.MustClose()
-			currentPages.Add(-1)
-			// Always add a replacement when a page is closed
-			go func() {
-				if err := addPage(); err != nil {
-					log.Error("add replacement page", "err", err)
-				}
-			}()
-		} else {
-			select {
-			case pagePool <- p:
-				// Successfully recycled
-			default:
-				// Pool is full, close the page
-				p.MustClose()
-				currentPages.Add(-1)
-			}
+	}
+
+	if err := resetPage(p); err != nil {
+		log.Debug("page reset failed, replacing", "err", err)
+		_ = safeClosePage(p)
+		currentPages.Add(-1)
+		if isConnClosed(err) {
+			browserAlive.Store(false)
+			requestRestartBrowser()
 		}
+		go func() {
+			if err := addPage(); err != nil {
+				log.Error("add replacement page", "err", err)
+			}
+		}()
+		return
+	}
+
+	select {
+	case pagePool <- p:
+		// recycled
+	default:
+		_ = safeClosePage(p)
+		currentPages.Add(-1)
 	}
 }
 
+/* ─────────────────────────────  browser lifecycle  ──────────────────────── */
+
+func BrowserWatchdog() {
+	for range restartCh {
+		browserAlive.Store(false)
+
+		// drain page pool; old pages are tied to dead DevTools socket
+		for {
+			select {
+			case p := <-pagePool:
+				_ = safeClosePage(p)
+				currentPages.Add(-1)
+			default:
+				goto drained
+			}
+		}
+	drained:
+
+		mustRestartBrowser()
+
+		// repopulate opportunistically to previous target
+		go func(target int32) {
+			for currentPages.Load() < target {
+				if err := addPage(); err != nil {
+					time.Sleep(300 * time.Millisecond)
+					continue
+				}
+			}
+		}(currentPages.Load() + 0) // snapshot
+	}
+}
+
+func requestRestartBrowser() {
+	select {
+	case restartCh <- struct{}{}:
+	default:
+	}
+}
+
+func ensureBrowser() error {
+	if browserAlive.Load() {
+		return nil
+	}
+	requestRestartBrowser()
+	// small wait window to let watchdog spin up
+	select {
+	case <-time.After(2 * time.Second):
+		// continue; watchdog might already have done the work
+	default:
+	}
+	if !browserAlive.Load() {
+		return fmt.Errorf("browser not available")
+	}
+	return nil
+}
+
+func mustRestartBrowser() {
+	// Close old quietly
+	if browser != nil {
+		_ = rod.Try(func() { browser.MustClose() })
+	}
+
+	// Launch Chrome
+	url := launcher.New().
+		// Sleep/resume can confuse leakless in dev; keep it off on laptops
+		Leakless(false).
+		Headless(true).
+		// Flags that reduce background throttling after resume
+		Set("disable-background-timer-throttling").
+		Set("disable-backgrounding-occluded-windows").
+		Set("disable-renderer-backgrounding").
+		MustLaunch()
+
+	b := rod.New().ControlURL(url)
+	// connect with simple backoff
+	var err error
+	for i := 0; i < 10; i++ {
+		if err = b.Connect(); err == nil {
+			break
+		}
+		time.Sleep(time.Duration(250*(i+1)) * time.Millisecond)
+	}
+	if err != nil {
+		panic(fmt.Errorf("browser connect failed: %w", err))
+	}
+
+	browser = b
+	browserAlive.Store(true)
+}
+
+/* ─────────────────────────────  helpers  ────────────────────────────────── */
+
+func safeClosePage(p *rod.Page) error {
+	return rod.Try(func() { p.MustClose() })
+}
+
+func isConnClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "use of closed network connection") ||
+		strings.Contains(s, "websocket: close") ||
+		strings.Contains(s, "read tcp") ||
+		strings.Contains(s, "write tcp")
+}
+
+/* ─────────────────────────────  downstream handlers  ────────────────────── */
+
 func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 	proxyList := support.GetProxiesOfHTML(rawHTML)
-
 	parsedProxies := support.ParseTextToProxies(strings.Join(proxyList, "\n"))
 
 	proxies, err := database.InsertAndGetProxies(parsedProxies, support.GetUserIdsFromList(site.Users)...)

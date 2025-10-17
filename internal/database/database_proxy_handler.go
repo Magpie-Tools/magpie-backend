@@ -28,54 +28,6 @@ func InsertAndGetProxies(proxies []domain.Proxy, userIDs ...uint) ([]domain.Prox
 	return insertAndAssociateProxies(proxies, userIDs)
 }
 
-// InsertAndGetProxyIDs behaves like InsertAndGetProxies, but it returns the
-// primary-key of every (new *and* existing) proxy instead of the full structs.
-func InsertAndGetProxyIDs(proxies []domain.Proxy, userIDs ...uint) ([]uint64, error) {
-	inserted, err := InsertAndGetProxies(proxies, userIDs...)
-	if err != nil || len(inserted) == 0 {
-		return nil, err
-	}
-
-	var missingHashes [][]byte
-	for _, p := range inserted {
-		if p.ID == 0 {
-			missingHashes = append(missingHashes, p.Hash)
-		}
-	}
-
-	if len(missingHashes) > 0 {
-		var existing []struct {
-			ID   uint64
-			Hash []byte
-		}
-		if err := DB.
-			Select("id, hash").
-			Where("hash IN ?", missingHashes).
-			Find(&existing).Error; err != nil {
-			return nil, err
-		}
-
-		hashToID := make(map[string]uint64, len(existing))
-		for _, e := range existing {
-			hashToID[string(e.Hash)] = e.ID
-		}
-
-		for i, p := range inserted {
-			if p.ID == 0 {
-				if id, ok := hashToID[string(p.Hash)]; ok {
-					inserted[i].ID = id
-				}
-			}
-		}
-	}
-
-	out := make([]uint64, len(inserted))
-	for i, p := range inserted {
-		out[i] = p.ID
-	}
-	return out, nil
-}
-
 func InsertAndGetProxiesWithUser(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
 	inserted, err := insertAndAssociateProxies(proxies, userIDs)
 	if err != nil || len(inserted) == 0 {
@@ -222,31 +174,6 @@ func insertProxies(tx *gorm.DB, proxies []domain.Proxy, batchSize int) error {
 		Columns:   []clause.Column{{Name: "hash"}},
 		DoUpdates: clause.AssignmentColumns([]string{"hash"}), // To get the ids from duplicates
 	}).CreateInBatches(proxies, batchSize).Error
-}
-
-func fetchExistingProxies(tx *gorm.DB, proxies []domain.Proxy, batchSize int) ([]domain.Proxy, error) {
-	hashes := make([][]byte, len(proxies))
-	for i, p := range proxies {
-		hashes[i] = p.Hash
-	}
-
-	var results []domain.Proxy
-	for i := 0; i < len(hashes); i += batchSize {
-		end := i + batchSize
-		if end > len(hashes) {
-			end = len(hashes)
-		}
-
-		var batch []domain.Proxy
-		err := tx.Preload("Users").
-			Where("hash IN ?", hashes[i:end]).
-			Find(&batch).Error
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, batch...)
-	}
-	return results, nil
 }
 
 func filterHashesForUser(tx *gorm.DB, proxies []domain.Proxy, userID uint, chunkSize int, limitCfg config.ProxyLimitConfig) ([]string, error) {
@@ -472,12 +399,6 @@ func getNumDatabaseFields(model interface{}, db *gorm.DB) (int, error) {
 		return 0, err
 	}
 	return len(stmt.Schema.DBNames), nil
-}
-
-func GetAllProxyCount() int64 {
-	var count int64
-	DB.Model(&domain.Proxy{}).Count(&count)
-	return count
 }
 
 func GetAllProxyCountOfUser(userId uint) int64 {
@@ -717,7 +638,7 @@ func GetProxyStatistics(userId uint, proxyId uint64, limit int) ([]dto.ProxyStat
 	}
 
 	if limit <= 0 || limit > 500 {
-		limit = 100
+		limit = 500
 	}
 
 	query := DB.Model(&domain.ProxyStatistic{}).
