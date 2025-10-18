@@ -4,13 +4,7 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3c0935fd-99c2-4b27-8a6f-60bcc4c389b7" name="Changes" comment="also get regex of response">
-      <change beforePath="$PROJECT_DIR$/internal/app/bootstrap/setup.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/app/bootstrap/setup.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/app/server/routes.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/app/server/routes.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/internal/database/database_handler.go" beforeDir="false" afterPath="$PROJECT_DIR$/internal/database/database_handler.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../frontend/src/app/app.routes.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../frontend/src/app/app.routes.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/../frontend/src/app/services/http.service.ts" beforeDir="false" afterPath="$PROJECT_DIR$/../frontend/src/app/services/http.service.ts" afterDir="false" />
-    </list>
+    <list default="true" id="3c0935fd-99c2-4b27-8a6f-60bcc4c389b7" name="Changes" comment="also get regex of response" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -160,7 +154,6 @@
     </option>
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="add gitignore" />
     <MESSAGE value="Refactoring" />
     <MESSAGE value="add geo refresher" />
     <MESSAGE value="refactoring" />
@@ -185,7 +178,8 @@
     <MESSAGE value="make rod recover after crash" />
     <MESSAGE value="save request body of response" />
     <MESSAGE value="also get regex of response" />
-    <option name="LAST_COMMIT_MESSAGE" value="also get regex of response" />
+    <MESSAGE value="add auto geolite db updater" />
+    <option name="LAST_COMMIT_MESSAGE" value="add auto geolite db updater" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>
