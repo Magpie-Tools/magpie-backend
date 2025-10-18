@@ -3,9 +3,12 @@ package database
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"magpie/internal/domain"
 	"net"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -34,11 +37,21 @@ type residentialOverrideCandidate struct {
 	ip    string
 }
 
+const (
+	geoLiteDataDir         = "data/geolite"
+	geoLiteASNFilename     = "GeoLite2-ASN.mmdb"
+	geoLiteCountryFilename = "GeoLite2-Country.mmdb"
+)
+
+const (
+	GeoLiteASNFileName     = geoLiteASNFilename
+	GeoLiteCountryFileName = geoLiteCountryFilename
+)
+
 var (
-	countryDB   *geoip2.Reader
-	asnDB       *geoip2.Reader
-	initOnce    sync.Once
-	initSuccess bool
+	countryDB *geoip2.Reader
+	asnDB     *geoip2.Reader
+	geoLiteMu sync.RWMutex
 
 	datacenterRegex     = regexp.MustCompile(`(?i)(amazon|google|microsoft|digitalocean|linode|hetzner|ovh|vultr|ibm|alibaba|tencent|cloudflare|rackspace|hostinger|upcloud|azure|gcp|aws)`)
 	residentialKeywords = regexp.MustCompile(`(?i)(dyn|pool|dsl|cust|res|ip|adsl|ppp|user|mobile|static|dhcp)`)
@@ -54,24 +67,94 @@ var (
 )
 
 func init() {
-	initOnce.Do(func() {
-		var err error
-		if len(geoLiteCountryDB) > 0 {
-			countryDB, err = geoip2.FromBytes(geoLiteCountryDB)
-			if err != nil {
-				countryDB = nil
+	if err := loadGeoLiteDatabases(true); err != nil {
+		log.Warn("GeoLite databases initialized with embedded fallback", "error", err)
+	}
+}
+
+func loadGeoLiteDatabases(startup bool) error {
+	geoLiteMu.Lock()
+	defer geoLiteMu.Unlock()
+
+	var (
+		errorList     []error
+		countryReader *geoip2.Reader
+		asnReader     *geoip2.Reader
+	)
+
+	if reader, err := readerFromDisk(geoLiteCountryFilename); err == nil {
+		countryReader = reader
+	} else {
+		errorList = append(errorList, fmt.Errorf("country: %w", err))
+		if startup && len(geoLiteCountryDB) > 0 {
+			if fallbackReader, fallbackErr := geoip2.FromBytes(geoLiteCountryDB); fallbackErr == nil {
+				countryReader = fallbackReader
+			} else {
+				errorList = append(errorList, fmt.Errorf("country fallback: %w", fallbackErr))
 			}
 		}
+	}
 
-		if len(geoLiteASNDB) > 0 {
-			asnDB, err = geoip2.FromBytes(geoLiteASNDB)
-			if err != nil {
-				asnDB = nil
+	if reader, err := readerFromDisk(geoLiteASNFilename); err == nil {
+		asnReader = reader
+	} else {
+		errorList = append(errorList, fmt.Errorf("asn: %w", err))
+		if startup && len(geoLiteASNDB) > 0 {
+			if fallbackReader, fallbackErr := geoip2.FromBytes(geoLiteASNDB); fallbackErr == nil {
+				asnReader = fallbackReader
+			} else {
+				errorList = append(errorList, fmt.Errorf("asn fallback: %w", fallbackErr))
 			}
 		}
+	}
 
-		initSuccess = countryDB != nil && asnDB != nil
-	})
+	if countryReader == nil || asnReader == nil {
+		if len(errorList) == 0 {
+			return errors.New("geolite databases unavailable")
+		}
+		return errors.Join(errorList...)
+	}
+
+	oldCountry := countryDB
+	oldASN := asnDB
+	countryDB = countryReader
+	asnDB = asnReader
+
+	if oldCountry != nil {
+		_ = oldCountry.Close()
+	}
+	if oldASN != nil {
+		_ = oldASN.Close()
+	}
+
+	return nil
+}
+
+func GeoLiteFilePath(filename string) string {
+	return filepath.Join(geoLiteDataDir, filename)
+}
+
+func EnsureGeoLiteDataDir() error {
+	return os.MkdirAll(geoLiteDataDir, 0o755)
+}
+
+func readerFromDisk(filename string) (*geoip2.Reader, error) {
+	path := GeoLiteFilePath(filename)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return geoip2.FromBytes(data)
+}
+
+func ReloadGeoLiteFromDisk() error {
+	return loadGeoLiteDatabases(false)
+}
+
+func GeoLiteAvailable() bool {
+	geoLiteMu.RLock()
+	defer geoLiteMu.RUnlock()
+	return countryDB != nil && asnDB != nil
 }
 
 func getCachedDNS(ip string) []string {
@@ -182,12 +265,14 @@ func EnrichProxiesWithCountryAndType(proxies *[]domain.Proxy) []residentialOverr
 }
 
 func determineProxyTypeByASN(ipAddress string) (string, bool) {
-	if !initSuccess {
+	ip := net.ParseIP(ipAddress)
+	if ip == nil {
 		return "unknown", false
 	}
 
-	ip := net.ParseIP(ipAddress)
-	if ip == nil {
+	geoLiteMu.RLock()
+	defer geoLiteMu.RUnlock()
+	if asnDB == nil {
 		return "unknown", false
 	}
 
@@ -327,12 +412,14 @@ WHERE p.id = tmp.id`, strings.Join(values, ","))
 }
 
 func GetCountryCode(ipAddress string) string {
-	if !initSuccess {
+	ip := net.ParseIP(ipAddress)
+	if ip == nil {
 		return "N/A"
 	}
 
-	ip := net.ParseIP(ipAddress)
-	if ip == nil {
+	geoLiteMu.RLock()
+	defer geoLiteMu.RUnlock()
+	if countryDB == nil {
 		return "N/A"
 	}
 
@@ -353,10 +440,6 @@ func GetCountryCode(ipAddress string) string {
 }
 
 func DetermineProxyType(ipAddress string) string {
-	if !initSuccess {
-		return "unknown"
-	}
-
 	ip := net.ParseIP(ipAddress)
 	if ip == nil {
 		return "unknown"
@@ -370,8 +453,13 @@ func DetermineProxyType(ipAddress string) string {
 		}
 	}
 
-	// Check ASN information
+	geoLiteMu.RLock()
+	if asnDB == nil {
+		geoLiteMu.RUnlock()
+		return "unknown"
+	}
 	asnRecord, err := asnDB.ASN(ip)
+	geoLiteMu.RUnlock()
 	if err != nil {
 		return "unknown"
 	}

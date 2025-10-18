@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"magpie/internal/api/dto"
@@ -11,8 +12,10 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
 	sitequeue "magpie/internal/jobs/queue/sites"
+	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/support"
 	"net/http"
+	"strings"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -146,6 +149,10 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config.SetConfig(newConfig)
+
+	if strings.TrimSpace(newConfig.GeoLite.APIKey) != "" {
+		go jobruntime.RunGeoLiteUpdate(context.Background(), "config-save", true)
+	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Configuration updated successfully"})
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/charmbracelet/log"
 )
@@ -53,6 +54,13 @@ type Config struct {
 	Runtime struct {
 		ProxyGeoRefreshTimer Timer `json:"proxy_geo_refresh_timer"`
 	} `json:"runtime"`
+
+	GeoLite struct {
+		APIKey        string `json:"api_key"`
+		AutoUpdate    bool   `json:"auto_update"`
+		UpdateTimer   Timer  `json:"update_timer"`
+		LastUpdatedAt string `json:"last_updated_at,omitempty"`
+	} `json:"geolite"`
 
 	BlacklistSources []string `json:"blacklist_sources"`
 }
@@ -142,6 +150,23 @@ func SetConfig(newConfig Config) {
 	}
 
 	log.Debug("Default Configuration updated and written to file successfully")
+}
+
+func UpdateGeoLiteConfig(updater func(cfg *Config)) error {
+	if updater == nil {
+		return errors.New("config: geolite updater cannot be nil")
+	}
+
+	cfg := GetConfig()
+	updater(&cfg)
+
+	return applyConfigUpdate(cfg, configUpdateOptions{persistToFile: true, broadcast: true, source: "geolite"})
+}
+
+func MarkGeoLiteUpdated(ts time.Time) error {
+	return UpdateGeoLiteConfig(func(cfg *Config) {
+		cfg.GeoLite.LastUpdatedAt = ts.UTC().Format(time.RFC3339)
+	})
 }
 
 type configUpdateOptions struct {

@@ -42,7 +42,7 @@ func RunProxyGeoRefresh(ctx context.Context, batchSize int) (int64, int64, error
 		return 0, 0, ErrProxyGeoRefreshDatabaseNotInitialized
 	}
 
-	if !initSuccess {
+	if !GeoLiteAvailable() {
 		return 0, 0, ErrProxyGeoRefreshGeoLiteUnavailable
 	}
 
