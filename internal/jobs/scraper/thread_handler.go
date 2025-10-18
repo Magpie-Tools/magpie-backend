@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/go-rod/stealth"
 )
 
@@ -374,6 +375,12 @@ func mustRestartBrowser() {
 	}
 
 	browser = b
+	if err := (proto.BrowserSetDownloadBehavior{
+		Behavior:         proto.BrowserSetDownloadBehaviorBehaviorDeny,
+		BrowserContextID: browser.BrowserContextID,
+	}).Call(browser); err != nil {
+		log.Warn("disable browser downloads failed", "err", err)
+	}
 	browserAlive.Store(true)
 }
 
