@@ -12,6 +12,7 @@ import (
 
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/support"
 )
 
 type Manager struct {
@@ -28,6 +29,7 @@ func NewManager() *Manager {
 var GlobalManager = NewManager()
 
 func (m *Manager) StartAll() {
+	start, end := support.GetRotatingProxyPortRange()
 	rotators, err := database.GetAllRotatingProxies()
 	if err != nil {
 		log.Error("rotating proxy manager: failed to load rotators", "error", err)
@@ -35,8 +37,8 @@ func (m *Manager) StartAll() {
 	}
 
 	for _, rotator := range rotators {
-		if rotator.ListenPort < 1025 {
-			log.Warn("rotating proxy manager: skipping rotator without valid port", "rotator_id", rotator.ID)
+		if rotator.ListenPort == 0 || int(rotator.ListenPort) < start || int(rotator.ListenPort) > end {
+			log.Warn("rotating proxy manager: skipping rotator without valid port", "rotator_id", rotator.ID, "listen_port", rotator.ListenPort)
 			continue
 		}
 		if err := m.startServer(rotator); err != nil {
@@ -46,7 +48,8 @@ func (m *Manager) StartAll() {
 }
 
 func (m *Manager) startServer(rotator domain.RotatingProxy) error {
-	if rotator.ListenPort < 1025 {
+	start, end := support.GetRotatingProxyPortRange()
+	if rotator.ListenPort == 0 || int(rotator.ListenPort) < start || int(rotator.ListenPort) > end {
 		return fmt.Errorf("invalid listen port %d for rotator %d", rotator.ListenPort, rotator.ID)
 	}
 	m.mu.Lock()

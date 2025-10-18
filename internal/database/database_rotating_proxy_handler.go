@@ -3,11 +3,13 @@ package database
 import (
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/support"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -21,10 +23,9 @@ var (
 	ErrRotatingProxyProtocolMissing    = errors.New("rotating proxy protocol is required")
 	ErrRotatingProxyProtocolDenied     = errors.New("protocol is not enabled for this user")
 	ErrRotatingProxyNoAliveProxies     = errors.New("no alive proxies are available for the selected protocol")
-	ErrRotatingProxyPortInvalid        = errors.New("listen port must be between 1025 and 65535")
-	ErrRotatingProxyPortInUse          = errors.New("listen port is already assigned to another rotating proxy")
 	ErrRotatingProxyAuthUsernameNeeded = errors.New("authentication username is required when authentication is enabled")
 	ErrRotatingProxyAuthPasswordNeeded = errors.New("authentication password is required when authentication is enabled")
+	ErrRotatingProxyPortExhausted      = errors.New("no available ports for rotating proxies")
 )
 
 const rotatingProxyNameMaxLength = 120
@@ -45,10 +46,6 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 	protocolName := strings.ToLower(strings.TrimSpace(payload.Protocol))
 	if protocolName == "" {
 		return nil, ErrRotatingProxyProtocolMissing
-	}
-
-	if payload.ListenPort < 1025 {
-		return nil, ErrRotatingProxyPortInvalid
 	}
 
 	if payload.AuthRequired {
@@ -82,19 +79,20 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 			return ErrRotatingProxyProtocolDenied
 		}
 
-		if err := ensureListenPortAvailable(tx, payload.ListenPort); err != nil {
-			return err
-		}
-
 		entity := domain.RotatingProxy{
 			UserID:       userID,
 			Name:         name,
 			ProtocolID:   protocol.ID,
-			ListenPort:   payload.ListenPort,
 			AuthRequired: payload.AuthRequired,
 			AuthUsername: strings.TrimSpace(payload.AuthUsername),
 			AuthPassword: payload.AuthPassword,
 		}
+
+		listenPort, err := allocateListenPort(tx)
+		if err != nil {
+			return err
+		}
+		entity.ListenPort = listenPort
 
 		if err := tx.Create(&entity).Error; err != nil {
 			if isUniqueConstraintError(err) {
@@ -385,17 +383,40 @@ func isUniqueConstraintError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "duplicate key value violates unique constraint")
 }
 
-func ensureListenPortAvailable(tx *gorm.DB, port uint16) error {
-	var count int64
-	if err := tx.Model(&domain.RotatingProxy{}).
-		Where("listen_port = ?", port).
-		Count(&count).Error; err != nil {
-		return err
+func allocateListenPort(tx *gorm.DB) (uint16, error) {
+	start, end := support.GetRotatingProxyPortRange()
+	if start <= 0 || end <= 0 {
+		return 0, ErrRotatingProxyPortExhausted
 	}
-	if count > 0 {
-		return ErrRotatingProxyPortInUse
+
+	count := end - start + 1
+	if count <= 0 {
+		return 0, ErrRotatingProxyPortExhausted
 	}
-	return nil
+
+	ports := make([]int, 0, count)
+	for port := start; port <= end; port++ {
+		ports = append(ports, port)
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r.Shuffle(len(ports), func(i, j int) {
+		ports[i], ports[j] = ports[j], ports[i]
+	})
+
+	for _, port := range ports {
+		var existing int64
+		if err := tx.Model(&domain.RotatingProxy{}).
+			Where("listen_port = ?", port).
+			Count(&existing).Error; err != nil {
+			return 0, err
+		}
+		if existing == 0 {
+			return uint16(port), nil
+		}
+	}
+
+	return 0, ErrRotatingProxyPortExhausted
 }
 
 func GetAllRotatingProxies() ([]domain.RotatingProxy, error) {

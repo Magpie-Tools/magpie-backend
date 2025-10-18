@@ -21,7 +21,6 @@ type RotatingProxy struct {
 type RotatingProxyCreateRequest struct {
 	Name         string `json:"name"`
 	Protocol     string `json:"protocol"`
-	ListenPort   uint16 `json:"listen_port"`
 	AuthRequired bool   `json:"auth_required"`
 	AuthUsername string `json:"auth_username,omitempty"`
 	AuthPassword string `json:"auth_password,omitempty"`

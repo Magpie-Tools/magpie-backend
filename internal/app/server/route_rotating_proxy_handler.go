@@ -146,13 +146,12 @@ func writeRotatingProxyError(w http.ResponseWriter, err error) {
 		errors.Is(err, database.ErrRotatingProxyProtocolMissing),
 		errors.Is(err, database.ErrRotatingProxyProtocolDenied),
 		errors.Is(err, database.ErrRotatingProxyAuthUsernameNeeded),
-		errors.Is(err, database.ErrRotatingProxyAuthPasswordNeeded),
-		errors.Is(err, database.ErrRotatingProxyPortInvalid):
+		errors.Is(err, database.ErrRotatingProxyAuthPasswordNeeded):
 		writeError(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, database.ErrRotatingProxyNameConflict):
 		writeError(w, err.Error(), http.StatusConflict)
-	case errors.Is(err, database.ErrRotatingProxyPortInUse):
-		writeError(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, database.ErrRotatingProxyPortExhausted):
+		writeError(w, err.Error(), http.StatusServiceUnavailable)
 	case errors.Is(err, database.ErrRotatingProxyNotFound):
 		writeError(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, database.ErrRotatingProxyNoAliveProxies):

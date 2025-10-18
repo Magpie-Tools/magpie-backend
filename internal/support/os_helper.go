@@ -14,6 +14,15 @@ func GetEnv(key, fallback string) string {
 	return fallback
 }
 
+func GetEnvInt(key string, fallback int) int {
+	if value, exists := os.LookupEnv(key); exists {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
 func HashString(input string) uint64 {
 	h := sha1.New()
 	h.Write([]byte(input))
