@@ -40,6 +40,15 @@ func init() {
 		log.Fatal("Could not connect to redis for scrape site queue", "error", err)
 	}
 	PublicScrapeSiteQueue = *NewRedisScrapeSiteQueue(client)
+
+	go func() {
+		updates := config.ScrapeIntervalUpdates()
+		for interval := range updates {
+			if err := PublicScrapeSiteQueue.Reschedule(interval); err != nil {
+				log.Error("Failed to reschedule scrape queue after interval update", "error", err)
+			}
+		}
+	}()
 }
 
 func NewRedisScrapeSiteQueue(client *redis.Client) *RedisScrapeSiteQueue {
@@ -162,4 +171,80 @@ func (rssq *RedisScrapeSiteQueue) GetActiveInstances() (int, error) {
 
 func (rssq *RedisScrapeSiteQueue) Close() error {
 	return support.CloseRedisClient()
+}
+
+func (rssq *RedisScrapeSiteQueue) Reschedule(interval time.Duration) error {
+	if rssq == nil {
+		return errors.New("redis scrape queue is nil")
+	}
+
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	total, err := rssq.client.ZCard(rssq.ctx, scrapesiteQueueKey).Result()
+	if err != nil {
+		return fmt.Errorf("reschedule: failed to count queue entries: %w", err)
+	}
+
+	if total == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	totalDuration := time.Duration(total)
+	const fetchBatch int64 = 500
+	const updateBatch = 250
+
+	pipe := rssq.client.Pipeline()
+	opCount := 0
+
+	flush := func() error {
+		if opCount == 0 {
+			return nil
+		}
+		if _, err := pipe.Exec(rssq.ctx); err != nil {
+			return fmt.Errorf("reschedule: pipeline exec failed: %w", err)
+		}
+		pipe = rssq.client.Pipeline()
+		opCount = 0
+		return nil
+	}
+
+	for start := int64(0); start < total; start += fetchBatch {
+		end := start + fetchBatch - 1
+		if end >= total {
+			end = total - 1
+		}
+
+		members, err := rssq.client.ZRange(rssq.ctx, scrapesiteQueueKey, start, end).Result()
+		if err != nil {
+			return fmt.Errorf("reschedule: failed to fetch members: %w", err)
+		}
+
+		for idx, member := range members {
+			globalIndex := start + int64(idx)
+			offset := (interval * time.Duration(globalIndex)) / totalDuration
+			nextCheck := now.Add(offset).Unix()
+
+			pipe.ZAdd(rssq.ctx, scrapesiteQueueKey, redis.Z{
+				Score:  float64(nextCheck),
+				Member: member,
+			})
+			opCount++
+
+			if opCount != 0 && opCount%updateBatch == 0 {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if err := flush(); err != nil {
+		return err
+	}
+
+	log.Debug("scrape queue rescheduled", "entries", total, "interval", interval)
+	return nil
 }

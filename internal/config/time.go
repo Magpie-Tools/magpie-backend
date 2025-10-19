@@ -16,6 +16,7 @@ var (
 	timeBetweenScrapes       atomic.Value
 	proxyGeoRefreshInterval  atomic.Value
 	checkIntervalListeners   []chan time.Duration
+	scrapeIntervalListeners  []chan time.Duration
 	proxyGeoRefreshListeners []chan time.Duration
 	geoLiteUpdateInterval    atomic.Value
 	geoLiteUpdateListeners   []chan time.Duration
@@ -98,11 +99,36 @@ func setTimeBetweenScrapes(interval time.Duration) {
 	if interval <= 0 {
 		interval = time.Second
 	}
+
+	current := GetTimeBetweenScrapes()
+	if current == interval {
+		return
+	}
+
 	timeBetweenScrapes.Store(interval)
+
+	listenersMu.Lock()
+	defer listenersMu.Unlock()
+	for _, ch := range scrapeIntervalListeners {
+		select {
+		case ch <- interval:
+		default:
+		}
+	}
 }
 
 func GetTimeBetweenScrapes() time.Duration {
 	return timeBetweenScrapes.Load().(time.Duration)
+}
+
+func ScrapeIntervalUpdates() <-chan time.Duration {
+	ch := make(chan time.Duration, 1)
+	listenersMu.Lock()
+	scrapeIntervalListeners = append(scrapeIntervalListeners, ch)
+	listenersMu.Unlock()
+
+	ch <- GetTimeBetweenScrapes()
+	return ch
 }
 
 func GetProxyGeoRefreshInterval() time.Duration {

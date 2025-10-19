@@ -34,6 +34,7 @@ func TestSetBetweenTime(t *testing.T) {
 	origScrapes := GetTimeBetweenScrapes()
 	origRefresh := GetProxyGeoRefreshInterval()
 	origCheckListeners := checkIntervalListeners
+	origScrapeListeners := scrapeIntervalListeners
 	origListeners := proxyGeoRefreshListeners
 
 	t.Cleanup(func() {
@@ -42,6 +43,7 @@ func TestSetBetweenTime(t *testing.T) {
 		timeBetweenScrapes.Store(origScrapes)
 		proxyGeoRefreshInterval.Store(origRefresh)
 		checkIntervalListeners = origCheckListeners
+		scrapeIntervalListeners = origScrapeListeners
 		proxyGeoRefreshListeners = origListeners
 	})
 
@@ -51,6 +53,7 @@ func TestSetBetweenTime(t *testing.T) {
 	testCfg.Runtime.ProxyGeoRefreshTimer = Timer{Hours: 6}
 
 	configValue.Store(testCfg)
+	scrapeIntervalListeners = nil
 	proxyGeoRefreshListeners = nil
 
 	SetBetweenTime()
@@ -97,6 +100,43 @@ func TestCheckIntervalUpdates(t *testing.T) {
 
 	// Verify no duplicate notification when same interval is set.
 	setTimeBetweenChecks(5 * time.Second)
+	select {
+	case <-ch:
+		t.Fatal("unexpected update when interval unchanged")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestScrapeIntervalUpdates(t *testing.T) {
+	origScrapes := GetTimeBetweenScrapes()
+	origListeners := scrapeIntervalListeners
+
+	t.Cleanup(func() {
+		timeBetweenScrapes.Store(origScrapes)
+		scrapeIntervalListeners = origListeners
+	})
+
+	timeBetweenScrapes.Store(time.Second)
+	scrapeIntervalListeners = nil
+
+	ch := ScrapeIntervalUpdates()
+	first := <-ch
+	if first != time.Second {
+		t.Fatalf("initial update = %s, want 1s", first)
+	}
+
+	setTimeBetweenScrapes(3 * time.Second)
+
+	select {
+	case next := <-ch:
+		if next != 3*time.Second {
+			t.Fatalf("next update = %s, want 3s", next)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for interval update")
+	}
+
+	setTimeBetweenScrapes(3 * time.Second)
 	select {
 	case <-ch:
 		t.Fatal("unexpected update when interval unchanged")
