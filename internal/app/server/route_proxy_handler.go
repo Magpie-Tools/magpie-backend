@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/charmbracelet/log"
 	"io"
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
@@ -14,6 +13,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/log"
 
 	"gorm.io/gorm"
 )

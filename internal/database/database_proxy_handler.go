@@ -22,7 +22,8 @@ const (
 	maxParamsPerBatch = 65534 // Conservative default (PostgreSQL's limit) - 1
 	minBatchSize      = 100   // Minimum batch size to maintain efficiency
 
-	proxiesPerPage = 40
+	proxiesPerPage    = 40
+	maxProxiesPerPage = 100
 )
 
 func InsertAndGetProxies(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
@@ -437,7 +438,7 @@ func GetProxyInfoPageWithFilters(userId uint, page int, pageSize int, search str
 	if page < 1 {
 		page = 1
 	}
-	if pageSize <= 0 {
+	if pageSize <= 0 || pageSize > maxProxiesPerPage {
 		pageSize = proxiesPerPage
 	}
 
