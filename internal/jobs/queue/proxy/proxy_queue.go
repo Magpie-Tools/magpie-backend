@@ -40,6 +40,15 @@ func init() {
 		log.Fatal("Could not connect to redis for proxy queue", "error", err)
 	}
 	PublicProxyQueue = *NewRedisProxyQueue(client)
+
+	go func() {
+		updates := config.CheckIntervalUpdates()
+		for interval := range updates {
+			if err := PublicProxyQueue.Reschedule(interval); err != nil {
+				log.Error("Failed to reschedule proxy queue after interval update", "error", err)
+			}
+		}
+	}()
 }
 
 func NewRedisProxyQueue(client *redis.Client) *RedisProxyQueue {
@@ -164,4 +173,80 @@ func (rpq *RedisProxyQueue) GetActiveInstances() (int, error) {
 
 func (rpq *RedisProxyQueue) Close() error {
 	return support.CloseRedisClient()
+}
+
+func (rpq *RedisProxyQueue) Reschedule(interval time.Duration) error {
+	if rpq == nil {
+		return errors.New("redis proxy queue is nil")
+	}
+
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	total, err := rpq.client.ZCard(rpq.ctx, queueKey).Result()
+	if err != nil {
+		return fmt.Errorf("reschedule: failed to count queue entries: %w", err)
+	}
+
+	if total == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	totalDuration := time.Duration(total)
+	const fetchBatch int64 = 1000
+	const updateBatch = 500
+
+	pipe := rpq.client.Pipeline()
+	opCount := 0
+
+	flush := func() error {
+		if opCount == 0 {
+			return nil
+		}
+		if _, err := pipe.Exec(rpq.ctx); err != nil {
+			return fmt.Errorf("reschedule: pipeline exec failed: %w", err)
+		}
+		pipe = rpq.client.Pipeline()
+		opCount = 0
+		return nil
+	}
+
+	for start := int64(0); start < total; start += fetchBatch {
+		end := start + fetchBatch - 1
+		if end >= total {
+			end = total - 1
+		}
+
+		members, err := rpq.client.ZRange(rpq.ctx, queueKey, start, end).Result()
+		if err != nil {
+			return fmt.Errorf("reschedule: failed to fetch members: %w", err)
+		}
+
+		for idx, member := range members {
+			globalIndex := start + int64(idx)
+			offset := (interval * time.Duration(globalIndex)) / totalDuration
+			nextCheck := now.Add(offset).Unix()
+
+			pipe.ZAdd(rpq.ctx, queueKey, redis.Z{
+				Score:  float64(nextCheck),
+				Member: member,
+			})
+			opCount++
+
+			if opCount != 0 && opCount%updateBatch == 0 {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if err := flush(); err != nil {
+		return err
+	}
+
+	log.Debug("proxy queue rescheduled", "entries", total, "interval", interval)
+	return nil
 }

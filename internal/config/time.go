@@ -15,6 +15,7 @@ var (
 	timeBetweenChecks        atomic.Value
 	timeBetweenScrapes       atomic.Value
 	proxyGeoRefreshInterval  atomic.Value
+	checkIntervalListeners   []chan time.Duration
 	proxyGeoRefreshListeners []chan time.Duration
 	geoLiteUpdateInterval    atomic.Value
 	geoLiteUpdateListeners   []chan time.Duration
@@ -30,8 +31,8 @@ func init() {
 
 func SetBetweenTime() {
 	cfg := GetConfig()
-	timeBetweenChecks.Store(CalculateBetweenTime(cfg.Checker.CheckerTimer))
-	timeBetweenScrapes.Store(CalculateBetweenTime(cfg.Scraper.ScraperTimer))
+	setTimeBetweenChecks(CalculateBetweenTime(cfg.Checker.CheckerTimer))
+	setTimeBetweenScrapes(CalculateBetweenTime(cfg.Scraper.ScraperTimer))
 	setProxyGeoRefreshInterval(calculateProxyGeoRefreshInterval(cfg))
 	setGeoLiteUpdateInterval(calculateGeoLiteUpdateInterval(cfg))
 }
@@ -59,6 +60,45 @@ func CalculateMillisecondsOfCheckingPeriod(timer Timer) uint64 {
 
 func GetTimeBetweenChecks() time.Duration {
 	return timeBetweenChecks.Load().(time.Duration)
+}
+
+func CheckIntervalUpdates() <-chan time.Duration {
+	ch := make(chan time.Duration, 1)
+	listenersMu.Lock()
+	checkIntervalListeners = append(checkIntervalListeners, ch)
+	listenersMu.Unlock()
+
+	ch <- GetTimeBetweenChecks()
+	return ch
+}
+
+func setTimeBetweenChecks(interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	current := GetTimeBetweenChecks()
+	if current == interval {
+		return
+	}
+
+	timeBetweenChecks.Store(interval)
+
+	listenersMu.Lock()
+	defer listenersMu.Unlock()
+	for _, ch := range checkIntervalListeners {
+		select {
+		case ch <- interval:
+		default:
+		}
+	}
+}
+
+func setTimeBetweenScrapes(interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	timeBetweenScrapes.Store(interval)
 }
 
 func GetTimeBetweenScrapes() time.Duration {
