@@ -3,6 +3,7 @@ package rotatingproxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -227,7 +228,7 @@ func supportedUpstream(protocol string) bool {
 
 func buildHTTPTransport(next *dto.RotatingProxyNext) *http.Transport {
 	proxyURL := &url.URL{
-		Scheme: strings.ToLower(next.Protocol),
+		Scheme: "http",
 		Host:   fmt.Sprintf("%s:%d", next.IP, next.Port),
 	}
 	if next.HasAuth {
@@ -235,15 +236,14 @@ func buildHTTPTransport(next *dto.RotatingProxyNext) *http.Transport {
 	}
 
 	transport := &http.Transport{
-		Proxy:               http.ProxyURL(proxyURL),
-		DisableKeepAlives:   true,
-		MaxIdleConns:        0,
-		IdleConnTimeout:     0,
-		TLSHandshakeTimeout: 10 * time.Second,
+		Proxy:             http.ProxyURL(proxyURL),
+		DisableKeepAlives: true,
+		MaxIdleConns:      0,
+		IdleConnTimeout:   0,
 	}
 
-	if strings.ToLower(next.Protocol) == "https" {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialProxyWithFallback(ctx, network, addr, next)
 	}
 
 	return transport
@@ -257,12 +257,19 @@ func dialUpstream(next *dto.RotatingProxyNext) (net.Conn, error) {
 		return nil, err
 	}
 
-	if strings.ToLower(next.Protocol) == "https" {
+	if shouldAttemptTLS(next.Protocol) {
 		tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+		deadline := time.Now().Add(5 * time.Second)
+		_ = conn.SetDeadline(deadline)
 		if err := tlsConn.Handshake(); err != nil {
 			conn.Close()
-			return nil, err
+			fallback, fallbackErr := dialer.Dial("tcp", address)
+			if fallbackErr != nil {
+				return nil, fallbackErr
+			}
+			return fallback, nil
 		}
+		_ = tlsConn.SetDeadline(time.Time{})
 		return tlsConn, nil
 	}
 
@@ -312,4 +319,30 @@ func pipeConnections(left, right net.Conn) {
 	<-errCh
 	left.Close()
 	right.Close()
+}
+
+func dialProxyWithFallback(ctx context.Context, network, addr string, next *dto.RotatingProxyNext) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	if shouldAttemptTLS(next.Protocol) {
+		tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true})
+		deadline := time.Now().Add(5 * time.Second)
+		_ = conn.SetDeadline(deadline)
+		if err := tlsConn.Handshake(); err != nil {
+			conn.Close()
+			return dialer.DialContext(ctx, network, addr)
+		}
+		_ = tlsConn.SetDeadline(time.Time{})
+		return tlsConn, nil
+	}
+
+	return conn, nil
+}
+
+func shouldAttemptTLS(protocol string) bool {
+	return strings.EqualFold(protocol, "https")
 }

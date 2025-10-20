@@ -2,6 +2,7 @@ package rotatingproxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"io"
 	"net"
@@ -107,7 +108,7 @@ func TestSupportedUpstream(t *testing.T) {
 	}
 }
 
-func TestBuildHTTPTransport_ConfiguresProxyAndTLS(t *testing.T) {
+func TestBuildHTTPTransport_ConfiguresProxyURL(t *testing.T) {
 	withAuth := &dto.RotatingProxyNext{
 		Protocol: "https",
 		IP:       "127.0.0.1",
@@ -128,8 +129,8 @@ func TestBuildHTTPTransport_ConfiguresProxyAndTLS(t *testing.T) {
 		t.Fatalf("proxy func returned error: %v", err)
 	}
 
-	if proxyURL.Scheme != "https" {
-		t.Fatalf("proxy scheme = %q, want https", proxyURL.Scheme)
+	if proxyURL.Scheme != "http" {
+		t.Fatalf("proxy scheme = %q, want http", proxyURL.Scheme)
 	}
 	if proxyURL.Host != "127.0.0.1:9000" {
 		t.Fatalf("proxy host = %q, want 127.0.0.1:9000", proxyURL.Host)
@@ -141,8 +142,8 @@ func TestBuildHTTPTransport_ConfiguresProxyAndTLS(t *testing.T) {
 		t.Fatalf("proxy credentials = %s:%s, want user:pass", user, pass)
 	}
 
-	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("expected TLS client config with InsecureSkipVerify for https proxy")
+	if transport.TLSClientConfig != nil {
+		t.Fatal("expected no TLS config when dialing upstream proxy")
 	}
 
 	withoutAuth := &dto.RotatingProxyNext{
@@ -260,6 +261,51 @@ func TestHandleConnect_ProxiesDataThroughUpstream(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("handleConnect did not return after closing connections")
+	}
+}
+
+func TestDialProxyWithFallback_AllowsPlainHTTPProxy(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2; i++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+			_ = conn.Close()
+		}
+	}()
+
+	next := &dto.RotatingProxyNext{
+		Protocol: "https",
+		IP:       "127.0.0.1",
+		Port:     0,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	conn, err := dialProxyWithFallback(ctx, "tcp", ln.Addr().String(), next)
+	if err != nil {
+		t.Fatalf("dialProxyWithFallback error: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("expected non-nil connection")
+	}
+	_ = conn.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("listener goroutine did not exit")
 	}
 }
 
