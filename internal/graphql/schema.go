@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"fmt"
+	"time"
 
 	gql "github.com/graphql-go/graphql"
 
@@ -61,6 +62,26 @@ func NewSchema() (gql.Schema, error) {
 		Fields: gql.Fields{
 			"count":      &gql.Field{Type: gql.NewNonNull(gql.Int)},
 			"recordedAt": &gql.Field{Type: gql.NewNonNull(gql.DateTime)},
+		},
+	})
+
+	proxySnapshotType := gql.NewObject(gql.ObjectConfig{
+		Name: "ProxySnapshotEntry",
+		Fields: gql.Fields{
+			"count":      &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"recordedAt": &gql.Field{Type: gql.NewNonNull(gql.DateTime)},
+		},
+	})
+
+	proxySnapshotCollectionType := gql.NewObject(gql.ObjectConfig{
+		Name: "ProxySnapshotCollection",
+		Fields: gql.Fields{
+			"alive": &gql.Field{
+				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(proxySnapshotType))),
+			},
+			"scraped": &gql.Field{
+				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(proxySnapshotType))),
+			},
 		},
 	})
 
@@ -238,6 +259,32 @@ func NewSchema() (gql.Schema, error) {
 					return []map[string]interface{}{}, nil
 				},
 			},
+			"proxySnapshots": &gql.Field{
+				Type: gql.NewNonNull(proxySnapshotCollectionType),
+				Args: gql.FieldConfigArgument{
+					"limit": &gql.ArgumentConfig{Type: gql.Int},
+				},
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					limit := 0
+					if raw, ok := p.Args["limit"].(int); ok && raw > 0 {
+						limit = raw
+					}
+					if data, ok := p.Source.(*viewerData); ok {
+						alive := database.GetProxySnapshotEntries(data.user.ID, domain.ProxySnapshotMetricAlive, limit)
+						alive = ensureLatestAliveSnapshot(alive, database.GetCurrentAliveProxyCount(data.user.ID))
+
+						scraped := database.GetProxySnapshotEntries(data.user.ID, domain.ProxySnapshotMetricScraped, limit)
+						return map[string]interface{}{
+							"alive":   buildProxySnapshots(alive),
+							"scraped": buildProxySnapshots(scraped),
+						}, nil
+					}
+					return map[string]interface{}{
+						"alive":   []map[string]interface{}{},
+						"scraped": []map[string]interface{}{},
+					}, nil
+				},
+			},
 			"scrapeSources": &gql.Field{
 				Type: gql.NewNonNull(scrapeSitePageType),
 				Args: gql.FieldConfigArgument{
@@ -384,6 +431,42 @@ func buildProxyHistory(userID uint, limit int) []map[string]interface{} {
 		})
 	}
 	return result
+}
+
+func buildProxySnapshots(entries []dto.ProxySnapshotEntry) []map[string]interface{} {
+	if len(entries) == 0 {
+		return []map[string]interface{}{}
+	}
+
+	result := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, map[string]interface{}{
+			"count":      entry.Count,
+			"recordedAt": entry.RecordedAt,
+		})
+	}
+	return result
+}
+
+func ensureLatestAliveSnapshot(entries []dto.ProxySnapshotEntry, currentCount int64) []dto.ProxySnapshotEntry {
+	now := time.Now()
+	if len(entries) == 0 {
+		return append(entries, dto.ProxySnapshotEntry{
+			Count:      currentCount,
+			RecordedAt: now,
+		})
+	}
+
+	lastIndex := len(entries) - 1
+	if entries[lastIndex].Count == currentCount {
+		entries[lastIndex].RecordedAt = now
+		return entries
+	}
+
+	return append(entries, dto.ProxySnapshotEntry{
+		Count:      currentCount,
+		RecordedAt: now,
+	})
 }
 
 func buildProxyPage(userID uint, page int) map[string]interface{} {

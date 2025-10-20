@@ -80,6 +80,7 @@ func Setup() {
 	go judges.StartJudgeRoutine()
 	go jobruntime.StartProxyStatisticsRoutine(context.Background())
 	go jobruntime.StartProxyHistoryRoutine(context.Background())
+	go jobruntime.StartProxySnapshotRoutine(context.Background())
 	go jobruntime.StartProxyGeoRefreshRoutine(context.Background())
 	go jobruntime.StartGeoLiteUpdateRoutine(context.Background())
 	go checker.ThreadDispatcher()
