@@ -55,7 +55,6 @@ func OpenRoutes(port int) error {
 	apiMux.Handle("POST /changePassword", auth.RequireAuth(http.HandlerFunc(changePassword)))
 	apiMux.Handle("POST /saveSettings", auth.IsAdmin(http.HandlerFunc(saveSettings)))
 	apiMux.Handle("GET /getDashboardInfo", auth.RequireAuth(http.HandlerFunc(getDashboardInfo)))
-	apiMux.HandleFunc("GET /version", getVersion)
 
 	apiMux.Handle("GET /getProxyCount", auth.RequireAuth(http.HandlerFunc(getProxyCount)))
 	apiMux.Handle("GET /getProxyPage/{page}", auth.RequireAuth(http.HandlerFunc(getProxyPage)))
