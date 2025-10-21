@@ -78,6 +78,7 @@ func OpenRoutes(port int) error {
 	apiMux.Handle("POST /user/settings", auth.RequireAuth(http.HandlerFunc(saveUserSettings)))
 	apiMux.Handle("GET /user/role", auth.RequireAuth(http.HandlerFunc(getUserRole)))
 	apiMux.Handle("POST /user/export", auth.RequireAuth(http.HandlerFunc(exportProxies)))
+	apiMux.Handle("GET /updates/latest", auth.IsAdmin(http.HandlerFunc(getLatestUpdate)))
 
 	apiMux.Handle("GET /global/settings", auth.IsAdmin(http.HandlerFunc(getGlobalSettings)))
 
