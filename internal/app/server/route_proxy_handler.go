@@ -249,11 +249,11 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if deleted == 0 {
-			writeError(w, "No proxies matched the delete criteria", http.StatusBadRequest)
+			json.NewEncoder(w).Encode("No proxies matched the delete criteria.")
 			return
 		}
 
-		json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies", deleted))
+		json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies.", deleted))
 		return
 	}
 
@@ -280,11 +280,11 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if deleted == 0 {
-		writeError(w, "No proxies matched the delete criteria", http.StatusBadRequest)
+		json.NewEncoder(w).Encode("No proxies matched the delete criteria.")
 		return
 	}
 
-	json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies", deleted))
+	json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies.", deleted))
 }
 
 func exportProxies(w http.ResponseWriter, r *http.Request) {
