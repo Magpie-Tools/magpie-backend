@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -35,11 +36,13 @@ type githubCommit struct {
 }
 
 type updateResponse struct {
-	SHA         string `json:"sha"`
-	ShortSHA    string `json:"short_sha"`
-	HTMLURL     string `json:"html_url,omitempty"`
-	Message     string `json:"message,omitempty"`
-	CommittedAt string `json:"committed_at,omitempty"`
+	SHA             string `json:"sha"`
+	ShortSHA        string `json:"short_sha"`
+	HTMLURL         string `json:"html_url,omitempty"`
+	Message         string `json:"message,omitempty"`
+	CommittedAt     string `json:"committed_at,omitempty"`
+	CurrentSHA      string `json:"current_sha,omitempty"`
+	CurrentShortSHA string `json:"current_short_sha,omitempty"`
 }
 
 func loadGitHubUpdateConfig() githubUpdateConfig {
@@ -72,6 +75,56 @@ func parseBool(raw string) bool {
 	default:
 		return false
 	}
+}
+
+func normalizeCommitValue(raw string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return ""
+	}
+	for _, r := range trimmed {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return ""
+		}
+	}
+	return trimmed
+}
+
+func shortCommit(value string) string {
+	if len(value) < 7 {
+		return ""
+	}
+	if len(value) > 7 {
+		return value[:7]
+	}
+	return value
+}
+
+func detectLocalCommit(ctx context.Context) (string, string) {
+	if raw := normalizeCommitValue(os.Getenv("GITHUB_UPDATES_LOCAL_SHA")); raw != "" {
+		if short := shortCommit(raw); short != "" {
+			return raw, short
+		}
+	}
+
+	repoPath := strings.TrimSpace(os.Getenv("GITHUB_UPDATES_REPO_PATH"))
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	if repoPath != "" {
+		cmd.Dir = repoPath
+	}
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Debug("git rev-parse failed", "error", err)
+		return "", ""
+	}
+
+	full := normalizeCommitValue(string(output))
+	if full == "" {
+		return "", ""
+	}
+
+	return full, shortCommit(full)
 }
 
 func getLatestUpdate(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +178,8 @@ func getLatestUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if payload.SHA == "" {
+	fullSHA := normalizeCommitValue(payload.SHA)
+	if fullSHA == "" {
 		writeError(w, "github response missing sha", http.StatusBadGateway)
 		return
 	}
@@ -140,16 +194,21 @@ func getLatestUpdate(w http.ResponseWriter, r *http.Request) {
 		message = message[:idx]
 	}
 
-	shortSHA := payload.SHA
-	if len(shortSHA) > 7 {
-		shortSHA = shortSHA[:7]
+	shortSHA := shortCommit(fullSHA)
+	if shortSHA == "" {
+		writeError(w, "github response missing valid short sha", http.StatusBadGateway)
+		return
 	}
 
+	localSHA, localShort := detectLocalCommit(ctx)
+
 	writeJSON(w, http.StatusOK, updateResponse{
-		SHA:         payload.SHA,
-		ShortSHA:    shortSHA,
-		HTMLURL:     payload.HTMLURL,
-		Message:     message,
-		CommittedAt: committedAt,
+		SHA:             fullSHA,
+		ShortSHA:        shortSHA,
+		HTMLURL:         payload.HTMLURL,
+		Message:         message,
+		CommittedAt:     committedAt,
+		CurrentSHA:      localSHA,
+		CurrentShortSHA: localShort,
 	})
 }
