@@ -21,10 +21,13 @@ const (
 	batchThreshold    = 8191  // Use batches when exceeding this number of records
 	maxParamsPerBatch = 65534 // Conservative default (PostgreSQL's limit) - 1
 	minBatchSize      = 100   // Minimum batch size to maintain efficiency
+	deleteChunkSize   = 5000  // Keep large deletes under Postgres parameter limits
 
 	proxiesPerPage    = 40
 	maxProxiesPerPage = 100
 )
+
+var ErrNoProxiesSelected = errors.New("no proxies selected for deletion")
 
 func InsertAndGetProxies(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
 	return insertAndAssociateProxies(proxies, userIDs)
@@ -730,8 +733,62 @@ func normaliseDisplayValue(value string, fallback string) string {
 	return trimmed
 }
 
-func DeleteProxyRelation(userId uint, proxies []int) {
-	DB.Where("proxy_id IN (?)", proxies).Where("user_id = (?)", userId).Delete(&domain.UserProxy{})
+func DeleteProxyRelation(userId uint, proxies []int) (int64, error) {
+	if len(proxies) == 0 {
+		return 0, nil
+	}
+
+	var totalDeleted int64
+	chunkSize := deleteChunkSize
+	if chunkSize > len(proxies) {
+		chunkSize = len(proxies)
+	}
+	if chunkSize <= 0 {
+		chunkSize = len(proxies)
+	}
+
+	for start := 0; start < len(proxies); start += chunkSize {
+		end := start + chunkSize
+		if end > len(proxies) {
+			end = len(proxies)
+		}
+
+		chunk := proxies[start:end]
+		result := DB.
+			Where("user_id = ?", userId).
+			Where("proxy_id IN ?", chunk).
+			Delete(&domain.UserProxy{})
+
+		if result.Error != nil {
+			return totalDeleted, result.Error
+		}
+
+		totalDeleted += result.RowsAffected
+	}
+
+	return totalDeleted, nil
+}
+
+func DeleteProxiesWithSettings(userID uint, settings dto.DeleteSettings) (int64, error) {
+	if settings.Scope == "selected" && len(settings.Proxies) == 0 {
+		return 0, ErrNoProxiesSelected
+	}
+
+	proxyIDs, err := collectProxyIDsForDeletion(userID, settings)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(proxyIDs) == 0 {
+		return 0, nil
+	}
+
+	intIDs := make([]int, 0, len(proxyIDs))
+	for _, id := range proxyIDs {
+		intIDs = append(intIDs, int(id))
+	}
+
+	return DeleteProxyRelation(userID, intIDs)
 }
 
 func GetProxiesForExport(userID uint, settings dto.ExportSettings) ([]domain.Proxy, error) {

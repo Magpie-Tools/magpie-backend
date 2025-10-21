@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,16 +216,75 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var proxies []int
-
-	if err := json.NewDecoder(r.Body).Decode(&proxies); err != nil {
+	rawBody, readErr := io.ReadAll(r.Body)
+	if readErr != nil {
 		writeError(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	database.DeleteProxyRelation(userID, proxies)
+	body := bytes.TrimSpace(rawBody)
 
-	json.NewEncoder(w).Encode("Proxies deleted successfully")
+	if len(body) == 0 {
+		writeError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if body[0] == '[' {
+		var proxies []int
+		if err := json.Unmarshal(body, &proxies); err != nil {
+			writeError(w, "Invalid request", http.StatusBadRequest)
+			return
+		}
+
+		if len(proxies) == 0 {
+			writeError(w, "No proxies selected for deletion", http.StatusBadRequest)
+			return
+		}
+
+		deleted, deleteErr := database.DeleteProxyRelation(userID, proxies)
+		if deleteErr != nil {
+			log.Error("could not delete proxies", "error", deleteErr.Error())
+			writeError(w, "Could not delete proxies", http.StatusInternalServerError)
+			return
+		}
+
+		if deleted == 0 {
+			writeError(w, "No proxies matched the delete criteria", http.StatusBadRequest)
+			return
+		}
+
+		json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies", deleted))
+		return
+	}
+
+	var settings dto.DeleteSettings
+	if err := json.Unmarshal(body, &settings); err != nil {
+		writeError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if settings.Scope != "all" && settings.Scope != "selected" {
+		settings.Scope = "all"
+	}
+
+	deleted, deleteErr := database.DeleteProxiesWithSettings(userID, settings)
+	if deleteErr != nil {
+		if errors.Is(deleteErr, database.ErrNoProxiesSelected) {
+			writeError(w, "No proxies selected for deletion", http.StatusBadRequest)
+			return
+		}
+
+		log.Error("could not delete proxies with filters", "error", deleteErr.Error())
+		writeError(w, "Could not delete proxies", http.StatusInternalServerError)
+		return
+	}
+
+	if deleted == 0 {
+		writeError(w, "No proxies matched the delete criteria", http.StatusBadRequest)
+		return
+	}
+
+	json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies", deleted))
 }
 
 func exportProxies(w http.ResponseWriter, r *http.Request) {
