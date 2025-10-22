@@ -45,7 +45,7 @@ var (
 /* ─────────────────────────────  init  ───────────────────────────────────── */
 
 func init() {
-	pagePool = make(chan *rod.Page, 2000)
+	pagePool = make(chan *rod.Page, 40)
 	mustRestartBrowser() // initial bring-up
 	go BrowserWatchdog() // listen for restart requests
 	go ManagePagePool()  // keep pool aligned with demand
