@@ -25,26 +25,28 @@ all pool housekeeping lives in thread_handler.go.
 */
 func ScraperRequest(url string, timeout time.Duration) (string, error) {
 	// 1) acquire a page with timeout
-	var p *rod.Page
+	var basePage *rod.Page
 	select {
-	case p = <-pagePool:
+	case basePage = <-pagePool:
 	case <-time.After(timeout):
 		return "", fmt.Errorf("timeout waiting for available page")
 	}
 
-	// 2) ensure we recycle it back (or close+re-add on error)
-	defer recyclePage(p)
+	page := basePage.Timeout(timeout)
 
-	// 3) apply per-request timeout
-	p = p.Timeout(timeout)
+	// 2) ensure we recycle it back (or close+re-add on error)
+	defer func() {
+		page.CancelTimeout()
+		recyclePage(basePage)
+	}()
 
 	// Deny disk downloads for this page; deprecated API but still honored.
 	_ = proto.PageSetDownloadBehavior{
 		Behavior: proto.PageSetDownloadBehaviorBehaviorDeny,
-	}.Call(p)
+	}.Call(page)
 
 	// Ensure network events are available so we can pull raw responses.
-	_ = proto.NetworkEnable{}.Call(p)
+	_ = proto.NetworkEnable{}.Call(page)
 
 	var (
 		capturedBody         string
@@ -61,9 +63,9 @@ func ScraperRequest(url string, timeout time.Duration) (string, error) {
 
 	var mainRequestID proto.NetworkRequestID
 
-	waitResponse := p.Context(eventCtx).EachEvent(
+	waitResponse := page.Context(eventCtx).EachEvent(
 		func(e *proto.NetworkRequestWillBeSent) {
-			if e.FrameID != "" && e.FrameID != p.FrameID {
+			if e.FrameID != "" && e.FrameID != page.FrameID {
 				return
 			}
 			if e.Type == proto.NetworkResourceTypeDocument {
@@ -79,14 +81,14 @@ func ScraperRequest(url string, timeout time.Duration) (string, error) {
 			}
 		},
 		func(e *proto.NetworkResponseReceived) bool {
-			if e.FrameID != "" && e.FrameID != p.FrameID {
+			if e.FrameID != "" && e.FrameID != page.FrameID {
 				return false
 			}
 			if mainRequestID != "" && e.RequestID != mainRequestID {
 				return false
 			}
 
-			body, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(p)
+			body, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(page)
 			if err != nil {
 				responseCaptureError = err
 				doneOnce.Do(func() { close(done) })
@@ -132,7 +134,7 @@ func ScraperRequest(url string, timeout time.Duration) (string, error) {
 		waitWindow = timeout
 	}
 
-	navErr := p.Navigate(url)
+	navErr := page.Navigate(url)
 
 	select {
 	case <-done:
@@ -157,7 +159,7 @@ func ScraperRequest(url string, timeout time.Duration) (string, error) {
 		return "", navErr
 	}
 
-	if err := p.WaitLoad(); err != nil {
+	if err := page.WaitLoad(); err != nil {
 		if captured {
 			return capturedBody, nil
 		}
@@ -172,7 +174,7 @@ func ScraperRequest(url string, timeout time.Duration) (string, error) {
 	}
 
 	// 4) grab the HTML
-	html, err := p.HTML()
+	html, err := page.HTML()
 	if err != nil {
 		if captured {
 			return capturedBody, nil
