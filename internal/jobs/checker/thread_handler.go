@@ -26,6 +26,18 @@ var (
 
 const maxResponseBodyLength = 4096
 
+type userCheck struct {
+	userID     uint
+	regex      string
+	protocolID int
+}
+
+type requestAssignment struct {
+	judge    *domain.Judge
+	protocol string
+	checks   []userCheck
+}
+
 func ThreadDispatcher() {
 	for {
 		cfg := config.GetConfig()
@@ -97,22 +109,8 @@ func getAutoThreads(cfg config.Config) uint32 {
 }
 
 func work() {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-
-	go func() {
-		defer close(done)
-		select {
-		case <-stopChannel:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	defer func() {
-		cancel()
-		<-done
-	}()
+	ctx, cleanup := createWorkerContext()
+	defer cleanup()
 
 	for {
 		proxy, scheduledTime, err := proxyqueue.PublicProxyQueue.GetNextProxyContext(ctx)
@@ -124,172 +122,14 @@ func work() {
 			continue
 		}
 
-		refreshedUsers := make(map[uint]domain.User, len(proxy.Users))
-		for i := range proxy.Users {
-			if cached, ok := refreshedUsers[proxy.Users[i].ID]; ok {
-				proxy.Users[i] = cached
-				continue
-			}
+		proxy = refreshProxyUsers(proxy)
 
-			fresh := database.GetUserFromId(proxy.Users[i].ID)
-			if fresh.ID == 0 {
-				continue
-			}
+		judgeRequests, userSuccess, userHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy)
+		processJudgeAssignments(proxy, judgeRequests, userSuccess, maxTimeout, maxRetries)
 
-			refreshedUsers[proxy.Users[i].ID] = fresh
-			proxy.Users[i] = fresh
-		}
-
-		type userCheck struct {
-			userID     uint
-			regex      string
-			protocolID int
-		}
-
-		type requestAssignment struct {
-			judge    *domain.Judge
-			protocol string
-			checks   []userCheck
-		}
-
-		judgeRequests := make(map[string]*requestAssignment)
-		userSuccess := make(map[uint]bool, len(proxy.Users))
-		userHasChecks := make(map[uint]bool, len(proxy.Users))
-
-		var maxTimeout uint16
-		var maxRetries uint8
-
-		// Prefetch data
-		for _, user := range proxy.Users {
-			userSuccess[user.ID] = false
-
-			if user.Timeout > maxTimeout {
-				maxTimeout = user.Timeout
-			}
-			if user.Retries > maxRetries {
-				maxRetries = user.Retries
-			}
-
-			for protocol, protocolId := range user.GetProtocolMap() {
-				var (
-					nextJudge       *domain.Judge
-					regex           string
-					requestProtocol string
-				)
-
-				// Determine which protocol to use for request
-				if protocolId > 2 { // Socks protocol
-					if user.UseHttpsForSocks {
-						requestProtocol = "https"
-					} else {
-						requestProtocol = "http"
-					}
-				} else {
-					requestProtocol = protocol
-				}
-
-				nextJudge, regex = judges.GetNextJudge(user.ID, requestProtocol)
-
-				// Create a unique key for each judge+request_protocol combination
-				judgeKey := strconv.Itoa(int(nextJudge.ID)) + "_" + requestProtocol
-
-				assignment, found := judgeRequests[judgeKey]
-				if !found {
-					assignment = &requestAssignment{
-						judge:    nextJudge,
-						protocol: requestProtocol,
-					}
-					judgeRequests[judgeKey] = assignment
-				}
-
-				assignment.checks = append(assignment.checks, userCheck{
-					userID:     user.ID,
-					regex:      regex,
-					protocolID: protocolId,
-				})
-				userHasChecks[user.ID] = true
-			}
-		}
-
-		// Now make one request per judge/protocol and check all relevant regexes
-		for _, item := range judgeRequests {
-			html, err, responseTime, attempt := CheckProxyWithRetries(proxy, item.judge, item.protocol, maxTimeout, maxRetries)
-
-			// Process each regex against the response
-			for _, check := range item.checks {
-				statistic := domain.ProxyStatistic{
-					Alive:        false,
-					ResponseTime: uint16(responseTime),
-					Attempt:      attempt,
-					ProxyID:      proxy.ID,
-					ProtocolID:   check.protocolID,
-					JudgeID:      item.judge.ID,
-					ResponseBody: truncateResponseBody(html),
-				}
-
-				if err == nil && CheckForValidResponse(html, check.regex) {
-					lvl := support.GetProxyLevel(html)
-					statistic.LevelID = &lvl
-					statistic.Alive = true
-					userSuccess[check.userID] = true
-				}
-
-				jobruntime.AddProxyStatistic(statistic)
-			}
-		}
-
-		removedUsers := make(map[uint]struct{})
-		var orphaned []domain.Proxy
-
-		for _, user := range proxy.Users {
-			if !userHasChecks[user.ID] {
-				continue
-			}
-
-			if userSuccess[user.ID] {
-				if err := database.ResetUserProxyFailures(user.ID, proxy.ID); err != nil {
-					log.Error("failed to reset proxy failure streak", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
-				}
-				continue
-			}
-
-			newCount, err := database.IncrementUserProxyFailures(user.ID, proxy.ID)
-			if err != nil {
-				log.Error("failed to track proxy failure streak", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
-				continue
-			}
-
-			if newCount == 0 || !user.AutoRemoveFailingProxies || user.AutoRemoveFailureThreshold == 0 {
-				continue
-			}
-
-			if newCount < uint16(user.AutoRemoveFailureThreshold) {
-				continue
-			}
-
-			log.Info("auto-removing proxy after repeated failures", "proxy_id", proxy.ID, "user_id", user.ID, "failures", newCount)
-
-			_, orphanedProxies, err := database.DeleteProxyRelation(user.ID, []int{int(proxy.ID)})
-			if err != nil {
-				log.Error("failed to auto remove proxy for user", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
-				continue
-			}
-
-			removedUsers[user.ID] = struct{}{}
-			if len(orphanedProxies) > 0 {
-				orphaned = append(orphaned, orphanedProxies...)
-			}
-		}
-
+		removedUsers, orphaned := handleFailureTracking(proxy, userSuccess, userHasChecks)
 		if len(removedUsers) > 0 {
-			filtered := make([]domain.User, 0, len(proxy.Users))
-			for _, user := range proxy.Users {
-				if _, removed := removedUsers[user.ID]; removed {
-					continue
-				}
-				filtered = append(filtered, user)
-			}
-			proxy.Users = filtered
+			proxy = filterRemovedUsers(proxy, removedUsers)
 		}
 
 		if len(orphaned) > 0 {
@@ -313,6 +153,190 @@ func work() {
 		// Requeue the proxy for the next check
 		proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
 	}
+}
+
+func createWorkerContext() (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		select {
+		case <-stopChannel:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	cleanup := func() {
+		cancel()
+		<-done
+	}
+
+	return ctx, cleanup
+}
+
+func refreshProxyUsers(proxy domain.Proxy) domain.Proxy {
+	refreshedUsers := make(map[uint]domain.User, len(proxy.Users))
+	for i := range proxy.Users {
+		if cached, ok := refreshedUsers[proxy.Users[i].ID]; ok {
+			proxy.Users[i] = cached
+			continue
+		}
+
+		fresh := database.GetUserFromId(proxy.Users[i].ID)
+		if fresh.ID == 0 {
+			continue
+		}
+
+		refreshedUsers[proxy.Users[i].ID] = fresh
+		proxy.Users[i] = fresh
+	}
+
+	return proxy
+}
+
+func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
+	judgeRequests := make(map[string]*requestAssignment)
+	userSuccess := make(map[uint]bool, len(proxy.Users))
+	userHasChecks := make(map[uint]bool, len(proxy.Users))
+
+	var maxTimeout uint16
+	var maxRetries uint8
+
+	for _, user := range proxy.Users {
+		userSuccess[user.ID] = false
+
+		if user.Timeout > maxTimeout {
+			maxTimeout = user.Timeout
+		}
+		if user.Retries > maxRetries {
+			maxRetries = user.Retries
+		}
+
+		for protocol, protocolID := range user.GetProtocolMap() {
+			requestProtocol := determineRequestProtocol(protocol, protocolID, user.UseHttpsForSocks)
+
+			nextJudge, regex := judges.GetNextJudge(user.ID, requestProtocol)
+			judgeKey := strconv.Itoa(int(nextJudge.ID)) + "_" + requestProtocol
+
+			assignment, found := judgeRequests[judgeKey]
+			if !found {
+				assignment = &requestAssignment{
+					judge:    nextJudge,
+					protocol: requestProtocol,
+				}
+				judgeRequests[judgeKey] = assignment
+			}
+
+			assignment.checks = append(assignment.checks, userCheck{
+				userID:     user.ID,
+				regex:      regex,
+				protocolID: protocolID,
+			})
+			userHasChecks[user.ID] = true
+		}
+	}
+
+	return judgeRequests, userSuccess, userHasChecks, maxTimeout, maxRetries
+}
+
+func determineRequestProtocol(protocol string, protocolID int, useHTTPSForSocks bool) string {
+	if protocolID > 2 {
+		if useHTTPSForSocks {
+			return "https"
+		}
+		return "http"
+	}
+
+	return protocol
+}
+
+func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, userSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8) {
+	for _, item := range assignments {
+		html, err, responseTime, attempt := CheckProxyWithRetries(proxy, item.judge, item.protocol, maxTimeout, maxRetries)
+
+		for _, check := range item.checks {
+			statistic := domain.ProxyStatistic{
+				Alive:        false,
+				ResponseTime: uint16(responseTime),
+				Attempt:      attempt,
+				ProxyID:      proxy.ID,
+				ProtocolID:   check.protocolID,
+				JudgeID:      item.judge.ID,
+				ResponseBody: truncateResponseBody(html),
+			}
+
+			if err == nil && CheckForValidResponse(html, check.regex) {
+				lvl := support.GetProxyLevel(html)
+				statistic.LevelID = &lvl
+				statistic.Alive = true
+				userSuccess[check.userID] = true
+			}
+
+			jobruntime.AddProxyStatistic(statistic)
+		}
+	}
+}
+
+func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[uint]bool) (map[uint]struct{}, []domain.Proxy) {
+	removedUsers := make(map[uint]struct{})
+	var orphaned []domain.Proxy
+
+	for _, user := range proxy.Users {
+		if !userHasChecks[user.ID] {
+			continue
+		}
+
+		if userSuccess[user.ID] {
+			if err := database.ResetUserProxyFailures(user.ID, proxy.ID); err != nil {
+				log.Error("failed to reset proxy failure streak", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
+			}
+			continue
+		}
+
+		newCount, err := database.IncrementUserProxyFailures(user.ID, proxy.ID)
+		if err != nil {
+			log.Error("failed to track proxy failure streak", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
+			continue
+		}
+
+		if newCount == 0 || !user.AutoRemoveFailingProxies || user.AutoRemoveFailureThreshold == 0 {
+			continue
+		}
+
+		if newCount < uint16(user.AutoRemoveFailureThreshold) {
+			continue
+		}
+
+		log.Info("auto-removing proxy after repeated failures", "proxy_id", proxy.ID, "user_id", user.ID, "failures", newCount)
+
+		_, orphanedProxies, err := database.DeleteProxyRelation(user.ID, []int{int(proxy.ID)})
+		if err != nil {
+			log.Error("failed to auto remove proxy for user", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
+			continue
+		}
+
+		removedUsers[user.ID] = struct{}{}
+		if len(orphanedProxies) > 0 {
+			orphaned = append(orphaned, orphanedProxies...)
+		}
+	}
+
+	return removedUsers, orphaned
+}
+
+func filterRemovedUsers(proxy domain.Proxy, removed map[uint]struct{}) domain.Proxy {
+	filtered := make([]domain.User, 0, len(proxy.Users))
+	for _, user := range proxy.Users {
+		if _, ok := removed[user.ID]; ok {
+			continue
+		}
+		filtered = append(filtered, user)
+	}
+	proxy.Users = filtered
+
+	return proxy
 }
 
 func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol string, timeout uint16, retries uint8) (string, error, int64, uint8) {
