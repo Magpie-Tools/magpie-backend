@@ -137,6 +137,20 @@ func scrapeWorker() {
 			go handleScrapedHTML(site, html)
 		}
 
+		hasUsers, err := database.ScrapeSiteHasUsers(site.ID)
+		if err != nil {
+			log.Error("verify scrape site ownership", "site_id", site.ID, "url", site.URL, "err", err)
+			if err := sitequeue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due); err != nil {
+				log.Error("requeue site", "err", err)
+			}
+			continue
+		}
+
+		if !hasUsers {
+			log.Debug("scrape site no longer in use; skipping requeue", "site_id", site.ID, "url", site.URL)
+			continue
+		}
+
 		if err := sitequeue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due); err != nil {
 			log.Error("requeue site", "err", err)
 		}
@@ -410,7 +424,7 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 	proxyList := support.GetProxiesOfHTML(rawHTML)
 	parsedProxies := support.ParseTextToProxies(strings.Join(proxyList, "\n"))
 
-	proxies, err := database.InsertAndGetProxies(parsedProxies, support.GetUserIdsFromList(site.Users)...)
+	proxies, err := database.InsertAndGetProxiesWithUser(parsedProxies, support.GetUserIdsFromList(site.Users)...)
 	if err != nil {
 		log.Error("insert proxies from scraping failed", "err", err)
 	}

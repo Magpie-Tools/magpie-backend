@@ -3,17 +3,20 @@ package checker
 import (
 	"context"
 	"errors"
-	"github.com/charmbracelet/log"
+	"math"
+	"strconv"
+	"sync/atomic"
+	"time"
+
 	"magpie/internal/config"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/support"
-	"math"
-	"strconv"
-	"sync/atomic"
-	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 var (
@@ -205,6 +208,18 @@ func work() {
 
 				jobruntime.AddProxyStatistic(statistic)
 			}
+		}
+
+		hasUsers, err := database.ProxyHasUsers(proxy.ID)
+		if err != nil {
+			log.Error("failed to verify proxy ownership before requeue", "proxy_id", proxy.ID, "error", err)
+			// Requeue to avoid dropping proxies on transient errors
+			proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
+			continue
+		}
+		if !hasUsers {
+			//log.Debug("proxy no longer has associated users; skipping requeue", "proxy_id", proxy.ID)
+			continue
 		}
 
 		// Requeue the proxy for the next check

@@ -2,14 +2,16 @@ package server
 
 import (
 	"encoding/json"
-	"github.com/charmbracelet/log"
+	"fmt"
 	"io"
+	"net/http"
+	"strconv"
+
+	"github.com/charmbracelet/log"
 	"magpie/internal/auth"
 	"magpie/internal/database"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/support"
-	"net/http"
-	"strconv"
 )
 
 func getScrapeSourcesCount(w http.ResponseWriter, r *http.Request) {
@@ -55,9 +57,25 @@ func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	database.DeleteScrapeSiteRelation(userID, scrapingSource)
+	deleted, orphaned, deleteErr := database.DeleteScrapeSiteRelation(userID, scrapingSource)
+	if deleteErr != nil {
+		log.Error("could not delete scrape sites", "error", deleteErr.Error())
+		writeError(w, "Could not delete scraping sources", http.StatusInternalServerError)
+		return
+	}
 
-	json.NewEncoder(w).Encode("Scraping Sources deleted successfully")
+	if len(orphaned) > 0 {
+		if err := sitequeue.PublicScrapeSiteQueue.RemoveFromQueue(orphaned); err != nil {
+			log.Error("failed to remove scrape sites from queue", "error", err, "count", len(orphaned))
+		}
+	}
+
+	if deleted == 0 {
+		json.NewEncoder(w).Encode("No scraping sources matched the delete criteria.")
+		return
+	}
+
+	json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d scraping sources.", deleted))
 }
 
 func saveScrapingSources(w http.ResponseWriter, r *http.Request) {

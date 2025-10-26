@@ -16,12 +16,35 @@ func ParseTextToProxies(text string) []domain.Proxy {
 	lines := strings.Split(text, "\n")
 	proxies := make([]domain.Proxy, 0, len(lines))
 
-	for _, line := range lines {
-		split := strings.Split(line, ":")
-		count := len(split)
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
 
-		// Validate ip
-		ip := split[0]
+		var (
+			username string
+			password string
+			hostPart string = line
+		)
+
+		if at := strings.LastIndex(line, "@"); at != -1 {
+			credPart := line[:at]
+			hostPart = line[at+1:]
+
+			credSplit := strings.SplitN(credPart, ":", 2)
+			if len(credSplit) == 2 {
+				username = strings.TrimSpace(credSplit[0])
+				password = strings.TrimSpace(credSplit[1])
+			}
+		}
+
+		hostSplit := strings.Split(hostPart, ":")
+		if len(hostSplit) < 2 {
+			continue
+		}
+
+		ip := strings.TrimSpace(hostSplit[0])
 		if len(ip) > 0 && ip[0] == '0' {
 			ip = ip[1:] // Fix proxy if it leads with 0
 		}
@@ -29,29 +52,35 @@ func ParseTextToProxies(text string) []domain.Proxy {
 			continue
 		}
 
-		// Validate Port
-		port, err := strconv.Atoi(split[1])
+		portStr := strings.TrimSpace(hostSplit[1])
+		port, err := strconv.Atoi(portStr)
 		if err != nil || port < 1 || port > 65535 {
 			continue
 		}
 
-		proxy := domain.Proxy{
-			Port: uint16(port),
+		// Handle formats like ip:port:user:pass when no @ credentials were provided.
+		if username == "" && password == "" && len(hostSplit) >= 4 {
+			candidateUser := strings.TrimSpace(hostSplit[2])
+			candidatePass := strings.TrimSpace(strings.Join(hostSplit[3:], ":"))
+
+			// Skip obviously wrong mappings where creds repeat host/port.
+			if !(candidateUser == ip && candidatePass == portStr) {
+				username = candidateUser
+				password = candidatePass
+			}
 		}
 
-		err = proxy.SetIP(ip)
-		if err != nil {
+		proxy := domain.Proxy{
+			Port:     uint16(port),
+			Username: username,
+			Password: password,
+		}
+
+		if err := proxy.SetIP(ip); err != nil {
 			continue
 		}
 
-		if count == 2 {
-			proxies = append(proxies, proxy)
-		} else if count == 4 {
-			proxy.Username = split[2]
-			proxy.Password = split[3]
-
-			proxies = append(proxies, proxy)
-		}
+		proxies = append(proxies, proxy)
 	}
 
 	return proxies

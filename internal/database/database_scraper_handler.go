@@ -161,6 +161,113 @@ func GetScrapeSiteInfoPage(userId uint, page int) []dto.ScrapeSiteInfo {
 	return results
 }
 
-func DeleteScrapeSiteRelation(userId uint, scrapeSite []int) {
-	DB.Where("scrape_site_id IN (?)", scrapeSite).Where("user_id = (?)", userId).Delete(&domain.UserScrapeSite{})
+func DeleteScrapeSiteRelation(userId uint, scrapeSite []int) (int64, []domain.ScrapeSite, error) {
+	if len(scrapeSite) == 0 {
+		return 0, nil, nil
+	}
+
+	chunkSize := deleteChunkSize
+	if chunkSize > len(scrapeSite) {
+		chunkSize = len(scrapeSite)
+	}
+	if chunkSize <= 0 {
+		chunkSize = len(scrapeSite)
+	}
+
+	var totalDeleted int64
+	orphanSet := make(map[uint64]struct{})
+
+	for start := 0; start < len(scrapeSite); start += chunkSize {
+		end := start + chunkSize
+		if end > len(scrapeSite) {
+			end = len(scrapeSite)
+		}
+
+		chunk := scrapeSite[start:end]
+		result := DB.
+			Where("scrape_site_id IN ?", chunk).
+			Where("user_id = ?", userId).
+			Delete(&domain.UserScrapeSite{})
+
+		if result.Error != nil {
+			return totalDeleted, nil, result.Error
+		}
+
+		totalDeleted += result.RowsAffected
+
+		orphanIDs, err := collectOrphanScrapeSiteIDs(chunk)
+		if err != nil {
+			return totalDeleted, nil, err
+		}
+
+		for _, id := range orphanIDs {
+			orphanSet[id] = struct{}{}
+		}
+	}
+
+	if len(orphanSet) == 0 {
+		return totalDeleted, nil, nil
+	}
+
+	uniqueIDs := make([]uint64, 0, len(orphanSet))
+	for id := range orphanSet {
+		uniqueIDs = append(uniqueIDs, id)
+	}
+
+	var orphans []domain.ScrapeSite
+	if err := DB.Where("id IN ?", uniqueIDs).Find(&orphans).Error; err != nil {
+		return totalDeleted, nil, err
+	}
+
+	return totalDeleted, orphans, nil
+}
+
+func collectOrphanScrapeSiteIDs(candidateIDs []int) ([]uint64, error) {
+	if len(candidateIDs) == 0 {
+		return nil, nil
+	}
+
+	var stillInUse []int
+	if err := DB.Model(&domain.UserScrapeSite{}).
+		Where("scrape_site_id IN ?", candidateIDs).
+		Distinct("scrape_site_id").
+		Pluck("scrape_site_id", &stillInUse).Error; err != nil {
+		return nil, err
+	}
+
+	inUseSet := make(map[int]struct{}, len(stillInUse))
+	for _, id := range stillInUse {
+		inUseSet[id] = struct{}{}
+	}
+
+	seen := make(map[int]struct{}, len(candidateIDs))
+	orphanIDs := make([]uint64, 0, len(candidateIDs))
+	for _, candidate := range candidateIDs {
+		if _, alreadySeen := seen[candidate]; alreadySeen {
+			continue
+		}
+		seen[candidate] = struct{}{}
+
+		if _, ok := inUseSet[candidate]; ok {
+			continue
+		}
+
+		orphanIDs = append(orphanIDs, uint64(candidate))
+	}
+
+	if len(orphanIDs) == 0 {
+		return nil, nil
+	}
+
+	return orphanIDs, nil
+}
+
+func ScrapeSiteHasUsers(siteID uint64) (bool, error) {
+	var count int64
+	if err := DB.Model(&domain.UserScrapeSite{}).
+		Where("scrape_site_id = ?", siteID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

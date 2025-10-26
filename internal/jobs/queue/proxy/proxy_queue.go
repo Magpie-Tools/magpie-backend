@@ -99,6 +99,53 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 	return nil
 }
 
+func (rpq *RedisProxyQueue) RemoveFromQueue(proxies []domain.Proxy) error {
+	if rpq == nil {
+		return errors.New("redis proxy queue is nil")
+	}
+	if len(proxies) == 0 {
+		return nil
+	}
+
+	const batchSize = 500
+	pipe := rpq.client.Pipeline()
+	opCount := 0
+
+	flush := func() error {
+		if opCount == 0 {
+			return nil
+		}
+		if _, err := pipe.Exec(rpq.ctx); err != nil {
+			return fmt.Errorf("remove pipeline exec failed: %w", err)
+		}
+		pipe = rpq.client.Pipeline()
+		opCount = 0
+		return nil
+	}
+
+	for _, proxy := range proxies {
+		if len(proxy.Hash) == 0 {
+			continue
+		}
+
+		hashKey := string(proxy.Hash)
+		proxyKey := proxyKeyPrefix + hashKey
+
+		pipe.Del(rpq.ctx, proxyKey)
+		opCount++
+		pipe.ZRem(rpq.ctx, queueKey, hashKey)
+		opCount++
+
+		if opCount >= batchSize {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return flush()
+}
+
 func (rpq *RedisProxyQueue) GetNextProxy() (domain.Proxy, time.Time, error) {
 	return rpq.GetNextProxyContext(rpq.ctx)
 }

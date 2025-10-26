@@ -733,9 +733,9 @@ func normaliseDisplayValue(value string, fallback string) string {
 	return trimmed
 }
 
-func DeleteProxyRelation(userId uint, proxies []int) (int64, error) {
+func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, error) {
 	if len(proxies) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 
 	var totalDeleted int64
@@ -746,6 +746,8 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, error) {
 	if chunkSize <= 0 {
 		chunkSize = len(proxies)
 	}
+
+	orphanSet := make(map[uint64]struct{})
 
 	for start := 0; start < len(proxies); start += chunkSize {
 		end := start + chunkSize
@@ -760,27 +762,103 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, error) {
 			Delete(&domain.UserProxy{})
 
 		if result.Error != nil {
-			return totalDeleted, result.Error
+			return totalDeleted, nil, result.Error
 		}
 
 		totalDeleted += result.RowsAffected
+
+		orphanIDs, err := collectOrphanProxyIDs(chunk)
+		if err != nil {
+			return totalDeleted, nil, err
+		}
+		if len(orphanIDs) == 0 {
+			continue
+		}
+
+		for _, id := range orphanIDs {
+			orphanSet[id] = struct{}{}
+		}
 	}
 
-	return totalDeleted, nil
+	if len(orphanSet) == 0 {
+		return totalDeleted, nil, nil
+	}
+
+	uniqueIDs := make([]uint64, 0, len(orphanSet))
+	for id := range orphanSet {
+		uniqueIDs = append(uniqueIDs, id)
+	}
+
+	var orphans []domain.Proxy
+	if err := DB.Where("id IN ?", uniqueIDs).Find(&orphans).Error; err != nil {
+		return totalDeleted, nil, err
+	}
+
+	return totalDeleted, orphans, nil
 }
 
-func DeleteProxiesWithSettings(userID uint, settings dto.DeleteSettings) (int64, error) {
+func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
+	if len(candidateIDs) == 0 {
+		return nil, nil
+	}
+
+	var stillInUse []int
+	if err := DB.Model(&domain.UserProxy{}).
+		Where("proxy_id IN ?", candidateIDs).
+		Distinct("proxy_id").
+		Pluck("proxy_id", &stillInUse).Error; err != nil {
+		return nil, err
+	}
+
+	inUseSet := make(map[int]struct{}, len(stillInUse))
+	for _, id := range stillInUse {
+		inUseSet[id] = struct{}{}
+	}
+
+	seen := make(map[int]struct{}, len(candidateIDs))
+	orphanIDs := make([]uint64, 0, len(candidateIDs))
+	for _, id := range candidateIDs {
+		if _, alreadySeen := seen[id]; alreadySeen {
+			continue
+		}
+		seen[id] = struct{}{}
+
+		if _, inUse := inUseSet[id]; inUse {
+			continue
+		}
+
+		orphanIDs = append(orphanIDs, uint64(id))
+	}
+
+	if len(orphanIDs) == 0 {
+		return nil, nil
+	}
+
+	return orphanIDs, nil
+}
+
+func ProxyHasUsers(proxyID uint64) (bool, error) {
+	var count int64
+	if err := DB.Model(&domain.UserProxy{}).
+		Where("proxy_id = ?", proxyID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func DeleteProxiesWithSettings(userID uint, settings dto.DeleteSettings) (int64, []domain.Proxy, error) {
 	if settings.Scope == "selected" && len(settings.Proxies) == 0 {
-		return 0, ErrNoProxiesSelected
+		return 0, nil, ErrNoProxiesSelected
 	}
 
 	proxyIDs, err := collectProxyIDsForDeletion(userID, settings)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 
 	if len(proxyIDs) == 0 {
-		return 0, nil
+		return 0, nil, nil
 	}
 
 	intIDs := make([]int, 0, len(proxyIDs))

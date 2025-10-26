@@ -241,11 +241,17 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		deleted, deleteErr := database.DeleteProxyRelation(userID, proxies)
+		deleted, orphaned, deleteErr := database.DeleteProxyRelation(userID, proxies)
 		if deleteErr != nil {
 			log.Error("could not delete proxies", "error", deleteErr.Error())
 			writeError(w, "Could not delete proxies", http.StatusInternalServerError)
 			return
+		}
+
+		if len(orphaned) > 0 {
+			if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(orphaned); err != nil {
+				log.Error("failed to remove orphaned proxies from queue", "error", err)
+			}
 		}
 
 		if deleted == 0 {
@@ -267,7 +273,7 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 		settings.Scope = "all"
 	}
 
-	deleted, deleteErr := database.DeleteProxiesWithSettings(userID, settings)
+	deleted, orphaned, deleteErr := database.DeleteProxiesWithSettings(userID, settings)
 	if deleteErr != nil {
 		if errors.Is(deleteErr, database.ErrNoProxiesSelected) {
 			writeError(w, "No proxies selected for deletion", http.StatusBadRequest)
@@ -277,6 +283,12 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 		log.Error("could not delete proxies with filters", "error", deleteErr.Error())
 		writeError(w, "Could not delete proxies", http.StatusInternalServerError)
 		return
+	}
+
+	if len(orphaned) > 0 {
+		if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(orphaned); err != nil {
+			log.Error("failed to remove orphaned proxies from queue", "error", err)
+		}
 	}
 
 	if deleted == 0 {

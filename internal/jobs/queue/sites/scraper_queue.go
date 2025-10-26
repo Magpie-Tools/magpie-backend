@@ -98,6 +98,52 @@ func (rssq *RedisScrapeSiteQueue) AddToQueue(sites []domain.ScrapeSite) error {
 	return nil
 }
 
+func (rssq *RedisScrapeSiteQueue) RemoveFromQueue(sites []domain.ScrapeSite) error {
+	if rssq == nil {
+		return errors.New("redis scrape queue is nil")
+	}
+	if len(sites) == 0 {
+		return nil
+	}
+
+	const batchSize = 250
+	pipe := rssq.client.Pipeline()
+	opCount := 0
+
+	flush := func() error {
+		if opCount == 0 {
+			return nil
+		}
+		if _, err := pipe.Exec(rssq.ctx); err != nil {
+			return fmt.Errorf("remove pipeline exec failed: %w", err)
+		}
+		pipe = rssq.client.Pipeline()
+		opCount = 0
+		return nil
+	}
+
+	for _, site := range sites {
+		if site.URL == "" {
+			continue
+		}
+
+		key := scrapesiteKeyPrefix + site.URL
+
+		pipe.Del(rssq.ctx, key)
+		opCount++
+		pipe.ZRem(rssq.ctx, scrapesiteQueueKey, site.URL)
+		opCount++
+
+		if opCount >= batchSize {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+
+	return flush()
+}
+
 func (rssq *RedisScrapeSiteQueue) GetNextScrapeSite() (domain.ScrapeSite, time.Time, error) {
 	return rssq.GetNextScrapeSiteContext(rssq.ctx)
 }
