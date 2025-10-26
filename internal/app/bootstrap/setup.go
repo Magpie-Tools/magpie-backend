@@ -83,7 +83,7 @@ func Setup() {
 	go jobruntime.StartProxyHistoryRoutine(context.Background())
 	go jobruntime.StartProxySnapshotRoutine(context.Background())
 	go jobruntime.StartProxyGeoRefreshRoutine(context.Background())
-	go maintenance.StartOrphanProxyCleanupRoutine(context.Background())
+	go maintenance.StartOrphanCleanupRoutine(context.Background())
 	go jobruntime.StartGeoLiteUpdateRoutine(context.Background())
 	go checker.ThreadDispatcher()
 	go scraper.ManagePagePool()

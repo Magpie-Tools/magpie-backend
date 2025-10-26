@@ -1,6 +1,9 @@
 package database
 
 import (
+	"context"
+	"fmt"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"magpie/internal/api/dto"
@@ -260,6 +263,26 @@ func collectOrphanScrapeSiteIDs(candidateIDs []int) ([]uint64, error) {
 	}
 
 	return orphanIDs, nil
+}
+
+func DeleteOrphanScrapeSites(ctx context.Context) (int64, error) {
+	if DB == nil {
+		return 0, fmt.Errorf("database not initialised")
+	}
+
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+
+	result := db.
+		Where("NOT EXISTS (SELECT 1 FROM user_scrape_site us WHERE us.scrape_site_id = scrape_sites.id)").
+		Delete(&domain.ScrapeSite{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+
+	return result.RowsAffected, nil
 }
 
 func ScrapeSiteHasUsers(siteID uint64) (bool, error) {
