@@ -838,13 +838,14 @@ func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
 }
 
 func ProxyHasUsers(proxyID uint64) (bool, error) {
-	var count int64
-	if err := DB.Model(&domain.UserProxy{}).
-		Where("proxy_id = ?", proxyID).
-		Count(&count).Error; err != nil {
+	var exists bool
+	if err := DB.Raw(
+		"SELECT EXISTS (SELECT 1 FROM user_proxies WHERE proxy_id = ?)",
+		proxyID,
+	).Scan(&exists).Error; err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	return exists, nil
 }
 
 func ResetUserProxyFailures(userID uint, proxyID uint64) error {
