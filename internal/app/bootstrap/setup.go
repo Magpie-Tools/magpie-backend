@@ -10,6 +10,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/jobs/checker"
 	"magpie/internal/jobs/checker/judges"
+	maintenance "magpie/internal/jobs/maintenance"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	jobruntime "magpie/internal/jobs/runtime"
@@ -82,6 +83,7 @@ func Setup() {
 	go jobruntime.StartProxyHistoryRoutine(context.Background())
 	go jobruntime.StartProxySnapshotRoutine(context.Background())
 	go jobruntime.StartProxyGeoRefreshRoutine(context.Background())
+	go maintenance.StartOrphanProxyCleanupRoutine(context.Background())
 	go jobruntime.StartGeoLiteUpdateRoutine(context.Background())
 	go checker.ThreadDispatcher()
 	go scraper.ManagePagePool()

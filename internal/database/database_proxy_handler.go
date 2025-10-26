@@ -1,8 +1,10 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -846,6 +848,24 @@ func ProxyHasUsers(proxyID uint64) (bool, error) {
 		return false, err
 	}
 	return exists, nil
+}
+
+func DeleteOrphanProxies(ctx context.Context) (int64, error) {
+	if DB == nil {
+		return 0, fmt.Errorf("database not initialised")
+	}
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+
+	result := db.
+		Where("NOT EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id)").
+		Delete(&domain.Proxy{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return result.RowsAffected, nil
 }
 
 func ResetUserProxyFailures(userID uint, proxyID uint64) error {
