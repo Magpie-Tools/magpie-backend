@@ -29,15 +29,17 @@ func NewSchema() (gql.Schema, error) {
 	userSettingsType := gql.NewObject(gql.ObjectConfig{
 		Name: "UserSettings",
 		Fields: gql.Fields{
-			"httpProtocol":     &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
-			"httpsProtocol":    &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
-			"socks4Protocol":   &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
-			"socks5Protocol":   &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
-			"timeout":          &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"retries":          &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"useHttpsForSocks": &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
-			"judges":           &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(simpleJudgeType)))},
-			"scrapingSources":  &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
+			"httpProtocol":               &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"httpsProtocol":              &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"socks4Protocol":             &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"socks5Protocol":             &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"timeout":                    &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"retries":                    &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"useHttpsForSocks":           &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"autoRemoveFailingProxies":   &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"autoRemoveFailureThreshold": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"judges":                     &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(simpleJudgeType)))},
+			"scrapingSources":            &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
 		},
 	})
 
@@ -327,13 +329,15 @@ func NewSchema() (gql.Schema, error) {
 	updateSettingsInput := gql.NewInputObject(gql.InputObjectConfig{
 		Name: "UpdateUserSettingsInput",
 		Fields: gql.InputObjectConfigFieldMap{
-			"httpProtocol":     &gql.InputObjectFieldConfig{Type: gql.Boolean},
-			"httpsProtocol":    &gql.InputObjectFieldConfig{Type: gql.Boolean},
-			"socks4Protocol":   &gql.InputObjectFieldConfig{Type: gql.Boolean},
-			"socks5Protocol":   &gql.InputObjectFieldConfig{Type: gql.Boolean},
-			"timeout":          &gql.InputObjectFieldConfig{Type: gql.Int},
-			"retries":          &gql.InputObjectFieldConfig{Type: gql.Int},
-			"useHttpsForSocks": &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"httpProtocol":               &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"httpsProtocol":              &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"socks4Protocol":             &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"socks5Protocol":             &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"timeout":                    &gql.InputObjectFieldConfig{Type: gql.Int},
+			"retries":                    &gql.InputObjectFieldConfig{Type: gql.Int},
+			"useHttpsForSocks":           &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"autoRemoveFailingProxies":   &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"autoRemoveFailureThreshold": &gql.InputObjectFieldConfig{Type: gql.Int},
 			"judges": &gql.InputObjectFieldConfig{
 				Type: gql.NewList(gql.NewNonNull(judgeInputType)),
 			},
@@ -409,15 +413,17 @@ func buildUserSettings(user domain.User, judges []dto.SimpleUserJudge, sources [
 	}
 
 	return map[string]interface{}{
-		"httpProtocol":     dtoSettings.HTTPProtocol,
-		"httpsProtocol":    dtoSettings.HTTPSProtocol,
-		"socks4Protocol":   dtoSettings.SOCKS4Protocol,
-		"socks5Protocol":   dtoSettings.SOCKS5Protocol,
-		"timeout":          int(dtoSettings.Timeout),
-		"retries":          int(dtoSettings.Retries),
-		"useHttpsForSocks": dtoSettings.UseHttpsForSocks,
-		"judges":           judgeList,
-		"scrapingSources":  dtoSettings.ScrapingSources,
+		"httpProtocol":               dtoSettings.HTTPProtocol,
+		"httpsProtocol":              dtoSettings.HTTPSProtocol,
+		"socks4Protocol":             dtoSettings.SOCKS4Protocol,
+		"socks5Protocol":             dtoSettings.SOCKS5Protocol,
+		"timeout":                    int(dtoSettings.Timeout),
+		"retries":                    int(dtoSettings.Retries),
+		"useHttpsForSocks":           dtoSettings.UseHttpsForSocks,
+		"autoRemoveFailingProxies":   dtoSettings.AutoRemoveFailingProxies,
+		"autoRemoveFailureThreshold": int(dtoSettings.AutoRemoveFailureThreshold),
+		"judges":                     judgeList,
+		"scrapingSources":            dtoSettings.ScrapingSources,
 	}
 }
 
@@ -583,6 +589,15 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	}
 	if v, ok := input["useHttpsForSocks"].(bool); ok {
 		settings.UseHttpsForSocks = v
+	}
+	if v, ok := input["autoRemoveFailingProxies"].(bool); ok {
+		settings.AutoRemoveFailingProxies = v
+	}
+	if v, ok := input["autoRemoveFailureThreshold"].(int); ok && v >= 0 {
+		if v > 255 {
+			v = 255
+		}
+		settings.AutoRemoveFailureThreshold = uint8(v)
 	}
 
 	if rawJudges, ok := input["judges"].([]interface{}); ok {

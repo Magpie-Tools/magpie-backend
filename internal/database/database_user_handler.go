@@ -92,13 +92,15 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 
 		/* ─── 1.  Update primitive columns on the User row ─────────────────────── */
 		updates := map[string]interface{}{
-			"HTTPProtocol":     settings.HTTPProtocol,
-			"HTTPSProtocol":    settings.HTTPSProtocol,
-			"SOCKS4Protocol":   settings.SOCKS4Protocol,
-			"SOCKS5Protocol":   settings.SOCKS5Protocol,
-			"Timeout":          settings.Timeout,
-			"Retries":          settings.Retries,
-			"UseHttpsForSocks": settings.UseHttpsForSocks,
+			"HTTPProtocol":               settings.HTTPProtocol,
+			"HTTPSProtocol":              settings.HTTPSProtocol,
+			"SOCKS4Protocol":             settings.SOCKS4Protocol,
+			"SOCKS5Protocol":             settings.SOCKS5Protocol,
+			"Timeout":                    settings.Timeout,
+			"Retries":                    settings.Retries,
+			"UseHttpsForSocks":           settings.UseHttpsForSocks,
+			"AutoRemoveFailingProxies":   settings.AutoRemoveFailingProxies,
+			"AutoRemoveFailureThreshold": settings.AutoRemoveFailureThreshold,
 		}
 		if err := tx.Model(&domain.User{}).
 			Where("id = ?", userID).

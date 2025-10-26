@@ -12,13 +12,15 @@ type User struct {
 	Role     string `gorm:"not null;default:'user';check:role IN ('user', 'admin')"`
 
 	//Settings
-	HTTPProtocol     bool   `gorm:"not null;default:false"`
-	HTTPSProtocol    bool   `gorm:"not null;default:true"`
-	SOCKS4Protocol   bool   `gorm:"not null;default:false"`
-	SOCKS5Protocol   bool   `gorm:"not null;default:false"`
-	Timeout          uint16 `gorm:"not null;default:7500"`
-	Retries          uint8  `gorm:"not null;default:2"`
-	UseHttpsForSocks bool   `gorm:"not null;default:true"`
+	HTTPProtocol               bool   `gorm:"not null;default:false"`
+	HTTPSProtocol              bool   `gorm:"not null;default:true"`
+	SOCKS4Protocol             bool   `gorm:"not null;default:false"`
+	SOCKS5Protocol             bool   `gorm:"not null;default:false"`
+	Timeout                    uint16 `gorm:"not null;default:7500"`
+	Retries                    uint8  `gorm:"not null;default:2"`
+	UseHttpsForSocks           bool   `gorm:"not null;default:true"`
+	AutoRemoveFailingProxies   bool   `gorm:"not null;default:false"`
+	AutoRemoveFailureThreshold uint8  `gorm:"not null;default:3"`
 
 	//Relations
 	Judges       []Judge        `gorm:"many2many:user_judges;"`
@@ -30,15 +32,17 @@ type User struct {
 
 func (u *User) ToUserSettings(simpleUserJudges []dto.SimpleUserJudge, scrapingSources []string) dto.UserSettings {
 	return dto.UserSettings{
-		HTTPProtocol:     u.HTTPProtocol,
-		HTTPSProtocol:    u.HTTPSProtocol,
-		SOCKS4Protocol:   u.SOCKS4Protocol,
-		SOCKS5Protocol:   u.SOCKS5Protocol,
-		Timeout:          u.Timeout,
-		Retries:          u.Retries,
-		UseHttpsForSocks: u.UseHttpsForSocks,
-		SimpleUserJudges: simpleUserJudges,
-		ScrapingSources:  scrapingSources,
+		HTTPProtocol:               u.HTTPProtocol,
+		HTTPSProtocol:              u.HTTPSProtocol,
+		SOCKS4Protocol:             u.SOCKS4Protocol,
+		SOCKS5Protocol:             u.SOCKS5Protocol,
+		Timeout:                    u.Timeout,
+		Retries:                    u.Retries,
+		UseHttpsForSocks:           u.UseHttpsForSocks,
+		AutoRemoveFailingProxies:   u.AutoRemoveFailingProxies,
+		AutoRemoveFailureThreshold: u.AutoRemoveFailureThreshold,
+		SimpleUserJudges:           simpleUserJudges,
+		ScrapingSources:            scrapingSources,
 	}
 }
 

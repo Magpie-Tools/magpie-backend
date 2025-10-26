@@ -847,6 +847,42 @@ func ProxyHasUsers(proxyID uint64) (bool, error) {
 	return count > 0, nil
 }
 
+func ResetUserProxyFailures(userID uint, proxyID uint64) error {
+	if DB == nil {
+		return nil
+	}
+
+	return DB.Model(&domain.UserProxy{}).
+		Where("user_id = ? AND proxy_id = ?", userID, proxyID).
+		Update("consecutive_failures", 0).Error
+}
+
+func IncrementUserProxyFailures(userID uint, proxyID uint64) (uint16, error) {
+	if DB == nil {
+		return 0, nil
+	}
+
+	var updated struct {
+		ConsecutiveFailures uint16
+	}
+
+	result := DB.Model(&domain.UserProxy{}).
+		Where("user_id = ? AND proxy_id = ?", userID, proxyID).
+		Clauses(clause.Returning{Columns: []clause.Column{{Name: "consecutive_failures"}}}).
+		UpdateColumn("consecutive_failures", gorm.Expr("LEAST(consecutive_failures + 1, ?)", 65535)).
+		Scan(&updated)
+
+	if result.Error != nil {
+		return 0, result.Error
+	}
+
+	if result.RowsAffected == 0 {
+		return 0, nil
+	}
+
+	return updated.ConsecutiveFailures, nil
+}
+
 func DeleteProxiesWithSettings(userID uint, settings dto.DeleteSettings) (int64, []domain.Proxy, error) {
 	if settings.Scope == "selected" && len(settings.Proxies) == 0 {
 		return 0, nil, ErrNoProxiesSelected
