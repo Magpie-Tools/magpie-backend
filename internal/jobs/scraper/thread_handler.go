@@ -427,6 +427,11 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 	proxies, err := database.InsertAndGetProxiesWithUser(parsedProxies, support.GetUserIdsFromList(site.Users)...)
 	if err != nil {
 		log.Error("insert proxies from scraping failed", "err", err)
+	} else {
+		proxiesToEnrich := database.FilterProxiesMissingGeo(proxies)
+		if len(proxiesToEnrich) > 0 {
+			database.AsyncEnrichProxyMetadata(proxiesToEnrich)
+		}
 	}
 
 	err = database.AssociateProxiesToScrapeSite(site.ID, proxies)

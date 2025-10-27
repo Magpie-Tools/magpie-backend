@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -360,6 +361,11 @@ func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol str
 }
 
 func truncateResponseBody(body string) string {
+	if body == "" {
+		return ""
+	}
+
+	body = strings.ReplaceAll(body, "\x00", "")
 	if body == "" {
 		return ""
 	}

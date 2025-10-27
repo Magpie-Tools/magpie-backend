@@ -376,6 +376,25 @@ func applyResidentialOverrides(proxies *[]domain.Proxy, candidates []residential
 	return persistProxyMetadata(overrides)
 }
 
+func FilterProxiesMissingGeo(proxies []domain.Proxy) []domain.Proxy {
+	if len(proxies) == 0 {
+		return nil
+	}
+
+	filtered := make([]domain.Proxy, 0, len(proxies))
+	for _, proxy := range proxies {
+		country := strings.TrimSpace(proxy.Country)
+		proxyType := strings.TrimSpace(proxy.EstimatedType)
+
+		if country == "" || strings.EqualFold(country, "n/a") ||
+			proxyType == "" || strings.EqualFold(proxyType, "n/a") ||
+			strings.EqualFold(proxyType, "unknown") {
+			filtered = append(filtered, proxy)
+		}
+	}
+	return filtered
+}
+
 func persistProxyMetadata(proxies []domain.Proxy) error {
 	for i := 0; i < len(proxies); i += enrichmentUpdateBatchSize {
 		end := i + enrichmentUpdateBatchSize

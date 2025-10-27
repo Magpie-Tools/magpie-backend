@@ -62,6 +62,10 @@ func Setup() {
 	if err != nil {
 		log.Error("Error getting all proxies:", "error", err)
 	} else {
+		missingGeo := database.FilterProxiesMissingGeo(proxies)
+		if len(missingGeo) > 0 {
+			database.AsyncEnrichProxyMetadata(missingGeo)
+		}
 		proxyqueue.PublicProxyQueue.AddToQueue(proxies)
 		log.Infof("Added %d proxies to queue", len(proxies))
 	}
