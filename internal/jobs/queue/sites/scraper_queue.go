@@ -188,7 +188,12 @@ func (rssq *RedisScrapeSiteQueue) GetNextScrapeSiteContext(ctx context.Context) 
 }
 
 func (rssq *RedisScrapeSiteQueue) RequeueScrapeSite(site domain.ScrapeSite, lastCheckTime time.Time) error {
-	nextCheck := lastCheckTime.Add(config.GetTimeBetweenScrapes())
+	interval := config.GetTimeBetweenScrapes()
+	base := lastCheckTime
+	if now := time.Now(); now.After(base) {
+		base = now
+	}
+	nextCheck := base.Add(interval)
 	proxyKey := scrapesiteKeyPrefix + site.URL
 
 	proxyJSON, err := json.Marshal(site)
