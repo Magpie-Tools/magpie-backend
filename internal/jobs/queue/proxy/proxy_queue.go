@@ -190,7 +190,13 @@ func (rpq *RedisProxyQueue) GetNextProxyContext(ctx context.Context) (domain.Pro
 }
 
 func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, lastCheckTime time.Time) error {
-	nextCheck := lastCheckTime.Add(config.GetTimeBetweenChecks())
+	interval := config.GetTimeBetweenChecks()
+	base := lastCheckTime
+	// Clamp to now so overdue proxies don't keep hogging the queue.
+	if now := time.Now(); now.After(base) {
+		base = now
+	}
+	nextCheck := base.Add(interval)
 	hashKey := string(proxy.Hash)
 	proxyKey := proxyKeyPrefix + hashKey
 

@@ -50,6 +50,29 @@ func TestParseTextToProxies(t *testing.T) {
 	}
 }
 
+func TestParseTextToProxiesStrictAuth(t *testing.T) {
+	input := "3.3.3.3:8080:user:pass\nuser:pass@4.4.4.4:9000\n"
+
+	parsed := ParseTextToProxiesStrictAuth(input)
+	if len(parsed) != 2 {
+		t.Fatalf("ParseTextToProxiesStrictAuth returned %d proxies, want 2", len(parsed))
+	}
+
+	if parsed[0].HasAuth() {
+		t.Fatal("expected first proxy to have no auth")
+	}
+	if got := parsed[0].GetFullProxy(); got != "3.3.3.3:8080" {
+		t.Fatalf("first proxy was %s, want 3.3.3.3:8080", got)
+	}
+
+	if !parsed[1].HasAuth() {
+		t.Fatal("expected second proxy to have auth credentials")
+	}
+	if parsed[1].Username != "user" || parsed[1].Password != "pass" {
+		t.Fatalf("unexpected credentials: %s:%s", parsed[1].Username, parsed[1].Password)
+	}
+}
+
 func TestFindIP(t *testing.T) {
 	input := "Client address: 203.0.113.5 connected via [2001:db8::1]"
 

@@ -11,7 +11,22 @@ import (
 )
 
 func ParseTextToProxies(text string) []domain.Proxy {
-	text = clearProxyString(text)
+	return parseTextToProxies(text, true)
+}
+
+// ParseTextToProxiesStrictAuth returns proxies where credentials are only read
+// from user:pass@host:port formatted entries. Useful when plain colon-delimited
+// proxy lists would otherwise be misinterpreted as auth.
+func ParseTextToProxiesStrictAuth(text string) []domain.Proxy {
+	return parseTextToProxies(text, false)
+}
+
+func parseTextToProxies(text string, allowColonAuth bool) []domain.Proxy {
+	if allowColonAuth {
+		text = clearProxyString(text)
+	} else {
+		text = clearProxyStringPreserveAuth(text)
+	}
 
 	lines := strings.Split(text, "\n")
 	proxies := make([]domain.Proxy, 0, len(lines))
@@ -59,7 +74,7 @@ func ParseTextToProxies(text string) []domain.Proxy {
 		}
 
 		// Handle formats like ip:port:user:pass when no @ credentials were provided.
-		if username == "" && password == "" && len(hostSplit) >= 4 {
+		if allowColonAuth && username == "" && password == "" && len(hostSplit) >= 4 {
 			candidateUser := strings.TrimSpace(hostSplit[2])
 			candidatePass := strings.TrimSpace(strings.Join(hostSplit[3:], ":"))
 
@@ -87,7 +102,17 @@ func ParseTextToProxies(text string) []domain.Proxy {
 }
 
 func clearProxyString(proxies string) string {
-	proxies = strings.ReplaceAll(proxies, "@", ";")
+	return cleanProxyString(proxies, true)
+}
+
+func clearProxyStringPreserveAuth(proxies string) string {
+	return cleanProxyString(proxies, false)
+}
+
+func cleanProxyString(proxies string, replaceAuthDelimiter bool) string {
+	if replaceAuthDelimiter {
+		proxies = strings.ReplaceAll(proxies, "@", ";")
+	}
 	proxies = strings.ReplaceAll(proxies, "\r", "")
 
 	// Makes leading 0 proxies valid

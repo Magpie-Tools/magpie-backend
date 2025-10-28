@@ -367,7 +367,7 @@ func mustRestartBrowser() {
 	// Launch Chrome
 	url := launcher.New().
 		// Sleep/resume can confuse leakless in dev; keep it off on laptops
-		Leakless(false).
+		Leakless(true).
 		Headless(true).
 		// Flags that reduce background throttling after resume
 		Set("disable-background-timer-throttling").
@@ -422,7 +422,7 @@ func isConnClosed(err error) bool {
 
 func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 	proxyList := support.GetProxiesOfHTML(rawHTML)
-	parsedProxies := support.ParseTextToProxies(strings.Join(proxyList, "\n"))
+	parsedProxies := support.ParseTextToProxiesStrictAuth(strings.Join(proxyList, "\n"))
 
 	proxies, err := database.InsertAndGetProxiesWithUser(parsedProxies, support.GetUserIdsFromList(site.Users)...)
 	if err != nil {
