@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -480,6 +481,7 @@ func GetProxyInfoPageWithFilters(userId uint, page int, pageSize int, search str
 		}
 
 		proxies := proxyInfoRowsToDTO(rows)
+		attachReputationsToProxyInfos(proxies)
 		total := GetAllProxyCountOfUser(userId)
 		return proxies, total
 	}
@@ -504,7 +506,10 @@ func GetProxyInfoPageWithFilters(userId uint, page int, pageSize int, search str
 		end = len(filtered)
 	}
 
-	return filtered[start:end], total
+	pageSlice := filtered[start:end]
+	attachReputationsToProxyInfos(pageSlice)
+
+	return pageSlice, total
 }
 
 func proxyInfoRowsToDTO(rows []dto.ProxyInfoRow) []dto.ProxyInfo {
@@ -589,6 +594,115 @@ func proxyMatchesSearch(proxy dto.ProxyInfo, search string) bool {
 	return false
 }
 
+func attachReputationsToProxyInfos(proxies []dto.ProxyInfo) {
+	if len(proxies) == 0 {
+		return
+	}
+
+	proxyIDs := make([]uint64, 0, len(proxies))
+	for _, proxy := range proxies {
+		if proxy.Id <= 0 {
+			continue
+		}
+		proxyIDs = append(proxyIDs, uint64(proxy.Id))
+	}
+
+	if len(proxyIDs) == 0 {
+		return
+	}
+
+	repMap, err := GetProxyReputations(context.Background(), proxyIDs)
+	if err != nil {
+		log.Error("failed to load proxy reputations", "error", err)
+		return
+	}
+
+	for index := range proxies {
+		id := uint64(proxies[index].Id)
+		if rows, ok := repMap[id]; ok {
+			proxies[index].Reputation = mapReputationsToSummary(rows)
+		}
+	}
+}
+
+func mapReputationsToSummary(rows []domain.ProxyReputation) *dto.ProxyReputationSummary {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	summary := &dto.ProxyReputationSummary{
+		Protocols: make(map[string]dto.ProxyReputation),
+	}
+
+	for _, row := range rows {
+		rep := dto.ProxyReputation{
+			Kind:  row.Kind,
+			Score: row.Score,
+			Label: row.Label,
+		}
+
+		if row.Kind == domain.ProxyReputationKindOverall {
+			overall := rep
+			summary.Overall = &overall
+		} else {
+			summary.Protocols[row.Kind] = rep
+		}
+	}
+
+	if len(summary.Protocols) == 0 {
+		summary.Protocols = nil
+	}
+
+	return summary
+}
+
+func mapReputationsToBreakdown(rows []domain.ProxyReputation) *dto.ProxyReputationBreakdown {
+	if len(rows) == 0 {
+		return nil
+	}
+
+	breakdown := &dto.ProxyReputationBreakdown{
+		Protocols: make(map[string]dto.ProxyReputationDetail),
+	}
+
+	for _, row := range rows {
+		signals := decodeReputationSignals(row.Signals)
+		rep := dto.ProxyReputationDetail{
+			Kind:    row.Kind,
+			Score:   row.Score,
+			Label:   row.Label,
+			Signals: signals,
+		}
+
+		if row.Kind == domain.ProxyReputationKindOverall {
+			overall := rep
+			breakdown.Overall = &overall
+		} else {
+			breakdown.Protocols[row.Kind] = rep
+		}
+	}
+
+	if len(breakdown.Protocols) == 0 {
+		breakdown.Protocols = nil
+	}
+
+	return breakdown
+}
+
+func decodeReputationSignals(payload []byte) map[string]any {
+	if len(payload) == 0 {
+		return nil
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		log.Error("failed to decode reputation signals", "error", err)
+		return nil
+	}
+
+	return decoded
+}
+
 func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 	if proxyId == 0 {
 		return nil, nil
@@ -604,6 +718,7 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 				Preload("Level").
 				Preload("Judge")
 		}).
+		Preload("Reputations").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
 		Where("up.user_id = ? AND proxies.id = ?", userId, proxyId).
 		First(&proxy).Error
@@ -635,6 +750,8 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 		LatestCheck:     latestCheck,
 		LatestStatistic: latestStat,
 	}
+
+	detail.Reputation = mapReputationsToBreakdown(proxy.Reputations)
 
 	return detail, nil
 }

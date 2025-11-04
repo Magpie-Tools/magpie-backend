@@ -67,6 +67,10 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 		}
 	}
 
+	if err := ensureProxyReputationSchema(DB); err != nil {
+		log.Error("Failed to ensure proxy reputation schema", "error", err)
+	}
+
 	return DB, nil
 }
 
@@ -106,6 +110,7 @@ func defaultMigrations() []any {
 	return []any{
 		domain.User{},
 		domain.Proxy{},
+		domain.ProxyReputation{},
 		domain.UserProxy{},
 		domain.RotatingProxy{},
 		domain.ProxyHistory{},

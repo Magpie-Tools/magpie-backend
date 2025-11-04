@@ -27,8 +27,9 @@ type Proxy struct {
 	EstimatedType string `gorm:"size:20;not null"` // ISP, Datacenter, Residential
 
 	// Relationships
-	Statistics  []ProxyStatistic `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	ScrapeSites []ScrapeSite     `gorm:"many2many:proxy_scrape_site;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Statistics  []ProxyStatistic  `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	ScrapeSites []ScrapeSite      `gorm:"many2many:proxy_scrape_site;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Reputations []ProxyReputation `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
 	Users []User `gorm:"many2many:user_proxies;"`
 

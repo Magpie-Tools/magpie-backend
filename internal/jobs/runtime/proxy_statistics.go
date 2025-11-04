@@ -15,6 +15,7 @@ const (
 	statisticsFlushInterval  = 15 * time.Second
 	statisticsBatchThreshold = 50000
 	statisticsInsertTimeout  = 30 * time.Second
+	reputationRecalcTimeout  = 10 * time.Second
 )
 
 var (
@@ -67,6 +68,7 @@ func flushProxyStatistics(buffer *[]domain.ProxyStatistic) {
 	statisticsFlushTracker.Add(1)
 
 	go func(stats []domain.ProxyStatistic, size int) {
+		start := time.Now()
 		defer statisticsFlushTracker.Done()
 
 		dbCtx, cancel := context.WithTimeout(context.Background(), statisticsInsertTimeout)
@@ -74,7 +76,21 @@ func flushProxyStatistics(buffer *[]domain.ProxyStatistic) {
 
 		if err := database.InsertProxyStatistics(dbCtx, stats, size); err != nil {
 			log.Error("Failed to insert proxy statistics", "error", err, "count", len(stats))
+			return
 		}
+
+		proxyIDs := collectProxyIDs(stats)
+		if len(proxyIDs) == 0 {
+			return
+		}
+
+		repCtx, cancel := context.WithTimeout(context.Background(), reputationRecalcTimeout)
+		defer cancel()
+
+		if err := database.RecalculateProxyReputations(repCtx, proxyIDs); err != nil {
+			log.Error("Failed to update proxy reputations", "error", err, "proxy_ids", proxyIDs)
+		}
+		log.Info("Inserted proxy statistics", "seconds", time.Since(start).Seconds())
 	}(toInsert, batchSize)
 }
 
@@ -97,4 +113,29 @@ func resetTimer(timer *time.Timer) {
 		}
 	}
 	timer.Reset(statisticsFlushInterval)
+}
+
+func collectProxyIDs(stats []domain.ProxyStatistic) []uint64 {
+	if len(stats) == 0 {
+		return nil
+	}
+
+	seen := make(map[uint64]struct{}, len(stats))
+	for _, stat := range stats {
+		if stat.ProxyID == 0 {
+			continue
+		}
+		seen[stat.ProxyID] = struct{}{}
+	}
+
+	if len(seen) == 0 {
+		return nil
+	}
+
+	ids := make([]uint64, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+
+	return ids
 }

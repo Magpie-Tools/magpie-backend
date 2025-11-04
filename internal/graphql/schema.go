@@ -3,6 +3,7 @@ package graphql
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	gql "github.com/graphql-go/graphql"
@@ -43,6 +44,25 @@ func NewSchema() (gql.Schema, error) {
 		},
 	})
 
+	proxyReputationType := gql.NewObject(gql.ObjectConfig{
+		Name: "ProxyReputation",
+		Fields: gql.Fields{
+			"kind":  &gql.Field{Type: gql.NewNonNull(gql.String)},
+			"score": &gql.Field{Type: gql.NewNonNull(gql.Float)},
+			"label": &gql.Field{Type: gql.NewNonNull(gql.String)},
+		},
+	})
+
+	proxyReputationSummaryType := gql.NewObject(gql.ObjectConfig{
+		Name: "ProxyReputationSummary",
+		Fields: gql.Fields{
+			"overall": &gql.Field{Type: proxyReputationType},
+			"protocols": &gql.Field{
+				Type: gql.NewList(gql.NewNonNull(proxyReputationType)),
+			},
+		},
+	})
+
 	proxyType := gql.NewObject(gql.ObjectConfig{
 		Name: "Proxy",
 		Fields: gql.Fields{
@@ -56,6 +76,7 @@ func NewSchema() (gql.Schema, error) {
 			"protocol":       &gql.Field{Type: gql.NewNonNull(gql.String)},
 			"alive":          &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
 			"latestCheck":    &gql.Field{Type: gql.DateTime},
+			"reputation":     &gql.Field{Type: proxyReputationSummaryType},
 		},
 	})
 
@@ -489,6 +510,7 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 			"anonymityLevel": proxy.AnonymityLevel,
 			"alive":          proxy.Alive,
 			"latestCheck":    proxy.LatestCheck,
+			"reputation":     buildGraphQLReputationSummary(proxy.Reputation),
 		})
 	}
 
@@ -497,6 +519,48 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 		"pageSize":   len(items),
 		"totalCount": int(database.GetAllProxyCountOfUser(userID)),
 		"items":      items,
+	}
+}
+
+func buildGraphQLReputationSummary(summary *dto.ProxyReputationSummary) interface{} {
+	if summary == nil {
+		return nil
+	}
+
+	result := make(map[string]interface{})
+
+	if summary.Overall != nil {
+		result["overall"] = graphQLReputationEntry(*summary.Overall)
+	}
+
+	if len(summary.Protocols) > 0 {
+		keys := make([]string, 0, len(summary.Protocols))
+		for key := range summary.Protocols {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		protocols := make([]map[string]interface{}, 0, len(keys))
+		for _, key := range keys {
+			rep := summary.Protocols[key]
+			protocols = append(protocols, graphQLReputationEntry(rep))
+		}
+
+		result["protocols"] = protocols
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
+}
+
+func graphQLReputationEntry(rep dto.ProxyReputation) map[string]interface{} {
+	return map[string]interface{}{
+		"kind":  rep.Kind,
+		"score": rep.Score,
+		"label": rep.Label,
 	}
 }
 
