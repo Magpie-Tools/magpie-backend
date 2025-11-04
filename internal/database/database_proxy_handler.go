@@ -494,6 +494,7 @@ func GetProxyInfoPageWithFilters(userId uint, page int, pageSize int, search str
 	}
 
 	proxies := proxyInfoRowsToDTO(rows)
+	attachReputationsToProxyInfos(proxies)
 	filtered := filterProxiesBySearch(proxies, lowerSearch)
 	total := int64(len(filtered))
 	start := (page - 1) * pageSize
@@ -553,27 +554,38 @@ func filterProxiesBySearch(proxies []dto.ProxyInfo, search string) []dto.ProxyIn
 }
 
 func proxyMatchesSearch(proxy dto.ProxyInfo, search string) bool {
-	if strings.Contains(strings.ToLower(proxy.IP), search) {
+	lowerSearch := strings.ToLower(strings.TrimSpace(search))
+	if lowerSearch == "" {
 		return true
 	}
 
-	if strings.Contains(strconv.FormatUint(uint64(proxy.Port), 10), search) {
+	ipLower := strings.ToLower(proxy.IP)
+	if strings.Contains(ipLower, lowerSearch) || strings.Contains(lowerSearch, ipLower) {
 		return true
 	}
 
-	if strings.Contains(strings.ToLower(proxy.EstimatedType), search) {
+	portStr := strconv.FormatUint(uint64(proxy.Port), 10)
+	if strings.Contains(portStr, lowerSearch) || strings.Contains(lowerSearch, portStr) {
 		return true
 	}
 
-	if strings.Contains(strings.ToLower(proxy.Country), search) {
-		return true
+	fields := []string{
+		strings.ToLower(proxy.EstimatedType),
+		strings.ToLower(proxy.Country),
+		strings.ToLower(proxy.AnonymityLevel),
 	}
 
-	if strings.Contains(strings.ToLower(proxy.AnonymityLevel), search) {
-		return true
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+		if strings.Contains(field, lowerSearch) || strings.Contains(lowerSearch, field) {
+			return true
+		}
 	}
 
-	if strings.Contains(strconv.Itoa(int(proxy.ResponseTime)), search) {
+	responseStr := strconv.Itoa(int(proxy.ResponseTime))
+	if strings.Contains(responseStr, lowerSearch) || strings.Contains(lowerSearch, responseStr) {
 		return true
 	}
 
@@ -581,13 +593,45 @@ func proxyMatchesSearch(proxy dto.ProxyInfo, search string) bool {
 	if proxy.Alive {
 		aliveLabel = "alive"
 	}
-	if strings.Contains(aliveLabel, search) {
+	if strings.Contains(aliveLabel, lowerSearch) || strings.Contains(lowerSearch, aliveLabel) {
 		return true
 	}
 
 	if !proxy.LatestCheck.IsZero() {
-		if strings.Contains(strings.ToLower(proxy.LatestCheck.Format(time.RFC3339)), search) {
+		timestamp := strings.ToLower(proxy.LatestCheck.Format(time.RFC3339))
+		if strings.Contains(timestamp, lowerSearch) || strings.Contains(lowerSearch, timestamp) {
 			return true
+		}
+	}
+
+	if proxy.Reputation != nil {
+		if proxy.Reputation.Overall != nil {
+			label := strings.ToLower(strings.TrimSpace(proxy.Reputation.Overall.Label))
+			if label != "" && (strings.Contains(label, lowerSearch) || strings.Contains(lowerSearch, label)) {
+				return true
+			}
+
+			score := strings.TrimSpace(strconv.FormatFloat(float64(proxy.Reputation.Overall.Score), 'f', -1, 32))
+			if score != "" && (strings.Contains(score, lowerSearch) || strings.Contains(lowerSearch, score)) {
+				return true
+			}
+		}
+
+		for protocol, rep := range proxy.Reputation.Protocols {
+			protocolLower := strings.ToLower(strings.TrimSpace(protocol))
+			if protocolLower != "" && (strings.Contains(protocolLower, lowerSearch) || strings.Contains(lowerSearch, protocolLower)) {
+				return true
+			}
+
+			label := strings.ToLower(strings.TrimSpace(rep.Label))
+			if label != "" && (strings.Contains(label, lowerSearch) || strings.Contains(lowerSearch, label)) {
+				return true
+			}
+
+			score := strings.TrimSpace(strconv.FormatFloat(float64(rep.Score), 'f', -1, 32))
+			if score != "" && (strings.Contains(score, lowerSearch) || strings.Contains(lowerSearch, score)) {
+				return true
+			}
 		}
 	}
 
