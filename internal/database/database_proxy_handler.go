@@ -661,11 +661,28 @@ func attachReputationsToProxyInfos(proxies []dto.ProxyInfo) {
 		return
 	}
 
+	missing := make([]uint64, 0)
+	dedupMissing := make(map[uint64]struct{}, len(proxies))
+
 	for index := range proxies {
 		id := uint64(proxies[index].Id)
-		if rows, ok := repMap[id]; ok {
+		if rows, ok := repMap[id]; ok && len(rows) > 0 {
 			proxies[index].Reputation = mapReputationsToSummary(rows)
+			continue
 		}
+
+		if id == 0 {
+			continue
+		}
+
+		if _, seen := dedupMissing[id]; !seen {
+			dedupMissing[id] = struct{}{}
+			missing = append(missing, id)
+		}
+	}
+
+	if len(missing) > 0 {
+		scheduleReputationRecalculation(missing)
 	}
 }
 
@@ -745,6 +762,23 @@ func decodeReputationSignals(payload []byte) map[string]any {
 	}
 
 	return decoded
+}
+
+func scheduleReputationRecalculation(proxyIDs []uint64) {
+	if len(proxyIDs) == 0 {
+		return
+	}
+
+	ids := append([]uint64(nil), proxyIDs...)
+
+	go func(values []uint64) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := RecalculateProxyReputations(ctx, values); err != nil {
+			log.Error("failed to backfill proxy reputations", "error", err, "proxy_ids", values)
+		}
+	}(ids)
 }
 
 func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
