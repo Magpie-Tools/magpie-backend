@@ -9,6 +9,7 @@ import (
 	gql "github.com/graphql-go/graphql"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 )
@@ -239,6 +240,22 @@ func NewSchema() (gql.Schema, error) {
 						return int(database.GetAllProxyCountOfUser(data.user.ID)), nil
 					}
 					return 0, nil
+				},
+			},
+			"proxyLimit": &gql.Field{
+				Type: gql.Int,
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					limitCfg := config.GetConfig().ProxyLimits
+					if !limitCfg.Enabled {
+						return nil, nil
+					}
+					if data, ok := p.Source.(*viewerData); ok {
+						if limitCfg.ExcludeAdmins && data.user.Role == "admin" {
+							return nil, nil
+						}
+						return int(limitCfg.MaxPerUser), nil
+					}
+					return nil, nil
 				},
 			},
 			"proxies": &gql.Field{
