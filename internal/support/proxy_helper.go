@@ -159,9 +159,8 @@ func FormatProxies(proxies []domain.Proxy, outputFormat string) string {
 		aliveValue := "false"
 		timeValue := "0"
 
-		if len(proxy.Statistics) > 0 {
-			latestStat := proxy.Statistics[0]
-			protocolName = getProtocolName(&latestStat)
+		if latestStat := latestStatistic(proxy.Statistics); latestStat != nil {
+			protocolName = getProtocolName(latestStat)
 			aliveValue = strconv.FormatBool(latestStat.Alive)
 			timeValue = strconv.Itoa(int(latestStat.ResponseTime))
 		}
@@ -204,6 +203,25 @@ func getProtocolName(stat *domain.ProxyStatistic) string {
 		return ""
 	}
 	return stat.Protocol.Name
+}
+
+func latestStatistic(stats []domain.ProxyStatistic) *domain.ProxyStatistic {
+	if len(stats) == 0 {
+		return nil
+	}
+
+	latest := &stats[0]
+	for i := 1; i < len(stats); i++ {
+		candidate := &stats[i]
+		if candidate.CreatedAt.After(latest.CreatedAt) {
+			latest = candidate
+			continue
+		}
+		if candidate.CreatedAt.Equal(latest.CreatedAt) && candidate.ID > latest.ID {
+			latest = candidate
+		}
+	}
+	return latest
 }
 
 func formatReputationScore(score float32) string {

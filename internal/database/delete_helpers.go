@@ -20,7 +20,7 @@ func collectProxyIDsForDeletion(userID uint, settings dto.DeleteSettings) ([]uin
 	if settings.ProxyStatus == "alive" || settings.ProxyStatus == "dead" {
 		isAlive := settings.ProxyStatus == "alive"
 		query = query.Where(
-			"(SELECT ps.alive FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id ORDER BY ps.created_at DESC LIMIT 1) = ?",
+			"(SELECT ps.alive FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id ORDER BY ps.created_at DESC, ps.id DESC LIMIT 1) = ?",
 			isAlive,
 		)
 	}

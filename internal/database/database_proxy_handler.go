@@ -1122,10 +1122,27 @@ func DeleteProxiesWithSettings(userID uint, settings dto.DeleteSettings) (int64,
 }
 
 func GetProxiesForExport(userID uint, settings dto.ExportSettings) ([]domain.Proxy, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("database connection was not initialised")
+	}
+
+	tx := DB.Begin(&sql.TxOptions{
+		ReadOnly:  true,
+		Isolation: sql.LevelRepeatableRead,
+	})
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	defer func() {
+		if err := tx.Rollback().Error; err != nil && !errors.Is(err, gorm.ErrInvalidTransaction) {
+			log.Error("failed to rollback export transaction", "error", err)
+		}
+	}()
+
 	var proxies []domain.Proxy
 
-	baseQuery := DB.Preload("Statistics", func(db *gorm.DB) *gorm.DB {
-		return db.Order("created_at DESC")
+	baseQuery := tx.Preload("Statistics", func(db *gorm.DB) *gorm.DB {
+		return db.Order("created_at DESC, id DESC")
 	}).Preload("Statistics.Protocol").
 		Preload("Reputations").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
@@ -1137,7 +1154,7 @@ func GetProxiesForExport(userID uint, settings dto.ExportSettings) ([]domain.Pro
 		isAlive := settings.ProxyStatus == "alive"
 		// Use subquery to check latest proxy_statistics.alive status
 		baseQuery = baseQuery.Where(
-			"(SELECT ps.alive FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id ORDER BY ps.created_at DESC LIMIT 1) = ?",
+			"(SELECT ps.alive FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id ORDER BY ps.created_at DESC, ps.id DESC LIMIT 1) = ?",
 			isAlive,
 		)
 	}
@@ -1156,7 +1173,13 @@ func GetProxiesForExport(userID uint, settings dto.ExportSettings) ([]domain.Pro
 		return nil, err
 	}
 
-	return filterProxiesForExport(proxies, settings), nil
+	filtered := filterProxiesForExport(proxies, settings)
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, err
+	}
+
+	return filtered, nil
 }
 
 // applyAdditionalFilters applies additional filters based on settings
