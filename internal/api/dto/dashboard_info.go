@@ -6,6 +6,21 @@ type DashboardInfo struct {
 	TotalChecksWeek  int64 `json:"total_checks_week"`
 	TotalScrapedWeek int64 `json:"total_scraped_week"`
 
+	ReputationBreakdown struct {
+		Good    uint `json:"good"`
+		Neutral uint `json:"neutral"`
+		Poor    uint `json:"poor"`
+		Unknown uint `json:"unknown"`
+	} `json:"reputation_breakdown"`
+
+	TopReputationProxy *struct {
+		ProxyID uint64  `json:"proxy_id"`
+		IP      string  `json:"ip"`
+		Port    uint16  `json:"port"`
+		Score   float32 `json:"score"`
+		Label   string  `json:"label"`
+	} `json:"top_reputation_proxy"`
+
 	CountryBreakdown []struct {
 		Country string `json:"country"`
 		Count   uint   `json:"count"`

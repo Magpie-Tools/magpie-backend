@@ -64,6 +64,16 @@ func NewSchema() (gql.Schema, error) {
 		},
 	})
 
+	dashboardReputationBreakdownType := gql.NewObject(gql.ObjectConfig{
+		Name: "DashboardReputationBreakdown",
+		Fields: gql.Fields{
+			"good":    &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"neutral": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"poor":    &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"unknown": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+		},
+	})
+
 	proxyType := gql.NewObject(gql.ObjectConfig{
 		Name: "Proxy",
 		Fields: gql.Fields{
@@ -144,6 +154,9 @@ func NewSchema() (gql.Schema, error) {
 			"totalScraped":     &gql.Field{Type: gql.NewNonNull(gql.Int)},
 			"totalChecksWeek":  &gql.Field{Type: gql.NewNonNull(gql.Int)},
 			"totalScrapedWeek": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"reputationBreakdown": &gql.Field{
+				Type: gql.NewNonNull(dashboardReputationBreakdownType),
+			},
 			"countryBreakdown": &gql.Field{
 				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(countryBreakdownType))),
 			},
@@ -610,6 +623,13 @@ func buildDashboard(info dto.DashboardInfo) map[string]interface{} {
 		})
 	}
 
+	reputation := map[string]interface{}{
+		"good":    int(info.ReputationBreakdown.Good),
+		"neutral": int(info.ReputationBreakdown.Neutral),
+		"poor":    int(info.ReputationBreakdown.Poor),
+		"unknown": int(info.ReputationBreakdown.Unknown),
+	}
+
 	entries := make([]map[string]interface{}, 0, len(info.JudgeValidProxies))
 	for _, entry := range info.JudgeValidProxies {
 		entries = append(entries, map[string]interface{}{
@@ -620,14 +640,27 @@ func buildDashboard(info dto.DashboardInfo) map[string]interface{} {
 		})
 	}
 
-	return map[string]interface{}{
-		"totalChecks":       int(info.TotalChecks),
-		"totalScraped":      int(info.TotalScraped),
-		"totalChecksWeek":   int(info.TotalChecksWeek),
-		"totalScrapedWeek":  int(info.TotalScrapedWeek),
-		"countryBreakdown":  countries,
-		"judgeValidProxies": entries,
+	result := map[string]interface{}{
+		"totalChecks":         int(info.TotalChecks),
+		"totalScraped":        int(info.TotalScraped),
+		"totalChecksWeek":     int(info.TotalChecksWeek),
+		"totalScrapedWeek":    int(info.TotalScrapedWeek),
+		"reputationBreakdown": reputation,
+		"countryBreakdown":    countries,
+		"judgeValidProxies":   entries,
 	}
+
+	if info.TopReputationProxy != nil {
+		result["topReputationProxy"] = map[string]interface{}{
+			"proxyId": int(info.TopReputationProxy.ProxyID),
+			"ip":      info.TopReputationProxy.IP,
+			"port":    int(info.TopReputationProxy.Port),
+			"score":   info.TopReputationProxy.Score,
+			"label":   info.TopReputationProxy.Label,
+		}
+	}
+
+	return result
 }
 
 func applyUserSettings(ctx context.Context, input map[string]interface{}) error {

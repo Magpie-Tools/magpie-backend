@@ -1,12 +1,15 @@
 package database
 
 import (
-	"magpie/internal/api/dto"
-	"magpie/internal/domain"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"magpie/internal/api/dto"
+	"magpie/internal/domain"
+	"magpie/internal/security"
 )
 
 func GetUserFromId(id uint) domain.User {
@@ -219,7 +222,7 @@ func GetDashboardInfo(userid uint) dto.DashboardInfo {
 		})
 	}
 
-	// 5) JudgeValidProxies – one row per judge, with counts by anonymity level
+	// 6) JudgeValidProxies – one row per judge, with counts by anonymity level
 	type jvp struct {
 		JudgeUrl           string `json:"judge_url"`
 		EliteProxies       uint   `json:"elite_proxies"`
@@ -255,6 +258,80 @@ func GetDashboardInfo(userid uint) dto.DashboardInfo {
 			AnonymousProxies:   row.AnonymousProxies,
 			TransparentProxies: row.TransparentProxies,
 		})
+	}
+
+	// 7) Reputation breakdown (good / neutral / poor / unknown)
+	type reputationCount struct {
+		Label string `gorm:"column:label"`
+		Count uint   `gorm:"column:count"`
+	}
+
+	var repCounts []reputationCount
+
+	DB.Table("proxy_reputations AS pr").
+		Select("LOWER(COALESCE(NULLIF(pr.label, ''), 'unknown')) AS label, COUNT(*) AS count").
+		Joins("JOIN user_proxies up ON up.proxy_id = pr.proxy_id AND up.user_id = ?", userid).
+		Where("pr.kind = ?", domain.ProxyReputationKindOverall).
+		Group("label").
+		Scan(&repCounts)
+
+	for _, row := range repCounts {
+		switch row.Label {
+		case "good":
+			info.ReputationBreakdown.Good = row.Count
+		case "neutral":
+			info.ReputationBreakdown.Neutral = row.Count
+		case "poor":
+			info.ReputationBreakdown.Poor = row.Count
+		default:
+			info.ReputationBreakdown.Unknown += row.Count
+		}
+	}
+
+	// 8) Best overall reputation proxy
+	type topProxyRow struct {
+		ProxyID uint64  `gorm:"column:proxy_id"`
+		IP      string  `gorm:"column:ip"`
+		Port    uint    `gorm:"column:port"`
+		Score   float32 `gorm:"column:score"`
+		Label   string  `gorm:"column:label"`
+	}
+
+	var topRow topProxyRow
+
+	topResult := DB.Table("proxy_reputations AS pr").
+		Select("pr.proxy_id, pr.score, pr.label, p.ip, p.port").
+		Joins("JOIN user_proxies up ON up.proxy_id = pr.proxy_id AND up.user_id = ?", userid).
+		Joins("JOIN proxies p ON p.id = pr.proxy_id").
+		Where("pr.kind = ?", domain.ProxyReputationKindOverall).
+		Order("pr.score DESC, pr.proxy_id ASC").
+		Limit(1).
+		Scan(&topRow)
+
+	if topResult.Error == nil && topResult.RowsAffected > 0 && topRow.ProxyID != 0 {
+		ip := topRow.IP
+		if ip != "" {
+			plain, _, err := security.DecryptProxySecret(ip)
+			if err != nil {
+				log.Errorf("decrypt top reputation proxy ip: %v", err)
+			} else {
+				ip = plain
+			}
+		}
+
+		info.TopReputationProxy = &struct {
+			ProxyID uint64  `json:"proxy_id"`
+			IP      string  `json:"ip"`
+			Port    uint16  `json:"port"`
+			Score   float32 `json:"score"`
+			Label   string  `json:"label"`
+		}{
+			ProxyID: topRow.ProxyID,
+			IP:      ip,
+			Port:    uint16(topRow.Port),
+			Score:   topRow.Score,
+			Label:   topRow.Label,
+		}
 	}
 
 	return info
