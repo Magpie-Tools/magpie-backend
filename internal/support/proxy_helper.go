@@ -155,24 +155,41 @@ func FormatProxies(proxies []domain.Proxy, outputFormat string) string {
 	var result strings.Builder
 
 	for _, proxy := range proxies {
-		line := outputFormat
+		protocolName := ""
+		aliveValue := "false"
+		timeValue := "0"
 
-		// Get the latest statistics for the proxy
-		var latestStat domain.ProxyStatistic
 		if len(proxy.Statistics) > 0 {
-			latestStat = proxy.Statistics[0]
+			latestStat := proxy.Statistics[0]
+			protocolName = getProtocolName(&latestStat)
+			aliveValue = strconv.FormatBool(latestStat.Alive)
+			timeValue = strconv.Itoa(int(latestStat.ResponseTime))
 		}
 
-		// Replace keywords with actual values
-		line = strings.ReplaceAll(line, "protocol", getProtocolName(&latestStat))
-		line = strings.ReplaceAll(line, "ip", proxy.GetIp())
-		line = strings.ReplaceAll(line, "port", fmt.Sprintf("%d", proxy.Port))
-		line = strings.ReplaceAll(line, "username", proxy.Username)
-		line = strings.ReplaceAll(line, "password", proxy.Password)
-		line = strings.ReplaceAll(line, "country", proxy.Country)
-		line = strings.ReplaceAll(line, "alive", fmt.Sprintf("%t", latestStat.Alive))
-		line = strings.ReplaceAll(line, "type", proxy.EstimatedType)
-		line = strings.ReplaceAll(line, "time", fmt.Sprintf("%d", latestStat.ResponseTime))
+		reputationLabel, reputationScore := resolveReputationForExport(proxy.Reputations, protocolName)
+
+		replacements := []struct {
+			token string
+			value string
+		}{
+			{"protocol", protocolName},
+			{"ip", proxy.GetIp()},
+			{"port", fmt.Sprintf("%d", proxy.Port)},
+			{"username", proxy.Username},
+			{"password", proxy.Password},
+			{"country", proxy.Country},
+			{"alive", aliveValue},
+			{"type", proxy.EstimatedType},
+			{"time", timeValue},
+			{"reputation", reputationLabel},
+			{"reputation_score", reputationScore},
+			{"reputation_label", reputationLabel},
+		}
+
+		line := outputFormat
+		for _, r := range replacements {
+			line = strings.ReplaceAll(line, r.token, r.value)
+		}
 
 		result.WriteString(line)
 		result.WriteString("\n")
@@ -187,4 +204,43 @@ func getProtocolName(stat *domain.ProxyStatistic) string {
 		return ""
 	}
 	return stat.Protocol.Name
+}
+
+func formatReputationScore(score float32) string {
+	formatted := fmt.Sprintf("%.2f", score)
+	formatted = strings.TrimRight(strings.TrimRight(formatted, "0"), ".")
+	if formatted == "-0" {
+		return "0"
+	}
+	return formatted
+}
+
+func resolveReputationForExport(reputations []domain.ProxyReputation, protocolName string) (string, string) {
+	targetKinds := make([]string, 0, 2)
+	if trimmed := strings.ToLower(strings.TrimSpace(protocolName)); trimmed != "" {
+		targetKinds = append(targetKinds, trimmed)
+	}
+	targetKinds = append(targetKinds, domain.ProxyReputationKindOverall)
+
+	for _, kind := range targetKinds {
+		if rep, ok := findReputationByKind(reputations, kind); ok {
+			label := strings.TrimSpace(rep.Label)
+			if label == "" {
+				label = "unknown"
+			}
+			return label, formatReputationScore(rep.Score)
+		}
+	}
+
+	return "", ""
+}
+
+func findReputationByKind(reputations []domain.ProxyReputation, kind string) (domain.ProxyReputation, bool) {
+	lowerKind := strings.ToLower(strings.TrimSpace(kind))
+	for _, rep := range reputations {
+		if strings.ToLower(rep.Kind) == lowerKind {
+			return rep, true
+		}
+	}
+	return domain.ProxyReputation{}, false
 }

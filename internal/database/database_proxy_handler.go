@@ -1127,8 +1127,11 @@ func GetProxiesForExport(userID uint, settings dto.ExportSettings) ([]domain.Pro
 	baseQuery := DB.Preload("Statistics", func(db *gorm.DB) *gorm.DB {
 		return db.Order("created_at DESC")
 	}).Preload("Statistics.Protocol").
+		Preload("Reputations").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
 		Where("user_proxies.user_id = ?", userID)
+
+	baseQuery = applyExportReputationFilters(baseQuery, settings)
 
 	if settings.ProxyStatus == "alive" || settings.ProxyStatus == "dead" {
 		isAlive := settings.ProxyStatus == "alive"
@@ -1143,12 +1146,17 @@ func GetProxiesForExport(userID uint, settings dto.ExportSettings) ([]domain.Pro
 		baseQuery = baseQuery.Where("proxies.id IN ?", settings.Proxies)
 	}
 
+	var err error
 	if settings.Filter {
-		return applyAdditionalFilters(baseQuery, settings)
+		proxies, err = applyAdditionalFilters(baseQuery, settings)
 	} else {
-		err := baseQuery.Find(&proxies).Error
-		return proxies, err
+		err = baseQuery.Find(&proxies).Error
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	return filterProxiesForExport(proxies, settings), nil
 }
 
 // applyAdditionalFilters applies additional filters based on settings
@@ -1204,4 +1212,176 @@ func applyAdditionalFilters(query *gorm.DB, settings dto.ExportSettings) ([]doma
 
 	err := query.Find(&proxies).Error
 	return proxies, err
+}
+
+func filterProxiesForExport(proxies []domain.Proxy, settings dto.ExportSettings) []domain.Proxy {
+	if len(settings.ReputationLabels) == 0 {
+		return proxies
+	}
+
+	allowedLabels, includeUnknown := normalizeReputationLabels(settings.ReputationLabels)
+	selectedProtocols := protocolsForExport(settings)
+
+	filtered := make([]domain.Proxy, 0, len(proxies))
+	for _, proxy := range proxies {
+		if proxyMatchesReputationFilters(proxy, allowedLabels, includeUnknown, selectedProtocols) {
+			filtered = append(filtered, proxy)
+		}
+	}
+
+	return filtered
+}
+
+func normalizeReputationLabels(labels []string) (map[string]struct{}, bool) {
+	allowed := make(map[string]struct{}, len(labels))
+	includeUnknown := false
+
+	for _, label := range labels {
+		trimmed := strings.ToLower(strings.TrimSpace(label))
+		if trimmed == "" {
+			continue
+		}
+		if trimmed == "unknown" {
+			includeUnknown = true
+			continue
+		}
+		allowed[trimmed] = struct{}{}
+	}
+
+	return allowed, includeUnknown
+}
+
+func protocolsForExport(settings dto.ExportSettings) []string {
+	if !settings.Filter {
+		return nil
+	}
+
+	protocols := make([]string, 0, 4)
+	if settings.Http {
+		protocols = append(protocols, "http")
+	}
+	if settings.Https {
+		protocols = append(protocols, "https")
+	}
+	if settings.Socks4 {
+		protocols = append(protocols, "socks4")
+	}
+	if settings.Socks5 {
+		protocols = append(protocols, "socks5")
+	}
+
+	return protocols
+}
+
+func targetReputationKinds(settings dto.ExportSettings) []string {
+	protocols := protocolsForExport(settings)
+	if len(protocols) > 0 {
+		out := make([]string, 0, len(protocols))
+		for _, proto := range protocols {
+			if trimmed := strings.ToLower(strings.TrimSpace(proto)); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	return []string{domain.ProxyReputationKindOverall}
+}
+
+func applyExportReputationFilters(query *gorm.DB, settings dto.ExportSettings) *gorm.DB {
+	allowedSet, includeUnknown := normalizeReputationLabels(settings.ReputationLabels)
+	if len(allowedSet) == 0 && !includeUnknown {
+		return query
+	}
+
+	targetKinds := targetReputationKinds(settings)
+	if len(targetKinds) == 0 {
+		return query
+	}
+
+	keys := setToSlice(allowedSet)
+	labelExpr := "LOWER(COALESCE(NULLIF(pr.label, ''), 'unknown'))"
+
+	if includeUnknown {
+		query = query.Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = proxies.id AND LOWER(pr.kind) IN ?", targetKinds)
+		if len(keys) > 0 {
+			query = query.Where(labelExpr+" IN ? OR pr.id IS NULL OR "+labelExpr+" = 'unknown'", keys)
+		} else {
+			query = query.Where("pr.id IS NULL OR " + labelExpr + " = 'unknown'")
+		}
+	} else {
+		query = query.Joins("JOIN proxy_reputations pr ON pr.proxy_id = proxies.id AND LOWER(pr.kind) IN ?", targetKinds)
+		if len(keys) > 0 {
+			query = query.Where(labelExpr+" IN ?", keys)
+		}
+	}
+
+	return query
+}
+
+func setToSlice(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	return out
+}
+
+func proxyMatchesReputationFilters(proxy domain.Proxy, allowed map[string]struct{}, includeUnknown bool, selectedProtocols []string) bool {
+	if len(allowed) == 0 && !includeUnknown {
+		return true
+	}
+
+	reputations := make(map[string]domain.ProxyReputation, len(proxy.Reputations))
+	for _, rep := range proxy.Reputations {
+		reputations[strings.ToLower(rep.Kind)] = rep
+	}
+
+	targetProtocols := make([]string, 0, len(selectedProtocols))
+	for _, proto := range selectedProtocols {
+		if trimmed := strings.ToLower(strings.TrimSpace(proto)); trimmed != "" {
+			targetProtocols = append(targetProtocols, trimmed)
+		}
+	}
+
+	if len(targetProtocols) == 0 {
+		if len(proxy.Statistics) > 0 {
+			proto := strings.ToLower(strings.TrimSpace(proxy.Statistics[0].Protocol.Name))
+			if proto != "" {
+				targetProtocols = append(targetProtocols, proto)
+			}
+		}
+		if len(targetProtocols) == 0 {
+			targetProtocols = append(targetProtocols, domain.ProxyReputationKindOverall)
+		}
+	}
+
+	for _, proto := range targetProtocols {
+		rep, ok := reputations[proto]
+		if ok {
+			label := strings.ToLower(strings.TrimSpace(rep.Label))
+			if label == "" {
+				label = "unknown"
+			}
+			if _, match := allowed[label]; match {
+				return true
+			}
+			if label == "unknown" && includeUnknown {
+				return true
+			}
+			continue
+		}
+
+		if includeUnknown {
+			return true
+		}
+	}
+
+	return false
 }

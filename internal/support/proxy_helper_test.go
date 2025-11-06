@@ -91,10 +91,22 @@ func TestFormatProxies(t *testing.T) {
 		ResponseTime: 150,
 		Protocol:     domain.Protocol{Name: "https"},
 	}}
+	proxy.Reputations = []domain.ProxyReputation{
+		{
+			Kind:  "https",
+			Label: "good",
+			Score: 88.75,
+		},
+		{
+			Kind:  domain.ProxyReputationKindOverall,
+			Label: "good",
+			Score: 91.25,
+		},
+	}
 
-	format := "protocol ip:port username password country alive type time"
+	format := "protocol ip:port username password country alive type time reputation reputation_score"
 	got := FormatProxies([]domain.Proxy{proxy}, format)
-	expected := "https 10.0.0.5:3128 user pass United States true Residential 150\n"
+	expected := "https 10.0.0.5:3128 user pass United States true Residential 150 good 88.75\n"
 
 	if got != expected {
 		t.Fatalf("FormatProxies returned %q, want %q", got, expected)

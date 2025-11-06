@@ -25,6 +25,10 @@ func collectProxyIDsForDeletion(userID uint, settings dto.DeleteSettings) ([]uin
 		)
 	}
 
+	if len(settings.ReputationLabels) > 0 {
+		query = applyReputationFilters(query, settings.ReputationLabels)
+	}
+
 	if settings.Filter {
 		query = applyDeleteFilterConditions(query, settings)
 	}
