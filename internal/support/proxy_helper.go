@@ -167,28 +167,22 @@ func FormatProxies(proxies []domain.Proxy, outputFormat string) string {
 
 		reputationLabel, reputationScore := resolveReputationForExport(proxy.Reputations, protocolName)
 
-		replacements := []struct {
-			token string
-			value string
-		}{
-			{"protocol", protocolName},
-			{"ip", proxy.GetIp()},
-			{"port", fmt.Sprintf("%d", proxy.Port)},
-			{"username", proxy.Username},
-			{"password", proxy.Password},
-			{"country", proxy.Country},
-			{"alive", aliveValue},
-			{"type", proxy.EstimatedType},
-			{"time", timeValue},
-			{"reputation", reputationLabel},
-			{"reputation_score", reputationScore},
-			{"reputation_label", reputationLabel},
+		replacements := []string{
+			"protocol", protocolName,
+			"ip", proxy.GetIp(),
+			"port", fmt.Sprintf("%d", proxy.Port),
+			"username", proxy.Username,
+			"password", proxy.Password,
+			"country", proxy.Country,
+			"alive", aliveValue,
+			"type", proxy.EstimatedType,
+			"time", timeValue,
+			"reputation_score", reputationScore,
+			"reputation_label", reputationLabel,
+			"reputation", reputationLabel,
 		}
 
-		line := outputFormat
-		for _, r := range replacements {
-			line = strings.ReplaceAll(line, r.token, r.value)
-		}
+		line := strings.NewReplacer(replacements...).Replace(outputFormat)
 
 		result.WriteString(line)
 		result.WriteString("\n")

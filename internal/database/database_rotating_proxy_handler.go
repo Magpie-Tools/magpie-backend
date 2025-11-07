@@ -28,6 +28,15 @@ var (
 	ErrRotatingProxyPortExhausted      = errors.New("no available ports for rotating proxies")
 )
 
+var (
+	reputationLabelOrder = []string{"good", "neutral", "poor"}
+	reputationLabelSet   = map[string]struct{}{
+		"good":    {},
+		"neutral": {},
+		"poor":    {},
+	}
+)
+
 const rotatingProxyNameMaxLength = 120
 
 func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*dto.RotatingProxy, error) {
@@ -79,13 +88,16 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 			return ErrRotatingProxyProtocolDenied
 		}
 
+		filters := sanitizeRotatorReputationLabels(payload.ReputationLabels)
+
 		entity := domain.RotatingProxy{
-			UserID:       userID,
-			Name:         name,
-			ProtocolID:   protocol.ID,
-			AuthRequired: payload.AuthRequired,
-			AuthUsername: strings.TrimSpace(payload.AuthUsername),
-			AuthPassword: payload.AuthPassword,
+			UserID:           userID,
+			Name:             name,
+			ProtocolID:       protocol.ID,
+			AuthRequired:     payload.AuthRequired,
+			AuthUsername:     strings.TrimSpace(payload.AuthUsername),
+			AuthPassword:     payload.AuthPassword,
+			ReputationLabels: domain.StringList(filters),
 		}
 
 		listenPort, err := allocateListenPort(tx)
@@ -101,21 +113,22 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 			return err
 		}
 
-		aliveProxies, err := aliveProxiesForProtocol(tx, userID, protocol.ID)
+		aliveProxies, err := aliveProxiesForProtocol(tx, userID, protocol.ID, filters)
 		if err != nil {
 			return err
 		}
 
 		result = &dto.RotatingProxy{
-			ID:              entity.ID,
-			Name:            entity.Name,
-			Protocol:        protocol.Name,
-			AliveProxyCount: len(aliveProxies),
-			ListenPort:      entity.ListenPort,
-			AuthRequired:    entity.AuthRequired,
-			AuthUsername:    entity.AuthUsername,
-			AuthPassword:    strings.TrimSpace(payload.AuthPassword),
-			CreatedAt:       entity.CreatedAt,
+			ID:               entity.ID,
+			Name:             entity.Name,
+			Protocol:         protocol.Name,
+			AliveProxyCount:  len(aliveProxies),
+			ListenPort:       entity.ListenPort,
+			AuthRequired:     entity.AuthRequired,
+			AuthUsername:     entity.AuthUsername,
+			AuthPassword:     strings.TrimSpace(payload.AuthPassword),
+			ReputationLabels: filters,
+			CreatedAt:        entity.CreatedAt,
 		}
 
 		entity.AuthPassword = ""
@@ -148,13 +161,14 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 		return []dto.RotatingProxy{}, nil
 	}
 
-	protocolCache := make(map[int][]domain.Proxy)
+	protocolCache := make(map[string][]domain.Proxy)
 	lastProxyCache := make(map[uint64]string)
 	result := make([]dto.RotatingProxy, 0, len(rows))
 
 	for _, row := range rows {
 		protocolName := row.Protocol.Name
-		proxies, err := getAliveProxiesCached(userID, row.ProtocolID, protocolCache)
+		labels := sanitizeRotatorReputationLabels(row.ReputationLabels.Clone())
+		proxies, err := getAliveProxiesCached(userID, row.ProtocolID, labels, protocolCache)
 		if err != nil {
 			return nil, err
 		}
@@ -168,17 +182,18 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 		}
 
 		result = append(result, dto.RotatingProxy{
-			ID:              row.ID,
-			Name:            row.Name,
-			Protocol:        protocolName,
-			AliveProxyCount: len(proxies),
-			ListenPort:      row.ListenPort,
-			AuthRequired:    row.AuthRequired,
-			AuthUsername:    row.AuthUsername,
-			AuthPassword:    row.AuthPassword,
-			LastRotationAt:  row.LastRotationAt,
-			LastServedProxy: lastProxy,
-			CreatedAt:       row.CreatedAt,
+			ID:               row.ID,
+			Name:             row.Name,
+			Protocol:         protocolName,
+			AliveProxyCount:  len(proxies),
+			ListenPort:       row.ListenPort,
+			AuthRequired:     row.AuthRequired,
+			AuthUsername:     row.AuthUsername,
+			AuthPassword:     row.AuthPassword,
+			LastRotationAt:   row.LastRotationAt,
+			LastServedProxy:  lastProxy,
+			ReputationLabels: labels,
+			CreatedAt:        row.CreatedAt,
 		})
 	}
 
@@ -220,7 +235,8 @@ func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingPro
 			return err
 		}
 
-		proxies, err := aliveProxiesForProtocol(tx, userID, entity.ProtocolID)
+		labels := sanitizeRotatorReputationLabels(entity.ReputationLabels.Clone())
+		proxies, err := aliveProxiesForProtocol(tx, userID, entity.ProtocolID, labels)
 		if err != nil {
 			return err
 		}
@@ -264,17 +280,20 @@ func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingPro
 	return result, nil
 }
 
-func getAliveProxiesCached(userID uint, protocolID int, cache map[int][]domain.Proxy) ([]domain.Proxy, error) {
-	if proxies, ok := cache[protocolID]; ok {
+func getAliveProxiesCached(userID uint, protocolID int, labels []string, cache map[string][]domain.Proxy) ([]domain.Proxy, error) {
+	normLabels := sanitizeRotatorReputationLabels(labels)
+	cacheKey := buildReputationCacheKey(protocolID, normLabels)
+
+	if proxies, ok := cache[cacheKey]; ok {
 		return proxies, nil
 	}
 
-	proxies, err := aliveProxiesForProtocol(DB, userID, protocolID)
+	proxies, err := aliveProxiesForProtocol(DB, userID, protocolID, normLabels)
 	if err != nil {
 		return nil, err
 	}
 
-	cache[protocolID] = proxies
+	cache[cacheKey] = proxies
 	return proxies, nil
 }
 
@@ -297,7 +316,9 @@ func getProxyAddressCached(userID uint, proxyID uint64, cache map[uint64]string)
 	return address, nil
 }
 
-func aliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int) ([]domain.Proxy, error) {
+func aliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int, labels []string) ([]domain.Proxy, error) {
+	filterLabels := sanitizeRotatorReputationLabels(labels)
+
 	subQuery := tx.
 		Model(&domain.ProxyStatistic{}).
 		Select("proxy_id, MAX(created_at) AS created_at").
@@ -305,13 +326,17 @@ func aliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int) ([]domain
 		Group("proxy_id")
 
 	var proxies []domain.Proxy
-	err := tx.
+	query := tx.
 		Model(&domain.Proxy{}).
 		Select("proxies.*").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userID).
 		Joins("JOIN (?) latest_stats ON latest_stats.proxy_id = proxies.id", subQuery).
 		Joins("JOIN proxy_statistics ps ON ps.proxy_id = proxies.id AND ps.created_at = latest_stats.created_at AND ps.protocol_id = ?", protocolID).
-		Where("ps.alive = ?", true).
+		Where("ps.alive = ?", true)
+
+	query = applyReputationFilter(query, filterLabels)
+
+	err := query.
 		Order("proxies.id").
 		Find(&proxies).Error
 	if err != nil {
@@ -319,6 +344,20 @@ func aliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int) ([]domain
 	}
 
 	return proxies, nil
+}
+
+func applyReputationFilter(query *gorm.DB, labels []string) *gorm.DB {
+	if !shouldApplyReputationFilter(labels) {
+		return query
+	}
+
+	return query.
+		Joins("JOIN proxy_reputations pr ON pr.proxy_id = proxies.id AND pr.kind = ?", domain.ProxyReputationKindOverall).
+		Where("pr.label IN ?", labels)
+}
+
+func shouldApplyReputationFilter(labels []string) bool {
+	return len(labels) > 0 && len(labels) < len(reputationLabelOrder)
 }
 
 func fetchUserProxyByID(tx *gorm.DB, userID uint, proxyID uint64) (*domain.Proxy, error) {
@@ -417,6 +456,39 @@ func allocateListenPort(tx *gorm.DB) (uint16, error) {
 	}
 
 	return 0, ErrRotatingProxyPortExhausted
+}
+
+func sanitizeRotatorReputationLabels(labels []string) []string {
+	if len(labels) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(labels))
+	for _, raw := range labels {
+		label := strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := reputationLabelSet[label]; ok {
+			seen[label] = struct{}{}
+		}
+	}
+
+	if len(seen) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(seen))
+	for _, label := range reputationLabelOrder {
+		if _, ok := seen[label]; ok {
+			result = append(result, label)
+		}
+	}
+	return result
+}
+
+func buildReputationCacheKey(protocolID int, labels []string) string {
+	if len(labels) == 0 {
+		return fmt.Sprintf("%d:*", protocolID)
+	}
+	return fmt.Sprintf("%d:%s", protocolID, strings.Join(labels, ","))
 }
 
 func GetAllRotatingProxies() ([]domain.RotatingProxy, error) {

@@ -41,6 +41,7 @@ func setupRotatingProxyTestDBWithDSN(t *testing.T, dsn string) *gorm.DB {
 		&domain.User{},
 		&domain.Proxy{},
 		&domain.UserProxy{},
+		&domain.ProxyReputation{},
 		&domain.RotatingProxy{},
 		&domain.ProxyStatistic{},
 		&domain.Protocol{},
@@ -238,6 +239,103 @@ func TestGetNextRotatingProxy_NoAliveProxies(t *testing.T) {
 
 	if _, err := GetNextRotatingProxy(user.ID, rotator.ID); err != ErrRotatingProxyNoAliveProxies {
 		t.Fatalf("expected ErrRotatingProxyNoAliveProxies, got %v", err)
+	}
+}
+
+func TestGetNextRotatingProxy_ReputationFilterApplied(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+
+	user := domain.User{
+		Email:        "reputation@example.com",
+		Password:     "password123",
+		HTTPProtocol: true,
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	protocol := domain.Protocol{Name: "http"}
+	if err := db.Create(&protocol).Error; err != nil {
+		t.Fatalf("create protocol: %v", err)
+	}
+
+	judge := domain.Judge{FullString: "http://judge.example.com"}
+	if err := db.Create(&judge).Error; err != nil {
+		t.Fatalf("create judge: %v", err)
+	}
+
+	proxies := []domain.Proxy{
+		{IP: "10.0.0.10", Port: 9000, Country: "AA", EstimatedType: "residential"},
+		{IP: "10.0.0.11", Port: 9001, Country: "AA", EstimatedType: "residential"},
+		{IP: "10.0.0.12", Port: 9002, Country: "AA", EstimatedType: "residential"},
+	}
+
+	for idx := range proxies {
+		if err := db.Create(&proxies[idx]).Error; err != nil {
+			t.Fatalf("create proxy %d: %v", idx, err)
+		}
+		if err := db.Create(&domain.UserProxy{
+			UserID:  user.ID,
+			ProxyID: proxies[idx].ID,
+		}).Error; err != nil {
+			t.Fatalf("link proxy %d: %v", idx, err)
+		}
+		stat := domain.ProxyStatistic{
+			Alive:        true,
+			ResponseTime: 150,
+			Attempt:      1,
+			ProtocolID:   protocol.ID,
+			ProxyID:      proxies[idx].ID,
+			JudgeID:      judge.ID,
+			CreatedAt:    time.Unix(int64(idx+1), 0),
+		}
+		if err := db.Create(&stat).Error; err != nil {
+			t.Fatalf("create statistic %d: %v", idx, err)
+		}
+	}
+
+	reputations := []domain.ProxyReputation{
+		{ProxyID: proxies[0].ID, Kind: domain.ProxyReputationKindOverall, Score: 95, Label: "good", CalculatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ProxyID: proxies[1].ID, Kind: domain.ProxyReputationKindOverall, Score: 75, Label: "neutral", CalculatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ProxyID: proxies[2].ID, Kind: domain.ProxyReputationKindOverall, Score: 25, Label: "poor", CalculatedAt: time.Now(), UpdatedAt: time.Now()},
+	}
+	if err := db.Create(&reputations).Error; err != nil {
+		t.Fatalf("create reputations: %v", err)
+	}
+
+	rotator := domain.RotatingProxy{
+		UserID:           user.ID,
+		Name:             "filtered-rotator",
+		ProtocolID:       protocol.ID,
+		ListenPort:       10800,
+		ReputationLabels: domain.StringList{"good", "neutral"},
+	}
+	if err := db.Create(&rotator).Error; err != nil {
+		t.Fatalf("create rotating proxy: %v", err)
+	}
+
+	first, err := GetNextRotatingProxy(user.ID, rotator.ID)
+	if err != nil {
+		t.Fatalf("first rotation: %v", err)
+	}
+	if first.ProxyID != proxies[0].ID {
+		t.Fatalf("first proxy id = %d, want %d", first.ProxyID, proxies[0].ID)
+	}
+
+	second, err := GetNextRotatingProxy(user.ID, rotator.ID)
+	if err != nil {
+		t.Fatalf("second rotation: %v", err)
+	}
+	if second.ProxyID != proxies[1].ID {
+		t.Fatalf("second proxy id = %d, want %d", second.ProxyID, proxies[1].ID)
+	}
+
+	third, err := GetNextRotatingProxy(user.ID, rotator.ID)
+	if err != nil {
+		t.Fatalf("third rotation: %v", err)
+	}
+	if third.ProxyID != proxies[0].ID {
+		t.Fatalf("third proxy id = %d, want %d", third.ProxyID, proxies[0].ID)
 	}
 }
 
