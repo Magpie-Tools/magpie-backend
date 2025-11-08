@@ -78,9 +78,12 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 		}
 
 		pipe.Set(rpq.ctx, proxyKey, proxyJSON, 0)
-		pipe.ZAdd(rpq.ctx, queueKey, redis.Z{
-			Score:  float64(nextCheck.Unix()),
-			Member: hashKey,
+		pipe.ZAddArgs(rpq.ctx, queueKey, redis.ZAddArgs{
+			NX: true,
+			Members: []redis.Z{{
+				Score:  float64(nextCheck.Unix()),
+				Member: hashKey,
+			}},
 		})
 
 		// Execute in batches to prevent oversized pipelines
