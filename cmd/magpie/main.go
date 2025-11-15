@@ -1,8 +1,9 @@
 package main
 
 import (
-	"github.com/charmbracelet/log"
 	"magpie/internal/app"
+
+	"github.com/charmbracelet/log"
 )
 
 func main() {

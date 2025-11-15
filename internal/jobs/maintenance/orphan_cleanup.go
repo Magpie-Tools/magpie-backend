@@ -2,6 +2,7 @@ package maintenance
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -15,6 +16,7 @@ const (
 	envCleanupIntervalMinutes = "PROXY_ORPHAN_CLEAN_INTERVAL_MINUTES"
 
 	defaultCleanupMinutes = 60
+	orphanCleanupLockKey  = "magpie:leader:orphan_cleanup"
 )
 
 func StartOrphanCleanupRoutine(ctx context.Context) {
@@ -22,7 +24,19 @@ func StartOrphanCleanupRoutine(ctx context.Context) {
 		ctx = context.Background()
 	}
 
+	err := support.RunWithLeader(ctx, orphanCleanupLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) {
+		runOrphanCleanupLoop(leaderCtx)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Error("Orphan cleanup routine stopped", "error", err)
+	}
+}
+
+func runOrphanCleanupLoop(ctx context.Context) {
 	interval := resolveCleanupInterval()
+	if interval <= 0 {
+		interval = time.Duration(defaultCleanupMinutes) * time.Minute
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

@@ -2,20 +2,34 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"magpie/internal/database"
+	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
 )
 
-const proxyHistoryInterval = time.Hour
+const (
+	proxyHistoryInterval = time.Hour
+	proxyHistoryLockKey  = "magpie:leader:proxy_history"
+)
 
 func StartProxyHistoryRoutine(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	err := support.RunWithLeader(ctx, proxyHistoryLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) {
+		runProxyHistoryLoop(leaderCtx)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Error("Proxy history routine stopped", "error", err)
+	}
+}
+
+func runProxyHistoryLoop(ctx context.Context) {
 	runProxyHistorySnapshot(ctx)
 
 	ticker := time.NewTicker(proxyHistoryInterval)

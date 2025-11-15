@@ -4,12 +4,19 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/config"
 	"magpie/internal/geolite"
+	"magpie/internal/support"
+)
+
+const (
+	geoLiteUpdateLockKey       = "magpie:leader:geolite_update"
+	geoLiteUpdateFallbackEvery = 24 * time.Hour
 )
 
 func StartGeoLiteUpdateRoutine(ctx context.Context) {
@@ -17,8 +24,48 @@ func StartGeoLiteUpdateRoutine(ctx context.Context) {
 		ctx = context.Background()
 	}
 
-	intervalUpdates := config.GeoLiteUpdateIntervalUpdates()
-	currentInterval := <-intervalUpdates
+	var intervalValue atomic.Value
+	initialInterval := config.GetGeoLiteUpdateInterval()
+	if initialInterval <= 0 {
+		initialInterval = geoLiteUpdateFallbackEvery
+	}
+	intervalValue.Store(initialInterval)
+
+	updateSignal := make(chan struct{}, 1)
+	updates := config.GeoLiteUpdateIntervalUpdates()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case newInterval := <-updates:
+				if newInterval <= 0 {
+					newInterval = geoLiteUpdateFallbackEvery
+				}
+				intervalValue.Store(newInterval)
+				select {
+				case updateSignal <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
+	err := support.RunWithLeader(ctx, geoLiteUpdateLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) {
+		runGeoLiteUpdateLoop(leaderCtx, &intervalValue, updateSignal)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Error("GeoLite update routine stopped", "error", err)
+	}
+}
+
+func runGeoLiteUpdateLoop(ctx context.Context, intervalValue *atomic.Value, updateSignal <-chan struct{}) {
+	currentInterval := intervalValue.Load().(time.Duration)
+	if currentInterval <= 0 {
+		currentInterval = geoLiteUpdateFallbackEvery
+	}
+
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
@@ -30,8 +77,12 @@ func StartGeoLiteUpdateRoutine(ctx context.Context) {
 			return
 		case <-ticker.C:
 			triggerGeoLiteUpdate(ctx, "scheduled", false)
-		case newInterval := <-intervalUpdates:
-			if newInterval <= 0 || newInterval == currentInterval {
+		case <-updateSignal:
+			newInterval := intervalValue.Load().(time.Duration)
+			if newInterval <= 0 {
+				newInterval = geoLiteUpdateFallbackEvery
+			}
+			if newInterval == currentInterval {
 				continue
 			}
 			drainTicker(ticker)

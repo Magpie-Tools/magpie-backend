@@ -3,11 +3,18 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"magpie/internal/config"
 	"magpie/internal/database"
+	"magpie/internal/support"
+)
+
+const (
+	proxyGeoRefreshLockKey        = "magpie:leader:proxy_geo_refresh"
+	proxyGeoRefreshFallbackTicker = 24 * time.Hour
 )
 
 func StartProxyGeoRefreshRoutine(ctx context.Context) {
@@ -15,8 +22,48 @@ func StartProxyGeoRefreshRoutine(ctx context.Context) {
 		ctx = context.Background()
 	}
 
-	intervalUpdates := config.ProxyGeoRefreshIntervalUpdates()
-	currentInterval := <-intervalUpdates
+	var intervalValue atomic.Value
+	initialInterval := config.GetProxyGeoRefreshInterval()
+	if initialInterval <= 0 {
+		initialInterval = proxyGeoRefreshFallbackTicker
+	}
+	intervalValue.Store(initialInterval)
+
+	updateSignal := make(chan struct{}, 1)
+	updates := config.ProxyGeoRefreshIntervalUpdates()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case newInterval := <-updates:
+				if newInterval <= 0 {
+					newInterval = proxyGeoRefreshFallbackTicker
+				}
+				intervalValue.Store(newInterval)
+				select {
+				case updateSignal <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
+	err := support.RunWithLeader(ctx, proxyGeoRefreshLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) {
+		runProxyGeoRefreshLoop(leaderCtx, &intervalValue, updateSignal)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Error("Proxy geo refresh routine stopped", "error", err)
+	}
+}
+
+func runProxyGeoRefreshLoop(ctx context.Context, intervalValue *atomic.Value, updateSignal <-chan struct{}) {
+	currentInterval := intervalValue.Load().(time.Duration)
+	if currentInterval <= 0 {
+		currentInterval = proxyGeoRefreshFallbackTicker
+	}
+
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
@@ -28,9 +75,10 @@ func StartProxyGeoRefreshRoutine(ctx context.Context) {
 			return
 		case <-ticker.C:
 			refreshOnce(ctx)
-		case newInterval := <-intervalUpdates:
+		case <-updateSignal:
+			newInterval := intervalValue.Load().(time.Duration)
 			if newInterval <= 0 {
-				continue
+				newInterval = proxyGeoRefreshFallbackTicker
 			}
 			if newInterval == currentInterval {
 				continue
