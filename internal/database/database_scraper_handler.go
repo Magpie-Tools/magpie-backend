@@ -99,25 +99,53 @@ func GetAllScrapeSites() ([]domain.ScrapeSite, error) {
 }
 
 func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
-		if len(proxies) == 0 {
-			return nil
-		}
+	if len(proxies) == 0 {
+		return nil
+	}
 
-		assoc := make([]domain.ProxyScrapeSite, len(proxies))
-		for i, p := range proxies {
-			assoc[i] = domain.ProxyScrapeSite{
-				ProxyID:      p.ID,
-				ScrapeSiteID: siteID,
+	// ProxyScrapeSite inserts touch proxy_id, scrape_site_id and created_at columns.
+	const paramsPerRow = 3
+	chunkSize := maxParamsPerBatch / paramsPerRow
+	if chunkSize <= 0 {
+		chunkSize = len(proxies)
+	}
+	if chunkSize > len(proxies) {
+		chunkSize = len(proxies)
+	}
+
+	return DB.Transaction(func(tx *gorm.DB) error {
+		for start := 0; start < len(proxies); start += chunkSize {
+			end := start + chunkSize
+			if end > len(proxies) {
+				end = len(proxies)
+			}
+
+			assoc := make([]domain.ProxyScrapeSite, 0, end-start)
+			for _, p := range proxies[start:end] {
+				if p.ID == 0 {
+					continue
+				}
+				assoc = append(assoc, domain.ProxyScrapeSite{
+					ProxyID:      p.ID,
+					ScrapeSiteID: siteID,
+				})
+			}
+
+			if len(assoc) == 0 {
+				continue
+			}
+
+			if err := tx.
+				Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "proxy_id"}, {Name: "scrape_site_id"}},
+					DoNothing: true,
+				}).
+				Create(&assoc).Error; err != nil {
+				return err
 			}
 		}
 
-		return tx.
-			Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "proxy_id"}, {Name: "scrape_site_id"}},
-				DoNothing: true,
-			}).
-			Create(&assoc).Error
+		return nil
 	})
 }
 

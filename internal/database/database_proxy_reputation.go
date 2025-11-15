@@ -18,6 +18,10 @@ import (
 const (
 	reputationSampleLimit     = 50
 	reputationDefaultProtocol = "unknown"
+	// PostgreSQL allows at most 65535 bind parameters per query, so keep slices below that.
+	reputationBatchSize = 60000
+	// Each upsert touches roughly 7 columns plus conflict updates, so keep batches small.
+	reputationUpsertBatchSize = 4000
 )
 
 type proxyReputationInput struct {
@@ -44,6 +48,28 @@ type proxyReputationSummary struct {
 
 // RecalculateProxyReputations recomputes per-proxy, per-protocol reputation scores for the given proxy IDs.
 func RecalculateProxyReputations(ctx context.Context, proxyIDs []uint64) error {
+	if len(proxyIDs) == 0 {
+		return nil
+	}
+	if DB == nil {
+		return fmt.Errorf("database not initialised")
+	}
+
+	for start := 0; start < len(proxyIDs); start += reputationBatchSize {
+		end := start + reputationBatchSize
+		if end > len(proxyIDs) {
+			end = len(proxyIDs)
+		}
+
+		if err := recalculateProxyReputationsBatch(ctx, proxyIDs[start:end]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func recalculateProxyReputationsBatch(ctx context.Context, proxyIDs []uint64) error {
 	if len(proxyIDs) == 0 {
 		return nil
 	}
@@ -347,51 +373,40 @@ func upsertProxyReputations(ctx context.Context, reputations []domain.ProxyReput
 	if err := ensureProxyReputationSchema(db); err != nil {
 		log.Error("reputation: ensure unique index", "error", err)
 	}
-	err := db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "proxy_id"}, {Name: "kind"}},
-		DoUpdates: clause.AssignmentColumns([]string{"score", "label", "signals", "calculated_at", "updated_at"}),
-	}).Create(&reputations).Error
 
-	if err != nil && isMissingUniqueConstraintError(err) {
-		if ensureErr := ensureProxyReputationSchema(db); ensureErr != nil {
-			log.Error("reputation: re-ensure unique index", "error", ensureErr)
+	for start := 0; start < len(reputations); start += reputationUpsertBatchSize {
+		end := start + reputationUpsertBatchSize
+		if end > len(reputations) {
+			end = len(reputations)
+		}
+
+		if err := upsertProxyReputationsChunk(db, reputations[start:end]); err != nil {
+			if isMissingUniqueConstraintError(err) {
+				if ensureErr := ensureProxyReputationSchema(db); ensureErr != nil {
+					log.Error("reputation: re-ensure unique index", "error", ensureErr)
+					return err
+				}
+				if retryErr := upsertProxyReputationsChunk(db, reputations[start:end]); retryErr != nil {
+					return retryErr
+				}
+				continue
+			}
 			return err
 		}
-		return db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "proxy_id"}, {Name: "kind"}},
-			DoUpdates: clause.AssignmentColumns([]string{"score", "label", "signals", "calculated_at", "updated_at"}),
-		}).Create(&reputations).Error
 	}
 
-	return err
+	return nil
 }
 
-func deduplicateProxyReputations(db *gorm.DB) error {
-	const cleanupQuery = `
-WITH ranked AS (
-	SELECT
-		id,
-		ROW_NUMBER() OVER (PARTITION BY proxy_id, kind ORDER BY calculated_at DESC, id DESC) AS rn
-	FROM proxy_reputations
-)
-DELETE FROM proxy_reputations
-WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
-`
-	return db.Exec(cleanupQuery).Error
-}
-
-func ensureProxyReputationConstraint(ctx context.Context) error {
-	if DB == nil {
-		return fmt.Errorf("database not initialised")
+func upsertProxyReputationsChunk(db *gorm.DB, reps []domain.ProxyReputation) error {
+	if len(reps) == 0 {
+		return nil
 	}
 
-	db := DB.WithContext(ctx)
-
-	if err := deduplicateProxyReputations(db); err != nil {
-		return err
-	}
-
-	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_reputation_proxy_kind ON proxy_reputations (proxy_id, kind)").Error
+	return db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "proxy_id"}, {Name: "kind"}},
+		DoUpdates: clause.AssignmentColumns([]string{"score", "label", "signals", "calculated_at", "updated_at"}),
+	}).Create(&reps).Error
 }
 
 func isMissingUniqueConstraintError(err error) bool {

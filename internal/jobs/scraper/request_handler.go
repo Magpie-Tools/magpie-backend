@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -244,9 +245,15 @@ func isNavigationAbortError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	msg := err.Error()
 	if msg == "" {
 		return false
+	}
+	if strings.Contains(strings.ToLower(msg), "context deadline exceeded") {
+		return true
 	}
 	abortSignatures := []string{
 		"net::ERR_ABORTED",
@@ -293,20 +300,4 @@ func fetchDirect(url string, timeout time.Duration) (string, error) {
 	}
 
 	return string(body), nil
-}
-
-/*
-Cleanup closes every page still in the pool and finally the browser
-instance. Call this before a graceful shutdown of your application.
-*/
-func Cleanup() {
-	for {
-		select {
-		case p := <-pagePool:
-			p.MustClose()
-		default:
-			browser.MustClose()
-			return
-		}
-	}
 }
