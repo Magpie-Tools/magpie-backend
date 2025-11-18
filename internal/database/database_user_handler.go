@@ -273,10 +273,11 @@ func GetDashboardInfo(userid uint) dto.DashboardInfo {
 				"SUM(CASE WHEN al.name = 'anonymous' THEN 1 ELSE 0 END)   AS anonymous_proxies, "+
 				"SUM(CASE WHEN al.name = 'transparent' THEN 1 ELSE 0 END) AS transparent_proxies",
 		).
-		Joins("JOIN user_judges uj ON uj.judge_id = proxy_statistics.judge_id").
+		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id AND up.user_id = ?", userid).
+		Joins("JOIN user_judges uj ON uj.judge_id = proxy_statistics.judge_id AND uj.user_id = ?", userid).
 		Joins("JOIN judges j ON j.id = proxy_statistics.judge_id").
 		Joins("JOIN anonymity_levels al ON al.id = proxy_statistics.level_id").
-		Where("uj.user_id = ? AND proxy_statistics.alive = TRUE", userid).
+		Where("proxy_statistics.alive = TRUE").
 		Group("j.id, j.full_string").
 		Scan(&tmp)
 
