@@ -81,13 +81,6 @@ func AddUserJudge(userID uint, judge *domain.Judge, regex string) {
 	updateJudges(newMap)
 }
 
-// BulkUpdateJudges optimizes mass updates (use for initial load)
-func BulkUpdateJudges(newMap map[uint]map[string]*judgeEntry) {
-	judgesMutex.Lock()
-	defer judgesMutex.Unlock()
-	updateJudges(newMap)
-}
-
 func copyMap(src map[uint]map[string]*judgeEntry) map[uint]map[string]*judgeEntry {
 	dst := make(map[uint]map[string]*judgeEntry, len(src))
 	for userID, protoMap := range src {
@@ -132,6 +125,21 @@ func GetSortedJudgesByID() []*domain.Judge {
 // AddJudgesToUsers adds a list of judges with regex to multiple users atomically.
 // Each user in the userIDs list receives all the provided judges.
 func AddJudgesToUsers(userIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
+	if len(userIDs) == 0 || len(judgesWithRegex) == 0 {
+		return
+	}
+
+	addJudgesToUsersLocal(userIDs, judgesWithRegex)
+	broadcastAddJudgesToUsers(userIDs, judgesWithRegex)
+}
+
+// SetUserJudges replaces *all* judges for a single user, in one atomic swap.
+func SetUserJudges(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
+	setUserJudgesLocal(userID, judgesWithRegex)
+	broadcastSetUserJudges(userID, judgesWithRegex)
+}
+
+func addJudgesToUsersLocal(userIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
 	judgesMutex.Lock()
 	defer judgesMutex.Unlock()
 
@@ -146,6 +154,9 @@ func AddJudgesToUsers(userIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
 		}
 
 		for _, jwr := range judgesWithRegex {
+			if jwr.Judge == nil {
+				continue
+			}
 			scheme := jwr.Judge.GetScheme()
 			entry := protoMap[scheme]
 			if entry == nil {
@@ -168,21 +179,21 @@ func AddJudgesToUsers(userIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
 	updateJudges(newMap)
 }
 
-// SetUserJudges replaces *all* judges for a single user, in one atomic swap.
-func SetUserJudges(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
+func setUserJudgesLocal(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
 	judgesMutex.Lock()
 	defer judgesMutex.Unlock()
 
-	// copy the top‑level map
 	currentMap := judges.Load().(map[uint]map[string]*judgeEntry)
 	newMap := copyMap(currentMap)
 
-	// build a fresh protocol→entry map for this user
 	protoMap := make(map[string]*judgeEntry, len(judgesWithRegex))
 	for _, jwr := range judgesWithRegex {
+		if jwr.Judge == nil {
+			continue
+		}
+
 		scheme := jwr.Judge.GetScheme()
 		if entry := protoMap[scheme]; entry != nil {
-			// append to existing entry
 			newList := append(entry.list, jwr)
 			protoMap[scheme] = &judgeEntry{
 				list:    newList,
@@ -190,7 +201,6 @@ func SetUserJudges(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
 				counter: atomic.LoadUint32(&entry.counter),
 			}
 		} else {
-			// first judge for this scheme
 			protoMap[scheme] = &judgeEntry{
 				list:    []domain.JudgeWithRegex{jwr},
 				length:  1,
@@ -199,7 +209,6 @@ func SetUserJudges(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
 		}
 	}
 
-	// replace entire user entry
 	newMap[userID] = protoMap
 	updateJudges(newMap)
 }

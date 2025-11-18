@@ -23,9 +23,10 @@ func Setup() {
 	config.ReadSettings()
 
 	if redisClient, err := support.GetRedisClient(); err != nil {
-		log.Warn("Config synchronization disabled", "error", err)
+		log.Warn("Redis synchronization disabled", "error", err)
 	} else {
 		config.EnableRedisSynchronization(context.Background(), redisClient)
+		judges.EnableRedisSynchronization(context.Background(), redisClient)
 	}
 
 	if _, err := database.SetupDB(); err != nil {
