@@ -74,6 +74,10 @@ func UpdateDatabases(ctx context.Context) (bool, error) {
 			log.Warn("Failed to persist GeoLite updated timestamp", "error", err)
 		}
 
+		if err := PublishGeoLiteDatabases(ctx, nil); err != nil {
+			log.Warn("Failed to publish GeoLite databases to redis", "error", err)
+		}
+
 		return true, nil
 	})
 

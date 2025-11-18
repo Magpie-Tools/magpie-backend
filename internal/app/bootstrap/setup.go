@@ -8,6 +8,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/database"
+	"magpie/internal/geolite"
 	"magpie/internal/jobs/checker"
 	"magpie/internal/jobs/checker/judges"
 	maintenance "magpie/internal/jobs/maintenance"
@@ -27,6 +28,7 @@ func Setup() {
 	} else {
 		config.EnableRedisSynchronization(context.Background(), redisClient)
 		judges.EnableRedisSynchronization(context.Background(), redisClient)
+		geolite.EnableRedisDistribution(context.Background(), redisClient)
 	}
 
 	if _, err := database.SetupDB(); err != nil {
