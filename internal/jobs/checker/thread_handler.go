@@ -139,7 +139,7 @@ func work() {
 			}
 		}
 
-		hasUsers, err := database.ProxyHasUsers(proxy.ID)
+		hasUsers, err := verifyProxyOwnership(ctx, proxy.ID)
 		if err != nil {
 			log.Error("failed to verify proxy ownership before requeue", "proxy_id", proxy.ID, "error", err)
 			// Requeue to avoid dropping proxies on transient errors
@@ -178,20 +178,36 @@ func createWorkerContext() (context.Context, func()) {
 }
 
 func refreshProxyUsers(proxy domain.Proxy) domain.Proxy {
-	refreshedUsers := make(map[uint]domain.User, len(proxy.Users))
+	if len(proxy.Users) == 0 {
+		return proxy
+	}
+
+	ids := make([]uint, 0, len(proxy.Users))
+	seen := make(map[uint]struct{}, len(proxy.Users))
+	for _, user := range proxy.Users {
+		if user.ID == 0 {
+			continue
+		}
+		if _, ok := seen[user.ID]; ok {
+			continue
+		}
+		seen[user.ID] = struct{}{}
+		ids = append(ids, user.ID)
+	}
+
+	refreshedUsers, err := database.GetUsersByIDs(ids)
+	if err != nil {
+		log.Error("refresh proxy users", "error", err)
+		return proxy
+	}
+	if len(refreshedUsers) == 0 {
+		return proxy
+	}
+
 	for i := range proxy.Users {
-		if cached, ok := refreshedUsers[proxy.Users[i].ID]; ok {
-			proxy.Users[i] = cached
-			continue
+		if fresh, ok := refreshedUsers[proxy.Users[i].ID]; ok {
+			proxy.Users[i] = fresh
 		}
-
-		fresh := database.GetUserFromId(proxy.Users[i].ID)
-		if fresh.ID == 0 {
-			continue
-		}
-
-		refreshedUsers[proxy.Users[i].ID] = fresh
-		proxy.Users[i] = fresh
 	}
 
 	return proxy
@@ -281,50 +297,37 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 }
 
 func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[uint]bool) (map[uint]struct{}, []domain.Proxy) {
-	removedUsers := make(map[uint]struct{})
-	var orphaned []domain.Proxy
+	if len(proxy.Users) == 0 {
+		return nil, nil
+	}
 
+	events := make([]failureEvent, 0, len(proxy.Users))
 	for _, user := range proxy.Users {
 		if !userHasChecks[user.ID] {
 			continue
 		}
-
-		if userSuccess[user.ID] {
-			if err := database.ResetUserProxyFailures(user.ID, proxy.ID); err != nil {
-				log.Error("failed to reset proxy failure streak", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
-			}
-			continue
-		}
-
-		newCount, err := database.IncrementUserProxyFailures(user.ID, proxy.ID)
-		if err != nil {
-			log.Error("failed to track proxy failure streak", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
-			continue
-		}
-
-		if newCount == 0 || !user.AutoRemoveFailingProxies || user.AutoRemoveFailureThreshold == 0 {
-			continue
-		}
-
-		if newCount < uint16(user.AutoRemoveFailureThreshold) {
-			continue
-		}
-
-		log.Info("auto-removing proxy after repeated failures", "proxy_id", proxy.ID, "user_id", user.ID, "failures", newCount)
-
-		_, orphanedProxies, err := database.DeleteProxyRelation(user.ID, []int{int(proxy.ID)})
-		if err != nil {
-			log.Error("failed to auto remove proxy for user", "proxy_id", proxy.ID, "user_id", user.ID, "error", err)
-			continue
-		}
-
-		removedUsers[user.ID] = struct{}{}
-		if len(orphanedProxies) > 0 {
-			orphaned = append(orphaned, orphanedProxies...)
-		}
+		events = append(events, failureEvent{
+			UserID:            user.ID,
+			Success:           userSuccess[user.ID],
+			AutoRemove:        user.AutoRemoveFailingProxies,
+			FailureThreshold:  user.AutoRemoveFailureThreshold,
+			HasEligibleChecks: true,
+		})
 	}
 
-	return removedUsers, orphaned
+	if len(events) == 0 {
+		return nil, nil
+	}
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), failureQueryTimeout)
+	defer cancel()
+	removed, orphaned, err := processFailureEvents(reqCtx, proxy.ID, events)
+	if err != nil {
+		log.Error("failed to process proxy failure tracking", "proxy_id", proxy.ID, "error", err)
+		return nil, nil
+	}
+
+	return removed, orphaned
 }
 
 func filterRemovedUsers(proxy domain.Proxy, removed map[uint]struct{}) domain.Proxy {

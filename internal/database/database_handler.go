@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"time"
 
 	"magpie/internal/domain"
 	"magpie/internal/support"
@@ -46,6 +47,7 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 			return nil, fmt.Errorf("database: open connection: %w", err)
 		}
 		DB = db
+		configureConnectionPool(db)
 	default:
 		return nil, fmt.Errorf("database: no dialector or existing connection provided")
 	}
@@ -163,6 +165,40 @@ func WithMigrations(models ...any) Option {
 func WithSeedDefaults(enabled bool) Option {
 	return func(cfg *Config) {
 		cfg.SeedDefaults = enabled
+	}
+}
+
+func configureConnectionPool(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Error("database: get sql.DB", "error", err)
+		return
+	}
+
+	maxOpen := support.GetEnvInt("DB_MAX_OPEN_CONNS", 32)
+	maxIdle := support.GetEnvInt("DB_MAX_IDLE_CONNS", maxOpen)
+	if maxIdle > maxOpen {
+		maxIdle = maxOpen
+	}
+
+	connLifetimeSeconds := support.GetEnvInt("DB_CONN_MAX_LIFETIME", 300)
+	connIdleSeconds := support.GetEnvInt("DB_CONN_MAX_IDLE_TIME", 60)
+
+	if maxOpen > 0 {
+		sqlDB.SetMaxOpenConns(maxOpen)
+	}
+	if maxIdle >= 0 {
+		sqlDB.SetMaxIdleConns(maxIdle)
+	}
+	if connLifetimeSeconds > 0 {
+		sqlDB.SetConnMaxLifetime(time.Duration(connLifetimeSeconds) * time.Second)
+	}
+	if connIdleSeconds > 0 {
+		sqlDB.SetConnMaxIdleTime(time.Duration(connIdleSeconds) * time.Second)
 	}
 }
 

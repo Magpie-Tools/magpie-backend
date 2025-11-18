@@ -21,20 +21,17 @@ import (
 )
 
 const (
-	batchThreshold    = 8191  // Use batches when exceeding this number of records
-	maxParamsPerBatch = 65534 // Conservative default (PostgreSQL's limit) - 1
-	minBatchSize      = 100   // Minimum batch size to maintain efficiency
-	deleteChunkSize   = 5000  // Keep large deletes under Postgres parameter limits
+	batchThreshold             = 8191  // Use batches when exceeding this number of records
+	maxParamsPerBatch          = 65534 // Conservative default (PostgreSQL's limit) - 1
+	minBatchSize               = 100   // Minimum batch size to maintain efficiency
+	deleteChunkSize            = 5000  // Keep large deletes under Postgres parameter limits
+	autoRemoveCleanupBatchSize = 2000
 
 	proxiesPerPage    = 40
 	maxProxiesPerPage = 100
 )
 
 var ErrNoProxiesSelected = errors.New("no proxies selected for deletion")
-
-func InsertAndGetProxies(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
-	return insertAndAssociateProxies(proxies, userIDs)
-}
 
 func InsertAndGetProxiesWithUser(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
 	inserted, err := insertAndAssociateProxies(proxies, userIDs)
@@ -432,7 +429,15 @@ func GetAllProxies() ([]domain.Proxy, error) {
 		return nil, err.Error
 	}
 
-	return collectedProxies, nil
+	filtered := make([]domain.Proxy, 0, len(collectedProxies))
+	for _, proxy := range collectedProxies {
+		if len(proxy.Users) == 0 {
+			continue
+		}
+		filtered = append(filtered, proxy)
+	}
+
+	return filtered, nil
 }
 
 func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
@@ -994,6 +999,68 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 	return totalDeleted, orphans, nil
 }
 
+func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, error) {
+	if DB == nil {
+		return 0, nil, fmt.Errorf("database not initialised")
+	}
+
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+
+	type target struct {
+		UserID  uint
+		ProxyID uint64
+	}
+
+	var (
+		batch     []target
+		total     int64
+		orphaned  = make(map[uint64]domain.Proxy)
+		queryBase = db.Table("user_proxies up").
+				Select("up.user_id, up.proxy_id").
+				Joins("JOIN users u ON u.id = up.user_id").
+				Where("u.auto_remove_failing_proxies = ?", true).
+				Where("u.auto_remove_failure_threshold > 0").
+				Where("up.consecutive_failures >= u.auto_remove_failure_threshold")
+	)
+
+	result := queryBase.FindInBatches(&batch, autoRemoveCleanupBatchSize, func(tx *gorm.DB, _ int) error {
+		if len(batch) == 0 {
+			return nil
+		}
+
+		perUser := make(map[uint][]int)
+		for _, item := range batch {
+			perUser[item.UserID] = append(perUser[item.UserID], int(item.ProxyID))
+		}
+
+		for userID, proxyIDs := range perUser {
+			removed, orphanList, err := DeleteProxyRelation(userID, proxyIDs)
+			if err != nil {
+				return err
+			}
+			total += removed
+			for _, proxy := range orphanList {
+				orphaned[proxy.ID] = proxy
+			}
+		}
+
+		return nil
+	})
+	if result.Error != nil {
+		return 0, nil, result.Error
+	}
+
+	orphanList := make([]domain.Proxy, 0, len(orphaned))
+	for _, proxy := range orphaned {
+		orphanList = append(orphanList, proxy)
+	}
+
+	return total, orphanList, nil
+}
+
 func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
 	if len(candidateIDs) == 0 {
 		return nil, nil
@@ -1034,17 +1101,6 @@ func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
 	return orphanIDs, nil
 }
 
-func ProxyHasUsers(proxyID uint64) (bool, error) {
-	var exists bool
-	if err := DB.Raw(
-		"SELECT EXISTS (SELECT 1 FROM user_proxies WHERE proxy_id = ?)",
-		proxyID,
-	).Scan(&exists).Error; err != nil {
-		return false, err
-	}
-	return exists, nil
-}
-
 func DeleteOrphanProxies(ctx context.Context) (int64, error) {
 	if DB == nil {
 		return 0, fmt.Errorf("database not initialised")
@@ -1061,42 +1117,6 @@ func DeleteOrphanProxies(ctx context.Context) (int64, error) {
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
-}
-
-func ResetUserProxyFailures(userID uint, proxyID uint64) error {
-	if DB == nil {
-		return nil
-	}
-
-	return DB.Model(&domain.UserProxy{}).
-		Where("user_id = ? AND proxy_id = ?", userID, proxyID).
-		Update("consecutive_failures", 0).Error
-}
-
-func IncrementUserProxyFailures(userID uint, proxyID uint64) (uint16, error) {
-	if DB == nil {
-		return 0, nil
-	}
-
-	var updated struct {
-		ConsecutiveFailures uint16
-	}
-
-	result := DB.Model(&domain.UserProxy{}).
-		Where("user_id = ? AND proxy_id = ?", userID, proxyID).
-		Clauses(clause.Returning{Columns: []clause.Column{{Name: "consecutive_failures"}}}).
-		UpdateColumn("consecutive_failures", gorm.Expr("LEAST(consecutive_failures + 1, ?)", 65535)).
-		Scan(&updated)
-
-	if result.Error != nil {
-		return 0, result.Error
-	}
-
-	if result.RowsAffected == 0 {
-		return 0, nil
-	}
-
-	return updated.ConsecutiveFailures, nil
 }
 
 func DeleteProxiesWithSettings(userID uint, settings dto.DeleteSettings) (int64, []domain.Proxy, error) {

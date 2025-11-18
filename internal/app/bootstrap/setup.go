@@ -35,6 +35,22 @@ func Setup() {
 
 	judgeSetup()
 
+	cleanedRelations, orphanedProxies, cleanupErr := database.CleanupAutoRemovalViolations(context.Background())
+	if cleanupErr != nil {
+		log.Error("auto-remove cleanup failed", "error", cleanupErr)
+	} else if cleanedRelations > 0 {
+		log.Info(
+			"Auto-remove cleanup completed",
+			"relations_removed", cleanedRelations,
+			"orphaned_proxies", len(orphanedProxies),
+		)
+		if len(orphanedProxies) > 0 {
+			if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(orphanedProxies); err != nil {
+				log.Warn("failed to purge orphaned proxies from queue", "error", err)
+			}
+		}
+	}
+
 	go func() {
 		cfg := config.GetConfig()
 
