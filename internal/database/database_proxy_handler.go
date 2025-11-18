@@ -1101,6 +1101,41 @@ func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
 	return orphanIDs, nil
 }
 
+func GetExistingProxyIDSet(ctx context.Context, proxyIDs []uint64) (map[uint64]struct{}, error) {
+	if len(proxyIDs) == 0 {
+		return nil, nil
+	}
+	if DB == nil {
+		return nil, fmt.Errorf("database not initialised")
+	}
+
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+
+	result := make(map[uint64]struct{})
+	for start := 0; start < len(proxyIDs); start += maxParamsPerBatch {
+		end := start + maxParamsPerBatch
+		if end > len(proxyIDs) {
+			end = len(proxyIDs)
+		}
+
+		var ids []uint64
+		if err := db.Model(&domain.Proxy{}).
+			Where("id IN ?", proxyIDs[start:end]).
+			Pluck("id", &ids).Error; err != nil {
+			return nil, err
+		}
+
+		for _, id := range ids {
+			result[id] = struct{}{}
+		}
+	}
+
+	return result, nil
+}
+
 func DeleteOrphanProxies(ctx context.Context) (int64, error) {
 	if DB == nil {
 		return 0, fmt.Errorf("database not initialised")

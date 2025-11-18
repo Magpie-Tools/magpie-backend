@@ -64,22 +64,30 @@ func flushProxyStatistics(buffer *[]domain.ProxyStatistic) {
 	toInsert := *buffer
 	*buffer = nil
 
-	batchSize := database.CalculateProxyStatisticBatchSize(len(toInsert))
 	statisticsFlushTracker.Add(1)
 
-	go func(stats []domain.ProxyStatistic, size int) {
+	go func(stats []domain.ProxyStatistic) {
 		start := time.Now()
 		defer statisticsFlushTracker.Done()
 
 		dbCtx, cancel := context.WithTimeout(context.Background(), statisticsInsertTimeout)
 		defer cancel()
 
-		if err := database.InsertProxyStatistics(dbCtx, stats, size); err != nil {
-			log.Error("Failed to insert proxy statistics", "error", err, "count", len(stats))
+		preparedStats, proxyIDs, err := prepareProxyStatistics(dbCtx, stats)
+		if err != nil {
+			log.Error("Failed to prepare proxy statistics", "error", err)
+			return
+		}
+		if len(preparedStats) == 0 {
 			return
 		}
 
-		proxyIDs := collectProxyIDs(stats)
+		batchSize := database.CalculateProxyStatisticBatchSize(len(preparedStats))
+		if err := database.InsertProxyStatistics(dbCtx, preparedStats, batchSize); err != nil {
+			log.Error("Failed to insert proxy statistics", "error", err, "count", len(preparedStats))
+			return
+		}
+
 		if len(proxyIDs) == 0 {
 			return
 		}
@@ -91,7 +99,7 @@ func flushProxyStatistics(buffer *[]domain.ProxyStatistic) {
 			log.Error("Failed to update proxy reputations", "error", err, "proxy_ids", proxyIDs)
 		}
 		log.Info("Inserted proxy statistics", "seconds", time.Since(start).Seconds())
-	}(toInsert, batchSize)
+	}(toInsert)
 }
 
 func drainProxyStatisticQueue(buffer *[]domain.ProxyStatistic) {
@@ -138,4 +146,51 @@ func collectProxyIDs(stats []domain.ProxyStatistic) []uint64 {
 	}
 
 	return ids
+}
+
+func prepareProxyStatistics(ctx context.Context, stats []domain.ProxyStatistic) ([]domain.ProxyStatistic, []uint64, error) {
+	if len(stats) == 0 {
+		return nil, nil, nil
+	}
+
+	proxyIDs := collectProxyIDs(stats)
+	if len(proxyIDs) == 0 {
+		return stats, nil, nil
+	}
+
+	existing, err := database.GetExistingProxyIDSet(ctx, proxyIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(existing) == 0 {
+		return nil, nil, nil
+	}
+
+	if len(existing) == len(proxyIDs) {
+		return stats, proxyIDs, nil
+	}
+
+	filtered := make([]domain.ProxyStatistic, 0, len(stats))
+	for _, stat := range stats {
+		if _, ok := existing[stat.ProxyID]; ok {
+			filtered = append(filtered, stat)
+		}
+	}
+
+	if len(filtered) == 0 {
+		return nil, nil, nil
+	}
+
+	validIDs := make([]uint64, 0, len(existing))
+	for id := range existing {
+		validIDs = append(validIDs, id)
+	}
+
+	dropped := len(stats) - len(filtered)
+	if dropped > 0 {
+		log.Info("Skipped proxy statistics for removed proxies", "dropped", dropped)
+	}
+
+	return filtered, validIDs, nil
 }
