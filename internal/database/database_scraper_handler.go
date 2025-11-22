@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -28,51 +29,66 @@ func GetScrapingSourcesOfUsers(userID uint) []string {
 	return out
 }
 
-// SaveScrapingSourcesOfUsers replaces the user’s current list with `sources`.
+// SaveScrapingSourcesOfUsers appends new sources to the user without removing existing ones.
 func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeSite, error) {
 	var sites []domain.ScrapeSite
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		// Prepare slices to collect sites and their IDs
 		sites = make([]domain.ScrapeSite, 0, len(sources))
 		siteIDs := make([]uint64, 0, len(sources))
 
-		// Create or find each ScrapeSite
+		// Load the user and existing associations
+		var user domain.User
+		if err := tx.Preload("ScrapeSites").First(&user, userID).Error; err != nil {
+			return err
+		}
+
+		existing := make(map[string]struct{}, len(user.ScrapeSites))
+		for _, s := range user.ScrapeSites {
+			existing[s.URL] = struct{}{}
+		}
+
+		seen := make(map[string]struct{}, len(sources))
+
+		// Create or find each ScrapeSite that is not already associated
 		for _, raw := range sources {
-			if raw == "" || !support.IsValidURL(raw) {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed == "" || !support.IsValidURL(trimmed) {
 				continue
 			}
+			if _, ok := existing[trimmed]; ok {
+				continue
+			}
+			if _, ok := seen[trimmed]; ok {
+				continue
+			}
+			seen[trimmed] = struct{}{}
 
 			var site domain.ScrapeSite
-			if err := tx.Where("url = ?", raw).
-				FirstOrCreate(&site, &domain.ScrapeSite{URL: raw}).Error; err != nil {
+			if err := tx.Where("url = ?", trimmed).
+				FirstOrCreate(&site, &domain.ScrapeSite{URL: trimmed}).Error; err != nil {
 				return err
 			}
 			sites = append(sites, site)
 			siteIDs = append(siteIDs, site.ID)
 		}
 
-		// Load the user
-		var user domain.User
-		if err := tx.First(&user, userID).Error; err != nil {
-			return err
-		}
+		// Append only new associations
+		if len(sites) > 0 {
+			if err := tx.Model(&user).
+				Association("ScrapeSites").
+				Append(&sites); err != nil {
+				return err
+			}
 
-		// Replace association to the new list of ScrapeSites
-		if err := tx.Model(&user).
-			Association("ScrapeSites").
-			Replace(&sites); err != nil {
-			return err
+			// Reload newly touched sites with Users preloaded
+			var loaded []domain.ScrapeSite
+			if err := tx.Preload("Users").
+				Where("id IN ?", siteIDs).
+				Find(&loaded).Error; err != nil {
+				return err
+			}
+			sites = loaded
 		}
-
-		// Reload all sites with Users preloaded
-		var loaded []domain.ScrapeSite
-		if err := tx.Preload("Users").
-			Where("id IN ?", siteIDs).
-			Find(&loaded).Error; err != nil {
-			return err
-		}
-		// Overwrite the sites slice with the fully loaded records
-		sites = loaded
 
 		return nil
 	})
@@ -106,9 +122,6 @@ func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
 	// ProxyScrapeSite inserts touch proxy_id, scrape_site_id and created_at columns.
 	const paramsPerRow = 3
 	chunkSize := maxParamsPerBatch / paramsPerRow
-	if chunkSize <= 0 {
-		chunkSize = len(proxies)
-	}
 	if chunkSize > len(proxies) {
 		chunkSize = len(proxies)
 	}
