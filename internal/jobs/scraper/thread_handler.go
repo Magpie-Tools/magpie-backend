@@ -112,29 +112,43 @@ func scrapeWorker() {
 		cfg := config.GetConfig()
 		timeout := time.Duration(cfg.Scraper.Timeout) * time.Millisecond
 
+		skipScrape := false
+		if cfg.Scraper.RespectRobots {
+			result, robotsErr := CheckRobotsAllowance(site.URL, timeout)
+			if robotsErr != nil {
+				log.Warn("robots.txt check failed", "url", site.URL, "err", robotsErr)
+			}
+			if result.RobotsFound && !result.Allowed {
+				log.Info("robots.txt disallows scraping; skipping", "url", site.URL)
+				skipScrape = true
+			}
+		}
+
 		var html string
 		var scrapeErr error
 
-		for attempts := 0; attempts < 3; attempts++ {
-			html, scrapeErr = ScraperRequest(site.URL, timeout)
-			if isConnClosed(scrapeErr) {
-				// Treat DevTools socket loss as transient infra failure, not site failure.
-				browserAlive.Store(false)
-				requestRestartBrowser()
+		if !skipScrape {
+			for attempts := 0; attempts < 3; attempts++ {
+				html, scrapeErr = ScraperRequest(site.URL, timeout)
+				if isConnClosed(scrapeErr) {
+					// Treat DevTools socket loss as transient infra failure, not site failure.
+					browserAlive.Store(false)
+					requestRestartBrowser()
+					time.Sleep(1 * time.Second)
+					continue
+				}
+				if scrapeErr == nil || !strings.Contains(scrapeErr.Error(), "timeout waiting for available page") {
+					break
+				}
+				log.Debug("retrying after page timeout", "url", site.URL, "attempt", attempts+1)
 				time.Sleep(1 * time.Second)
-				continue
 			}
-			if scrapeErr == nil || !strings.Contains(scrapeErr.Error(), "timeout waiting for available page") {
-				break
-			}
-			log.Debug("retrying after page timeout", "url", site.URL, "attempt", attempts+1)
-			time.Sleep(1 * time.Second)
-		}
 
-		if scrapeErr != nil {
-			log.Warn("scrape failed", "url", site.URL, "err", scrapeErr)
-		} else {
-			go handleScrapedHTML(site, html)
+			if scrapeErr != nil {
+				log.Warn("scrape failed", "url", site.URL, "err", scrapeErr)
+			} else {
+				go handleScrapedHTML(site, html)
+			}
 		}
 
 		hasUsers, err := database.ScrapeSiteHasUsers(site.ID)

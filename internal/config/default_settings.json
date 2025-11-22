@@ -54,6 +54,7 @@
     "threads": 250,
     "retries": 2,
     "timeout": 7500,
+    "respect_robots_txt": true,
 
     "scraper_timer": {
       "days": 0,

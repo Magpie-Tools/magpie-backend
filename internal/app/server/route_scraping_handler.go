@@ -6,11 +6,15 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"magpie/internal/auth"
+	"magpie/internal/config"
 	"magpie/internal/database"
 	sitequeue "magpie/internal/jobs/queue/sites"
+	"magpie/internal/jobs/scraper"
 	"magpie/internal/support"
 )
 
@@ -126,4 +130,58 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]int{"sourceCount": len(sites)})
+}
+
+func checkScrapeSourceRobots(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, err := auth.GetUserIDFromRequest(r); err != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if rawURL == "" {
+		writeError(w, "Missing url query parameter", http.StatusBadRequest)
+		return
+	}
+
+	result, err := scraper.CheckRobotsAllowance(rawURL, 10*time.Second)
+	if err != nil {
+		log.Warn("robots.txt check", "url", rawURL, "err", err)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"allowed":      result.Allowed,
+		"robots_found": result.RobotsFound,
+		"error":        errString(err),
+	})
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func getRobotsRespectSetting(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, err := auth.GetUserIDFromRequest(r); err != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	cfg := config.GetConfig()
+
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"respect_robots_txt": cfg.Scraper.RespectRobots,
+	})
 }

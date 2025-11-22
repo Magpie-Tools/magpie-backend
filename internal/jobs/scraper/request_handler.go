@@ -15,6 +15,8 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
+const scraperUserAgent = "magpie-scraper/1.0"
+
 /*
 ScraperRequest fetches the HTML of url within the given timeout.
 
@@ -281,7 +283,7 @@ func fetchDirect(url string, timeout time.Duration) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "magpie-scraper/1.0")
+	req.Header.Set("User-Agent", scraperUserAgent)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)

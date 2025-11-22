@@ -43,6 +43,7 @@ type Config struct {
 		Threads        uint32 `json:"threads"`
 		Retries        uint32 `json:"retries"`
 		Timeout        uint32 `json:"timeout"`
+		RespectRobots  bool   `json:"respect_robots_txt"`
 
 		ScraperTimer Timer `json:"scraper_timer"`
 
