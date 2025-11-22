@@ -7,25 +7,29 @@ import (
 )
 
 const (
-	defaultProxyGeoRefreshInterval = 24 * time.Hour
-	defaultGeoLiteUpdateInterval   = 24 * time.Hour
+	defaultProxyGeoRefreshInterval  = 24 * time.Hour
+	defaultGeoLiteUpdateInterval    = 24 * time.Hour
+	defaultBlacklistRefreshInterval = 6 * time.Hour
 )
 
 var (
-	timeBetweenChecks        atomic.Value
-	timeBetweenScrapes       atomic.Value
-	proxyGeoRefreshInterval  atomic.Value
-	checkIntervalListeners   []chan time.Duration
-	scrapeIntervalListeners  []chan time.Duration
-	proxyGeoRefreshListeners []chan time.Duration
-	geoLiteUpdateInterval    atomic.Value
-	geoLiteUpdateListeners   []chan time.Duration
-	listenersMu              sync.Mutex
+	timeBetweenChecks          atomic.Value
+	timeBetweenScrapes         atomic.Value
+	blacklistRefreshInterval   atomic.Value
+	proxyGeoRefreshInterval    atomic.Value
+	checkIntervalListeners     []chan time.Duration
+	scrapeIntervalListeners    []chan time.Duration
+	blacklistIntervalListeners []chan time.Duration
+	proxyGeoRefreshListeners   []chan time.Duration
+	geoLiteUpdateInterval      atomic.Value
+	geoLiteUpdateListeners     []chan time.Duration
+	listenersMu                sync.Mutex
 )
 
 func init() {
 	timeBetweenChecks.Store(time.Second)
 	timeBetweenScrapes.Store(time.Second)
+	blacklistRefreshInterval.Store(time.Second)
 	proxyGeoRefreshInterval.Store(defaultProxyGeoRefreshInterval)
 	geoLiteUpdateInterval.Store(defaultGeoLiteUpdateInterval)
 }
@@ -34,6 +38,7 @@ func SetBetweenTime() {
 	cfg := GetConfig()
 	setTimeBetweenChecks(CalculateBetweenTime(cfg.Checker.CheckerTimer))
 	setTimeBetweenScrapes(CalculateBetweenTime(cfg.Scraper.ScraperTimer))
+	setBlacklistRefreshInterval(calculateBlacklistRefreshInterval(cfg))
 	setProxyGeoRefreshInterval(calculateProxyGeoRefreshInterval(cfg))
 	setGeoLiteUpdateInterval(calculateGeoLiteUpdateInterval(cfg))
 }
@@ -131,8 +136,52 @@ func ScrapeIntervalUpdates() <-chan time.Duration {
 	return ch
 }
 
+func setBlacklistRefreshInterval(interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	current := GetBlacklistRefreshInterval()
+	if current == interval {
+		return
+	}
+
+	blacklistRefreshInterval.Store(interval)
+
+	listenersMu.Lock()
+	defer listenersMu.Unlock()
+	for _, ch := range blacklistIntervalListeners {
+		select {
+		case ch <- interval:
+		default:
+		}
+	}
+}
+
+func GetBlacklistRefreshInterval() time.Duration {
+	return blacklistRefreshInterval.Load().(time.Duration)
+}
+
+func BlacklistIntervalUpdates() <-chan time.Duration {
+	ch := make(chan time.Duration, 1)
+	listenersMu.Lock()
+	blacklistIntervalListeners = append(blacklistIntervalListeners, ch)
+	listenersMu.Unlock()
+
+	ch <- GetBlacklistRefreshInterval()
+	return ch
+}
+
 func GetProxyGeoRefreshInterval() time.Duration {
 	return proxyGeoRefreshInterval.Load().(time.Duration)
+}
+
+func calculateBlacklistRefreshInterval(cfg Config) time.Duration {
+	timer := cfg.BlacklistTimer
+	if timer.Days == 0 && timer.Hours == 0 && timer.Minutes == 0 && timer.Seconds == 0 {
+		return defaultBlacklistRefreshInterval
+	}
+	return CalculateBetweenTime(timer)
 }
 
 func ProxyGeoRefreshIntervalUpdates() <-chan time.Duration {

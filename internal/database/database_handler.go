@@ -112,6 +112,7 @@ func defaultMigrations() []any {
 	return []any{
 		domain.User{},
 		domain.Proxy{},
+		domain.BlacklistedIP{},
 		domain.ProxyReputation{},
 		domain.UserProxy{},
 		domain.RotatingProxy{},

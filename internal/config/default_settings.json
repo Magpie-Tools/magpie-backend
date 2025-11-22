@@ -93,6 +93,12 @@
     }
   },
 
+  "blacklist_timer": {
+    "days": 0,
+    "hours": 6,
+    "minutes": 0,
+    "seconds": 0
+  },
   "blacklist_sources": [
     "https://www.spamhaus.org/drop/drop.txt",
     "https://www.spamhaus.org/drop/edrop.txt",

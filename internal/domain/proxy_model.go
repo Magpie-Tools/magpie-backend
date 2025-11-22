@@ -17,6 +17,7 @@ type Proxy struct {
 	ID          uint64 `gorm:"primaryKey;autoIncrement"`
 	IP          string `gorm:"-" json:"ip"`
 	IPEncrypted string `gorm:"column:ip;default:'';index:idx_proxy_addr,priority:1" json:"-"`
+	IPHash      []byte `gorm:"column:ip_hash;type:bytea;index"`
 	Port        uint16 `gorm:"not null;index:idx_proxy_addr,priority:2"`
 	Username    string `gorm:"default:''"`
 	Password    string `gorm:"-" json:"password"`
@@ -49,6 +50,9 @@ func (proxy *Proxy) BeforeSave(_ *gorm.DB) error {
 	if len(proxy.Hash) == 0 {
 		proxy.GenerateHash()
 	}
+	if len(proxy.IPHash) == 0 && proxy.IP != "" {
+		proxy.setIPHash()
+	}
 
 	if proxy.IP == "" {
 		proxy.IPEncrypted = ""
@@ -80,6 +84,9 @@ func (proxy *Proxy) AfterFind(_ *gorm.DB) error {
 		return err
 	}
 	proxy.IP = ip
+	if len(proxy.IPHash) == 0 && proxy.IP != "" {
+		proxy.setIPHash()
+	}
 
 	plain, _, err := security.DecryptProxySecret(proxy.PasswordEncrypted)
 	if err != nil {
@@ -91,6 +98,8 @@ func (proxy *Proxy) AfterFind(_ *gorm.DB) error {
 }
 
 func (proxy *Proxy) GenerateHash() {
+	proxy.setIPHash()
+
 	hash := sha256.Sum256([]byte(
 		strings.ToLower( // having different upper/lowercase username/password would not make sense for the same proxy
 			fmt.Sprintf("%s|%d|%s|%s",
@@ -100,6 +109,16 @@ func (proxy *Proxy) GenerateHash() {
 				proxy.Password,
 			))))
 	proxy.Hash = hash[:]
+}
+
+func (proxy *Proxy) setIPHash() {
+	if proxy.IP == "" {
+		proxy.IPHash = nil
+		return
+	}
+
+	ipHash := sha256.Sum256([]byte(proxy.GetIp()))
+	proxy.IPHash = ipHash[:]
 }
 
 func (proxy *Proxy) SetIP(ip string) error {

@@ -64,6 +64,7 @@ type Config struct {
 	} `json:"geolite"`
 
 	BlacklistSources []string `json:"blacklist_sources"`
+	BlacklistTimer   Timer    `json:"blacklist_timer"`
 }
 
 type judge struct {

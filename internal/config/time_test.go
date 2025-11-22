@@ -32,28 +32,34 @@ func TestSetBetweenTime(t *testing.T) {
 	origCfg := GetConfig()
 	origChecks := GetTimeBetweenChecks()
 	origScrapes := GetTimeBetweenScrapes()
+	origBlacklist := GetBlacklistRefreshInterval()
 	origRefresh := GetProxyGeoRefreshInterval()
 	origCheckListeners := checkIntervalListeners
 	origScrapeListeners := scrapeIntervalListeners
+	origBlacklistListeners := blacklistIntervalListeners
 	origListeners := proxyGeoRefreshListeners
 
 	t.Cleanup(func() {
 		configValue.Store(origCfg)
 		timeBetweenChecks.Store(origChecks)
 		timeBetweenScrapes.Store(origScrapes)
+		blacklistRefreshInterval.Store(origBlacklist)
 		proxyGeoRefreshInterval.Store(origRefresh)
 		checkIntervalListeners = origCheckListeners
 		scrapeIntervalListeners = origScrapeListeners
+		blacklistIntervalListeners = origBlacklistListeners
 		proxyGeoRefreshListeners = origListeners
 	})
 
 	testCfg := Config{}
 	testCfg.Checker.CheckerTimer = Timer{Seconds: 10}
 	testCfg.Scraper.ScraperTimer = Timer{Minutes: 2}
+	testCfg.BlacklistTimer = Timer{Minutes: 30}
 	testCfg.Runtime.ProxyGeoRefreshTimer = Timer{Hours: 6}
 
 	configValue.Store(testCfg)
 	scrapeIntervalListeners = nil
+	blacklistIntervalListeners = nil
 	proxyGeoRefreshListeners = nil
 
 	SetBetweenTime()
@@ -63,6 +69,9 @@ func TestSetBetweenTime(t *testing.T) {
 	}
 	if got := GetTimeBetweenScrapes(); got != 2*time.Minute {
 		t.Fatalf("GetTimeBetweenScrapes returned %s, want 2m", got)
+	}
+	if got := GetBlacklistRefreshInterval(); got != 30*time.Minute {
+		t.Fatalf("GetBlacklistRefreshInterval returned %s, want 30m", got)
 	}
 	if got := GetProxyGeoRefreshInterval(); got != 6*time.Hour {
 		t.Fatalf("GetProxyGeoRefreshInterval returned %s, want 6h", got)
@@ -137,6 +146,43 @@ func TestScrapeIntervalUpdates(t *testing.T) {
 	}
 
 	setTimeBetweenScrapes(3 * time.Second)
+	select {
+	case <-ch:
+		t.Fatal("unexpected update when interval unchanged")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestBlacklistIntervalUpdates(t *testing.T) {
+	origInterval := GetBlacklistRefreshInterval()
+	origListeners := blacklistIntervalListeners
+
+	t.Cleanup(func() {
+		blacklistRefreshInterval.Store(origInterval)
+		blacklistIntervalListeners = origListeners
+	})
+
+	blacklistRefreshInterval.Store(time.Second)
+	blacklistIntervalListeners = nil
+
+	ch := BlacklistIntervalUpdates()
+	first := <-ch
+	if first != time.Second {
+		t.Fatalf("initial update = %s, want 1s", first)
+	}
+
+	setBlacklistRefreshInterval(5 * time.Second)
+
+	select {
+	case next := <-ch:
+		if next != 5*time.Second {
+			t.Fatalf("next update = %s, want 5s", next)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for interval update")
+	}
+
+	setBlacklistRefreshInterval(5 * time.Second)
 	select {
 	case <-ch:
 		t.Fatal("unexpected update when interval unchanged")

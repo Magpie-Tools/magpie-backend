@@ -8,6 +8,7 @@ import (
 	"io"
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
+	"magpie/internal/blacklist"
 	"magpie/internal/database"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"magpie/internal/support"
@@ -55,6 +56,10 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 	log.Infof("File content received: %d bytes", len(mergedContent))
 
 	proxyList := support.ParseTextToProxies(mergedContent)
+	proxyList, blocked := blacklist.FilterProxies(proxyList)
+	if len(blocked) > 0 {
+		log.Info("Dropped blacklisted proxies from upload", "count", len(blocked))
+	}
 
 	proxyList, err = database.InsertAndGetProxiesWithUser(proxyList, userID)
 	if err != nil {

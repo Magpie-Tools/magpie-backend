@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/log"
 
+	"magpie/internal/blacklist"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/geolite"
@@ -35,6 +36,10 @@ func Setup() {
 		log.Fatalf("failed to set up database: %v", err)
 	}
 	config.SetBetweenTime()
+
+	if err := blacklist.Initialize(context.Background()); err != nil {
+		log.Warn("Blacklist initialisation failed", "error", err)
+	}
 
 	judgeSetup()
 
@@ -108,6 +113,7 @@ func Setup() {
 	go jobruntime.StartProxyGeoRefreshRoutine(context.Background())
 	go maintenance.StartOrphanCleanupRoutine(context.Background())
 	go jobruntime.StartGeoLiteUpdateRoutine(context.Background())
+	go blacklist.StartRefreshRoutine(context.Background())
 	go checker.ThreadDispatcher()
 	go scraper.ManagePagePool()
 	go scraper.ThreadDispatcher()

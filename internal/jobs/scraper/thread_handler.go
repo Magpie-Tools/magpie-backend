@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"magpie/internal/blacklist"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -437,6 +438,11 @@ func isConnClosed(err error) bool {
 func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 	proxyList := support.GetProxiesOfHTML(rawHTML)
 	parsedProxies := support.ParseTextToProxiesStrictAuth(strings.Join(proxyList, "\n"))
+
+	parsedProxies, blocked := blacklist.FilterProxies(parsedProxies)
+	if len(blocked) > 0 {
+		log.Info("Skipped blacklisted scraped proxies", "count", len(blocked), "url", site.URL)
+	}
 
 	proxies, err := database.InsertAndGetProxiesWithUser(parsedProxies, support.GetUserIdsFromList(site.Users)...)
 	if err != nil {

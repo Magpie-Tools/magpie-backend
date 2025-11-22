@@ -7,6 +7,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/auth"
+	"magpie/internal/blacklist"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -141,6 +142,8 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	previousCfg := config.GetConfig()
+
 	var newConfig config.Config
 	if err := json.NewDecoder(r.Body).Decode(&newConfig); err != nil {
 		log.Error("Error decoding request body:", err)
@@ -152,6 +155,10 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 
 	if strings.TrimSpace(newConfig.GeoLite.APIKey) != "" {
 		go jobruntime.RunGeoLiteUpdate(context.Background(), "config-save", true)
+	}
+
+	if hasNewBlacklistSources(previousCfg.BlacklistSources, newConfig.BlacklistSources) {
+		go blacklist.RunRefresh(context.Background(), "config-save", true)
 	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"message": "Configuration updated successfully"})
@@ -255,4 +262,27 @@ func changePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode("Password changed successfully")
+}
+
+func hasNewBlacklistSources(oldSources, newSources []string) bool {
+	existing := make(map[string]struct{}, len(oldSources))
+	for _, src := range oldSources {
+		src = strings.TrimSpace(src)
+		if src == "" {
+			continue
+		}
+		existing[src] = struct{}{}
+	}
+
+	for _, src := range newSources {
+		src = strings.TrimSpace(src)
+		if src == "" {
+			continue
+		}
+		if _, ok := existing[src]; !ok {
+			return true
+		}
+	}
+
+	return false
 }
