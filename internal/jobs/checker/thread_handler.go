@@ -319,7 +319,7 @@ func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[ui
 		return nil, nil
 	}
 
-	reqCtx, cancel := context.WithTimeout(context.Background(), failureQueryTimeout)
+	reqCtx, cancel := context.WithTimeout(context.Background(), failureProcessingTimeout)
 	defer cancel()
 	removed, orphaned, err := processFailureEvents(reqCtx, proxy.ID, events)
 	if err != nil {

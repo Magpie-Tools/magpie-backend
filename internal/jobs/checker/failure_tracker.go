@@ -15,10 +15,11 @@ import (
 )
 
 const (
-	failureBatchWindow   = 50 * time.Millisecond
-	failureBatchMaxItems = 8192
-	failureSQLChunkSize  = 200
-	failureQueryTimeout  = 5 * time.Second
+	failureBatchWindow       = 50 * time.Millisecond
+	failureBatchMaxItems     = 8192
+	failureSQLChunkSize      = 200
+	failureQueryTimeout      = 5 * time.Second
+	failureProcessingTimeout = 10 * time.Second
 )
 
 type failureEvent struct {
