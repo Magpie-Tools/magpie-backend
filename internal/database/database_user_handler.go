@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/security"
 )
@@ -149,6 +150,11 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 		keepIDs := make([]uint, 0, len(settings.SimpleUserJudges))
 
 		for _, s := range settings.SimpleUserJudges {
+			if config.IsWebsiteBlocked(s.Url) {
+				log.Info("Skipped blocked judge for user", "user_id", userID, "url", s.Url)
+				continue
+			}
+
 			judge := domain.Judge{FullString: s.Url}
 			if err := tx.
 				Clauses(clause.OnConflict{DoNothing: true}).

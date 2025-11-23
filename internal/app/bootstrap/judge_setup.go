@@ -21,23 +21,35 @@ func AddDefaultJudgesToUsers() {
 	cfg := config.GetConfig()
 	users := database.GetUsersThatDontHaveJudges()
 
-	judgesWithRegex := make([]*domain.JudgeWithRegex, len(cfg.Checker.Judges))
-	judgeList := make([]*domain.Judge, len(cfg.Checker.Judges))
+	judgesWithRegex := make([]*domain.JudgeWithRegex, 0, len(cfg.Checker.Judges))
+	judgeList := make([]*domain.Judge, 0, len(cfg.Checker.Judges))
 
-	for i, judge := range cfg.Checker.Judges {
-		judgesWithRegex[i] = &domain.JudgeWithRegex{
+	for _, judge := range cfg.Checker.Judges {
+		if config.IsWebsiteBlocked(judge.URL) {
+			log.Info("Skipping default judge because website is blocked", "url", judge.URL)
+			continue
+		}
+
+		entry := &domain.JudgeWithRegex{
 			Judge: &domain.Judge{
 				FullString: judge.URL,
 			},
 			Regex: judge.Regex,
 		}
 
-		judgeList[i] = judgesWithRegex[i].Judge
-		err := judgesWithRegex[i].Judge.SetUp()
+		judgeList = append(judgeList, entry.Judge)
+		judgesWithRegex = append(judgesWithRegex, entry)
+
+		err := entry.Judge.SetUp()
 		if err != nil {
 			log.Error("Error setting up judge", "error", err)
 		}
-		judgesWithRegex[i].Judge.UpdateIp()
+		entry.Judge.UpdateIp()
+	}
+
+	if len(judgesWithRegex) == 0 {
+		log.Info("No default judges added; all entries were blocked or missing")
+		return
 	}
 
 	jwr := database.GetJudgesRegexFromString(judgeList) // Get ids
@@ -78,6 +90,10 @@ func addJudgeRelationsToCache() {
 	for _, userJudge := range userJudges {
 		for _, judge := range jwr {
 			if userJudge.JudgeID == judge.Judge.ID {
+				if config.IsWebsiteBlocked(judge.Judge.FullString) {
+					log.Info("Skipping cached judge because website is blocked", "url", judge.Judge.FullString, "user_id", userJudge.UserID)
+					continue
+				}
 				judges.AddUserJudge(userJudge.UserID, judge.Judge, judge.Regex)
 			}
 		}

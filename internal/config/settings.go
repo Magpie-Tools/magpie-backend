@@ -65,6 +65,8 @@ type Config struct {
 
 	BlacklistSources []string `json:"blacklist_sources"`
 	BlacklistTimer   Timer    `json:"blacklist_timer"`
+
+	WebsiteBlacklist []string `json:"website_blacklist"`
 }
 
 type judge struct {
@@ -181,8 +183,11 @@ func applyConfigUpdate(newConfig Config, opts configUpdateOptions) error {
 	configMu.Lock()
 	defer configMu.Unlock()
 
+	newConfig.WebsiteBlacklist = NormalizeWebsiteBlacklist(newConfig.WebsiteBlacklist)
+
 	configValue.Store(newConfig)
 	SetBetweenTime()
+	updateWebsiteBlocklist(newConfig.WebsiteBlacklist)
 
 	var errs []error
 

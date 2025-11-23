@@ -119,7 +119,25 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 	// Parse the merged content into a slice of sources
 	sources := support.ParseTextToSources(mergedContent)
 
-	sites, err := database.SaveScrapingSourcesOfUsers(userID, sources)
+	var allowedSources, blockedSources []string
+	for _, src := range sources {
+		if config.IsWebsiteBlocked(src) {
+			blockedSources = append(blockedSources, src)
+			continue
+		}
+		allowedSources = append(allowedSources, src)
+	}
+
+	if len(blockedSources) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":            "One or more scrape sources are blocked",
+			"blocked_sources":  dedupeStrings(blockedSources),
+			"websiteBlacklist": config.GetConfig().WebsiteBlacklist,
+		})
+		return
+	}
+
+	sites, err := database.SaveScrapingSourcesOfUsers(userID, allowedSources)
 	if err != nil {
 		log.Error("Could not save sources to database", "error", err.Error())
 		writeError(w, "Could not save sources to database", http.StatusInternalServerError)
@@ -148,6 +166,14 @@ func checkScrapeSourceRobots(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Missing url query parameter", http.StatusBadRequest)
 		return
 	}
+	if config.IsWebsiteBlocked(rawURL) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":            "This website is blocked",
+			"blocked_website":  rawURL,
+			"websiteBlacklist": config.GetConfig().WebsiteBlacklist,
+		})
+		return
+	}
 
 	result, err := scraper.CheckRobotsAllowance(rawURL, 10*time.Second)
 	if err != nil {
@@ -166,6 +192,25 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+
+	return out
 }
 
 func getRobotsRespectSetting(w http.ResponseWriter, r *http.Request) {

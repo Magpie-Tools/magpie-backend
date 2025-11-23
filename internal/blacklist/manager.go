@@ -443,6 +443,10 @@ func fetchBlacklist(ctx context.Context, source string) ([]string, []domain.Blac
 		ctx = context.Background()
 	}
 
+	if config.IsWebsiteBlocked(source) {
+		return nil, nil, fmt.Errorf("blacklist source blocked: %s", source)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build request: %w", err)

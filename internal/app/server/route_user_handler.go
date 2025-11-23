@@ -151,6 +151,38 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	newConfig.WebsiteBlacklist = config.NormalizeWebsiteBlacklist(newConfig.WebsiteBlacklist)
+	blockedSet := config.NewWebsiteBlocklistSet(newConfig.WebsiteBlacklist)
+
+	blocked := make(map[string][]string)
+	judgeURLs := make([]string, 0, len(newConfig.Checker.Judges))
+	for _, j := range newConfig.Checker.Judges {
+		if strings.TrimSpace(j.URL) != "" {
+			judgeURLs = append(judgeURLs, j.URL)
+		}
+	}
+	if blockedJudges := config.FindBlockedURLs(judgeURLs, blockedSet); len(blockedJudges) > 0 {
+		blocked["judges"] = dedupe(blockedJudges)
+	}
+	if blockedScrape := config.FindBlockedURLs(newConfig.Scraper.ScrapeSites, blockedSet); len(blockedScrape) > 0 {
+		blocked["scrape_sites"] = dedupe(blockedScrape)
+	}
+	if blockedSources := config.FindBlockedURLs(newConfig.BlacklistSources, blockedSet); len(blockedSources) > 0 {
+		blocked["blacklist_sources"] = dedupe(blockedSources)
+	}
+	if blockedLookup := config.FindBlockedURLs([]string{newConfig.Checker.IpLookup}, blockedSet); len(blockedLookup) > 0 {
+		blocked["ip_lookup"] = dedupe(blockedLookup)
+	}
+
+	if len(blocked) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":             "One or more URLs are blocked by website blacklist",
+			"blocked_websites":  blocked,
+			"website_blacklist": newConfig.WebsiteBlacklist,
+		})
+		return
+	}
+
 	config.SetConfig(newConfig)
 
 	if strings.TrimSpace(newConfig.GeoLite.APIKey) != "" {
@@ -188,6 +220,21 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	var userSettings dto.UserSettings
 	if err := json.NewDecoder(r.Body).Decode(&userSettings); err != nil {
 		writeError(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	var blocked []string
+	for _, judge := range userSettings.SimpleUserJudges {
+		if config.IsWebsiteBlocked(judge.Url) {
+			blocked = append(blocked, judge.Url)
+		}
+	}
+
+	if len(blocked) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":            "One or more judges point to blocked websites",
+			"blocked_websites": dedupe(blocked),
+		})
 		return
 	}
 
@@ -285,4 +332,21 @@ func hasNewBlacklistSources(oldSources, newSources []string) bool {
 	}
 
 	return false
+}
+
+func dedupe(values []string) []string {
+	unique := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := unique[v]; ok {
+			continue
+		}
+		unique[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }

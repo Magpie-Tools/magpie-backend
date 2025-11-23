@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/log"
 	"magpie/internal/api/dto"
+	"magpie/internal/config"
 	"magpie/internal/support"
 
 	"gorm.io/gorm"
@@ -54,6 +56,10 @@ func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeS
 		for _, raw := range sources {
 			trimmed := strings.TrimSpace(raw)
 			if trimmed == "" || !support.IsValidURL(trimmed) {
+				continue
+			}
+			if config.IsWebsiteBlocked(trimmed) {
+				log.Info("Skipped blocked scrape source", "url", trimmed)
 				continue
 			}
 			if _, ok := existing[trimmed]; ok {

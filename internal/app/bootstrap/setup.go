@@ -9,6 +9,7 @@ import (
 	"magpie/internal/blacklist"
 	"magpie/internal/config"
 	"magpie/internal/database"
+	"magpie/internal/domain"
 	"magpie/internal/geolite"
 	"magpie/internal/jobs/checker"
 	"magpie/internal/jobs/checker/judges"
@@ -98,8 +99,24 @@ func Setup() {
 	if err != nil {
 		log.Error("Error getting all scrape sites:", "error", err)
 	} else {
-		sitequeue.PublicScrapeSiteQueue.AddToQueue(scrapeSites)
-		log.Infof("Added %d scrape sites to queue", len(scrapeSites))
+		filtered := make([]domain.ScrapeSite, 0, len(scrapeSites))
+		blocked := 0
+		for _, site := range scrapeSites {
+			if config.IsWebsiteBlocked(site.URL) {
+				blocked++
+				continue
+			}
+			filtered = append(filtered, site)
+		}
+
+		if blocked > 0 {
+			log.Info("Skipped blocked scrape sites", "count", blocked)
+		}
+
+		if len(filtered) > 0 {
+			sitequeue.PublicScrapeSiteQueue.AddToQueue(filtered)
+			log.Infof("Added %d scrape sites to queue", len(filtered))
+		}
 	}
 
 	rotatingproxy.GlobalManager.StartAll()

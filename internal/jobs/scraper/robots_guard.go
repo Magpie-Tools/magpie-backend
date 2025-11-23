@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"fmt"
+	"magpie/internal/config"
 	"net/http"
 	"net/url"
 	"sync"
@@ -33,6 +34,10 @@ type RobotsCheckResult struct {
 }
 
 func CheckRobotsAllowance(targetURL string, timeout time.Duration) (RobotsCheckResult, error) {
+	if config.IsWebsiteBlocked(targetURL) {
+		return RobotsCheckResult{Allowed: false}, fmt.Errorf("website is blocked: %s", targetURL)
+	}
+
 	parsed, err := url.Parse(targetURL)
 	if err != nil {
 		return RobotsCheckResult{Allowed: true}, fmt.Errorf("parse robots target: %w", err)

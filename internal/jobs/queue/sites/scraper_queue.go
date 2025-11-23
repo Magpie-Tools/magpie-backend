@@ -60,13 +60,29 @@ func NewRedisScrapeSiteQueue(client *redis.Client) *RedisScrapeSiteQueue {
 }
 
 func (rssq *RedisScrapeSiteQueue) AddToQueue(sites []domain.ScrapeSite) error {
+	filtered := make([]domain.ScrapeSite, 0, len(sites))
+	for _, site := range sites {
+		if site.URL == "" {
+			continue
+		}
+		if config.IsWebsiteBlocked(site.URL) {
+			log.Info("Skipping blocked scrape site when queuing", "url", site.URL)
+			continue
+		}
+		filtered = append(filtered, site)
+	}
+
+	if len(filtered) == 0 {
+		return nil
+	}
+
 	pipe := rssq.client.Pipeline()
 	interval := config.GetTimeBetweenScrapes()
 	now := time.Now()
-	sitesLenDuration := time.Duration(len(sites))
+	sitesLenDuration := time.Duration(len(filtered))
 	batchSize := 50
 
-	for i, site := range sites {
+	for i, site := range filtered {
 		offset := (interval * time.Duration(i)) / sitesLenDuration
 		nextCheck := now.Add(offset)
 		proxyKey := scrapesiteKeyPrefix + site.URL

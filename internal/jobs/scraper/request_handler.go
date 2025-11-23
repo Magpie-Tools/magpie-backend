@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"magpie/internal/config"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,6 +28,10 @@ signals from managePagePool). This keeps the request code tiny while
 all pool housekeeping lives in thread_handler.go.
 */
 func ScraperRequest(url string, timeout time.Duration) (string, error) {
+	if config.IsWebsiteBlocked(url) {
+		return "", fmt.Errorf("scrape blocked by website blacklist: %s", url)
+	}
+
 	// 1) acquire a page with timeout
 	var basePage *rod.Page
 	select {
@@ -274,6 +279,10 @@ func fetchDirect(url string, timeout time.Duration) (string, error) {
 	limit := 30 * time.Second
 	if timeout > 0 {
 		limit = timeout
+	}
+
+	if config.IsWebsiteBlocked(url) {
+		return "", fmt.Errorf("direct fetch blocked by website blacklist: %s", url)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), limit)

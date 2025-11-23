@@ -114,6 +114,11 @@ func scrapeWorker() {
 		timeout := time.Duration(cfg.Scraper.Timeout) * time.Millisecond
 
 		skipScrape := false
+		if config.IsWebsiteBlocked(site.URL) {
+			log.Info("Skipping blocked scrape site", "url", site.URL)
+			_ = sitequeue.PublicScrapeSiteQueue.RemoveFromQueue([]domain.ScrapeSite{site})
+			continue
+		}
 		if cfg.Scraper.RespectRobots {
 			result, robotsErr := CheckRobotsAllowance(site.URL, timeout)
 			if robotsErr != nil {

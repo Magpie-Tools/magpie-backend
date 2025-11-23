@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"fmt"
 	"io"
 	"magpie/internal/config"
 	"magpie/internal/domain"
@@ -13,6 +14,10 @@ import (
 
 // ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
 func ProxyCheckRequest(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, timeout uint16) (string, error) {
+	if judge != nil && config.IsWebsiteBlocked(judge.FullString) {
+		return "Blocked judge website", fmt.Errorf("judge website is blocked: %s", judge.FullString)
+	}
+
 	transport, err := support.CreateTransport(proxyToCheck, judge, protocol)
 	if err != nil {
 		return "Failed to create transport", err
@@ -70,6 +75,10 @@ func CheckForValidResponse(html string, regex string) bool {
 }
 
 func DefaultRequest(siteName string) (string, error) {
+	if config.IsWebsiteBlocked(siteName) {
+		return "", fmt.Errorf("target website is blocked: %s", siteName)
+	}
+
 	response, err := http.Get(siteName)
 	if err != nil {
 		return "", err

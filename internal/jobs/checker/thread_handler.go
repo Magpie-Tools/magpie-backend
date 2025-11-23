@@ -235,6 +235,10 @@ func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment,
 			requestProtocol := determineRequestProtocol(protocol, protocolID, user.UseHttpsForSocks)
 
 			nextJudge, regex := judges.GetNextJudge(user.ID, requestProtocol)
+			if nextJudge == nil || config.IsWebsiteBlocked(nextJudge.FullString) {
+				log.Debug("Skipping blocked or missing judge for request assignment", "user_id", user.ID, "protocol", requestProtocol)
+				continue
+			}
 			judgeKey := strconv.Itoa(int(nextJudge.ID)) + "_" + requestProtocol
 
 			assignment, found := judgeRequests[judgeKey]
