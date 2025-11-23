@@ -18,6 +18,7 @@ type Proxy struct {
 	IP          string `gorm:"-" json:"ip"`
 	IPEncrypted string `gorm:"column:ip;default:'';index:idx_proxy_addr,priority:1" json:"-"`
 	IPHash      []byte `gorm:"column:ip_hash;type:bytea;index"`
+	IPInt       uint32 `gorm:"column:ip_int;index"`
 	Port        uint16 `gorm:"not null;index:idx_proxy_addr,priority:2"`
 	Username    string `gorm:"default:''"`
 	Password    string `gorm:"-" json:"password"`
@@ -53,6 +54,9 @@ func (proxy *Proxy) BeforeSave(_ *gorm.DB) error {
 	if len(proxy.IPHash) == 0 && proxy.IP != "" {
 		proxy.setIPHash()
 	}
+	if proxy.IP != "" && proxy.IPInt == 0 {
+		proxy.setIPInt()
+	}
 
 	if proxy.IP == "" {
 		proxy.IPEncrypted = ""
@@ -87,6 +91,9 @@ func (proxy *Proxy) AfterFind(_ *gorm.DB) error {
 	if len(proxy.IPHash) == 0 && proxy.IP != "" {
 		proxy.setIPHash()
 	}
+	if proxy.IP != "" && proxy.IPInt == 0 {
+		proxy.setIPInt()
+	}
 
 	plain, _, err := security.DecryptProxySecret(proxy.PasswordEncrypted)
 	if err != nil {
@@ -119,6 +126,24 @@ func (proxy *Proxy) setIPHash() {
 
 	ipHash := sha256.Sum256([]byte(proxy.GetIp()))
 	proxy.IPHash = ipHash[:]
+}
+
+func (proxy *Proxy) setIPInt() {
+	if proxy.IP == "" {
+		proxy.IPInt = 0
+		return
+	}
+	parsed := net.ParseIP(proxy.IP)
+	if parsed == nil {
+		proxy.IPInt = 0
+		return
+	}
+	ip := parsed.To4()
+	if ip == nil {
+		proxy.IPInt = 0
+		return
+	}
+	proxy.IPInt = uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
 }
 
 func (proxy *Proxy) SetIP(ip string) error {

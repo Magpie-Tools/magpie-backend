@@ -177,7 +177,7 @@ func clamp(value, min, max int) int {
 func insertProxies(tx *gorm.DB, proxies []domain.Proxy, batchSize int) error {
 	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "hash"}},
-		DoUpdates: clause.AssignmentColumns([]string{"hash", "ip_hash"}), // To get the ids from duplicates
+		DoUpdates: clause.AssignmentColumns([]string{"hash", "ip_hash", "ip_int"}), // To get the ids from duplicates
 	}).CreateInBatches(proxies, batchSize).Error
 }
 

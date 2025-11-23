@@ -113,6 +113,7 @@ func defaultMigrations() []any {
 		domain.User{},
 		domain.Proxy{},
 		domain.BlacklistedIP{},
+		domain.BlacklistedRange{},
 		domain.ProxyReputation{},
 		domain.UserProxy{},
 		domain.RotatingProxy{},

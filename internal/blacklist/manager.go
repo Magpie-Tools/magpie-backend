@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -28,11 +29,12 @@ const (
 	maxResponseBytes       = 10 << 20 // 10 MiB safety cap
 	refreshLockKey         = "magpie:leader:blacklist_refresh"
 	defaultRefreshInterval = 6 * time.Hour
-	maxCIDRAddresses       = 1 << 16 // guardrail to prevent runaway expansion
+	maxCIDRAddresses       = 1 << 16 // guardrail to prevent runaway expansion when requested
 )
 
 var (
 	cache       atomicMap
+	rangeCache  atomicRangeList
 	refreshOnce singleflight.Group
 	httpClient  = &http.Client{Timeout: 30 * time.Second}
 	ipRegex     = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b`)
@@ -56,25 +58,46 @@ func (a *atomicMap) Store(m map[string]struct{}) {
 	a.val.Store(m)
 }
 
+type atomicRangeList struct {
+	val atomic.Value
+}
+
+func (a *atomicRangeList) Load() []domain.BlacklistedRange {
+	raw, ok := a.val.Load().([]domain.BlacklistedRange)
+	if !ok || raw == nil {
+		empty := make([]domain.BlacklistedRange, 0)
+		a.val.Store(empty)
+		return empty
+	}
+	return raw
+}
+
+func (a *atomicRangeList) Store(r []domain.BlacklistedRange) {
+	a.val.Store(r)
+}
+
 type RefreshOutcome struct {
 	Sources          int
 	TotalFromSources int
 	NewIPs           int
+	NewRanges        int
 	TotalCachedIPs   int
+	TotalRanges      int
 	RelationsRemoved int64
 	OrphanedProxies  []domain.Proxy
 }
 
 func init() {
 	cache.Store(make(map[string]struct{}))
+	rangeCache.Store(nil)
 }
 
 // Initialize hydrates the in-memory blacklist cache and backfills missing proxy hashes.
 func Initialize(ctx context.Context) error {
-	if updated, err := database.BackfillProxyIPHashes(ctx); err != nil {
-		return fmt.Errorf("backfill proxy ip hashes: %w", err)
-	} else if updated > 0 {
-		log.Info("Backfilled proxy IP hashes", "count", updated)
+	if hashUpdated, intUpdated, err := database.BackfillProxyIPMetadata(ctx); err != nil {
+		return fmt.Errorf("backfill proxy ip metadata: %w", err)
+	} else if hashUpdated > 0 || intUpdated > 0 {
+		log.Info("Backfilled proxy IP metadata", "hash_count", hashUpdated, "int_count", intUpdated)
 	}
 	return LoadCache(ctx)
 }
@@ -86,6 +109,17 @@ func LoadCache(ctx context.Context) error {
 		return err
 	}
 	cache.Store(toSet(ips))
+	ranges, err := database.ListBlacklistedRanges(ctx)
+	if err != nil {
+		return err
+	}
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].StartIP == ranges[j].StartIP {
+			return ranges[i].EndIP < ranges[j].EndIP
+		}
+		return ranges[i].StartIP < ranges[j].StartIP
+	})
+	rangeCache.Store(ranges)
 	return nil
 }
 
@@ -122,6 +156,7 @@ func FilterProxies(proxies []domain.Proxy) (allowed []domain.Proxy, blocked []do
 	}
 
 	set := cache.Load()
+	ranges := rangeCache.Load()
 	allowed = make([]domain.Proxy, 0, len(proxies))
 
 	for _, proxy := range proxies {
@@ -130,6 +165,10 @@ func FilterProxies(proxies []domain.Proxy) (allowed []domain.Proxy, blocked []do
 			continue
 		}
 		if _, found := set[ip]; found {
+			blocked = append(blocked, proxy)
+			continue
+		}
+		if inRange(ip, ranges) {
 			blocked = append(blocked, proxy)
 			continue
 		}
@@ -278,6 +317,7 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 	sources := append([]string(nil), cfg.BlacklistSources...)
 
 	before := cloneSet(cache.Load())
+	beforeRanges := rangeCache.Load()
 
 	if len(sources) == 0 {
 		if err := LoadCache(ctx); err != nil {
@@ -290,10 +330,13 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 		}, nil
 	}
 
-	var totalFromSources int
+	var (
+		totalFromSources int
+		totalRanges      int
+	)
 
 	for _, src := range sources {
-		ips, fetchErr := fetchBlacklist(ctx, src)
+		ips, ranges, fetchErr := fetchBlacklist(ctx, src)
 		if fetchErr != nil {
 			if errors.Is(fetchErr, context.Canceled) {
 				return nil, fetchErr
@@ -303,9 +346,13 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 		}
 
 		totalFromSources += len(ips)
+		totalRanges += len(ranges)
 
 		if _, err := database.UpsertBlacklistedIPs(ctx, src, ips); err != nil {
 			log.Error("Persisting blacklist entries failed", "source", src, "error", err)
+		}
+		if _, err := database.UpsertBlacklistedRanges(ctx, src, ranges); err != nil {
+			log.Error("Persisting blacklist ranges failed", "source", src, "error", err)
 		}
 	}
 
@@ -314,26 +361,38 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 	}
 
 	current := cache.Load()
+	currentRanges := rangeCache.Load()
 	newIPs := diffSets(current, before)
+	newRanges := diffRanges(currentRanges, beforeRanges)
 
 	var (
 		removed int64
 		orphans []domain.Proxy
 	)
 
-	if len(newIPs) > 0 || force {
+	if len(newIPs) > 0 || len(newRanges) > 0 || force {
 		var err error
 		removed, orphans, err = database.RemoveProxiesByIPs(ctx, newIPs)
 		if err != nil {
 			return nil, err
 		}
+		var rangeRemoved int64
+		var rangeOrphans []domain.Proxy
+		rangeRemoved, rangeOrphans, err = database.RemoveProxiesByRanges(ctx, newRanges)
+		if err != nil {
+			return nil, err
+		}
+		removed += rangeRemoved
+		orphans = append(orphans, rangeOrphans...)
 	}
 
 	return &RefreshOutcome{
 		Sources:          len(sources),
 		TotalFromSources: totalFromSources,
 		NewIPs:           len(newIPs),
+		NewRanges:        len(newRanges),
 		TotalCachedIPs:   len(current),
+		TotalRanges:      len(currentRanges),
 		RelationsRemoved: removed,
 		OrphanedProxies:  orphans,
 	}, nil
@@ -353,49 +412,81 @@ func diffSets(after, before map[string]struct{}) []string {
 	return added
 }
 
-func fetchBlacklist(ctx context.Context, source string) ([]string, error) {
+func diffRanges(after, before []domain.BlacklistedRange) []domain.BlacklistedRange {
+	if len(after) == 0 {
+		return nil
+	}
+
+	type key struct {
+		start uint32
+		end   uint32
+	}
+	beforeSet := make(map[key]struct{}, len(before))
+	for _, r := range before {
+		beforeSet[key{start: r.StartIP, end: r.EndIP}] = struct{}{}
+	}
+
+	added := make([]domain.BlacklistedRange, 0, len(after))
+	for _, r := range after {
+		k := key{start: r.StartIP, end: r.EndIP}
+		if _, found := beforeSet[k]; found {
+			continue
+		}
+		added = append(added, r)
+	}
+
+	return added
+}
+
+func fetchBlacklist(ctx context.Context, source string) ([]string, []domain.BlacklistedRange, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, nil, fmt.Errorf("build request: %w", err)
 	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("execute request: %w", err)
+		return nil, nil, fmt.Errorf("execute request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	limited := io.LimitReader(resp.Body, maxResponseBytes)
 	content, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, nil, fmt.Errorf("read response: %w", err)
 	}
 
-	return parseIPs(content), nil
+	ips, ranges := parseIPs(content)
+	return ips, ranges, nil
 }
 
-func parseIPs(payload []byte) []string {
+func parseIPs(payload []byte) ([]string, []domain.BlacklistedRange) {
 	scanner := bufio.NewScanner(bytes.NewReader(payload))
 	scanner.Buffer(make([]byte, 1024), 1024*1024)
 
 	seen := make(map[string]struct{})
+	var ranges []domain.BlacklistedRange
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		matches := ipRegex.FindAll(line, -1)
 		for _, match := range matches {
-			candidates := expandCIDROrIP(string(match))
-			for _, ip := range candidates {
+			ipStr := string(match)
+			cidrs, ips := parseCIDROrIP(ipStr)
+			for _, ip := range ips {
 				seen[ip] = struct{}{}
+			}
+			if len(cidrs) > 0 {
+				ranges = append(ranges, cidrs...)
 			}
 		}
 	}
@@ -408,7 +499,7 @@ func parseIPs(payload []byte) []string {
 	for ip := range seen {
 		out = append(out, ip)
 	}
-	return out
+	return out, ranges
 }
 
 func normalizeIPv4(raw string) string {
@@ -423,45 +514,48 @@ func normalizeIPv4(raw string) string {
 	return v4.String()
 }
 
-func expandCIDROrIP(raw string) []string {
+func parseCIDROrIP(raw string) ([]domain.BlacklistedRange, []string) {
 	if !strings.Contains(raw, "/") {
 		ip := normalizeIPv4(raw)
 		if ip == "" {
-			return nil
+			return nil, nil
 		}
-		return []string{ip}
+		return nil, []string{ip}
 	}
 
 	_, ipnet, err := net.ParseCIDR(raw)
 	if err != nil || ipnet == nil {
-		return nil
+		return nil, nil
 	}
 
 	base := ipnet.IP.To4()
 	if base == nil {
-		return nil
+		return nil, nil
 	}
 
 	ones, bits := ipnet.Mask.Size()
 	if bits != 32 || ones < 0 || ones > 32 {
-		return nil
+		return nil, nil
 	}
 
 	hostCount := 1 << (bits - ones)
+	start := ipToUint32(base)
+	lastIP := start + uint32(hostCount) - 1
+
 	if hostCount > maxCIDRAddresses {
-		log.Warn("Skipping CIDR expansion: too many addresses", "cidr", raw, "count", hostCount)
-		return nil
+		log.Info("Storing CIDR as range without expansion", "cidr", raw, "count", hostCount)
+		return []domain.BlacklistedRange{{
+			StartIP: start,
+			EndIP:   lastIP,
+		}}, nil
 	}
 
-	baseInt := ipToUint32(base)
 	ips := make([]string, 0, hostCount)
 	for i := 0; i < hostCount; i++ {
-		ip := uint32ToIP(baseInt + uint32(i))
-		if ipnet.Contains(ip) {
-			ips = append(ips, ip.String())
-		}
+		ip := uint32ToIP(start + uint32(i))
+		ips = append(ips, ip.String())
 	}
-	return ips
+	return nil, ips
 }
 
 func ipToUint32(ip net.IP) uint32 {
@@ -474,4 +568,27 @@ func ipToUint32(ip net.IP) uint32 {
 
 func uint32ToIP(i uint32) net.IP {
 	return net.IPv4(byte(i>>24), byte(i>>16), byte(i>>8), byte(i))
+}
+
+func inRange(ip string, ranges []domain.BlacklistedRange) bool {
+	if len(ranges) == 0 {
+		return false
+	}
+
+	u := ipToUint32(net.ParseIP(ip))
+
+	lo, hi := 0, len(ranges)
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if u < ranges[mid].StartIP {
+			hi = mid
+			continue
+		}
+		if u > ranges[mid].EndIP {
+			lo = mid + 1
+			continue
+		}
+		return true
+	}
+	return false
 }
