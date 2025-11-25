@@ -11,6 +11,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+	"sync/atomic"
 )
 
 var (
@@ -28,6 +29,24 @@ type Config struct {
 
 type Option func(*Config)
 
+var currentDSN atomic.Value
+
+func setDSN(dsn string) {
+	if dsn == "" {
+		return
+	}
+	currentDSN.Store(dsn)
+}
+
+func getDSN() string {
+	if raw := currentDSN.Load(); raw != nil {
+		if dsn, ok := raw.(string); ok {
+			return dsn
+		}
+	}
+	return ""
+}
+
 func SetupDB(opts ...Option) (*gorm.DB, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -38,6 +57,9 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 	case cfg.ExistingDB != nil:
 		DB = cfg.ExistingDB
 	case cfg.Dialector != nil:
+		if dsn := buildDSN(); dsn != "" {
+			setDSN(dsn)
+		}
 		gormCfg := &gorm.Config{}
 		if cfg.Logger != nil {
 			gormCfg.Logger = cfg.Logger
@@ -73,10 +95,28 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 		log.Error("Failed to ensure proxy reputation schema", "error", err)
 	}
 
+	if err := ensureBlacklistSchema(DB); err != nil {
+		log.Error("Failed to ensure blacklist schema", "error", err)
+	}
+
 	return DB, nil
 }
 
 func defaultConfig() Config {
+	dsn := buildDSN()
+
+	setDSN(dsn)
+
+	return Config{
+		Dialector:    postgres.Open(dsn),
+		Logger:       silentLogger(),
+		AutoMigrate:  true,
+		Migrations:   defaultMigrations(),
+		SeedDefaults: true,
+	}
+}
+
+func buildDSN() string {
 	dbHost := support.GetEnv("DB_HOST", "localhost")
 	dbPort := support.GetEnv("DB_PORT", "5434")
 	dbName := support.GetEnv("DB_NAME", "magpie")
@@ -92,13 +132,7 @@ func defaultConfig() Config {
 		dbName,
 	)
 
-	return Config{
-		Dialector:    postgres.Open(dsn),
-		Logger:       silentLogger(),
-		AutoMigrate:  true,
-		Migrations:   defaultMigrations(),
-		SeedDefaults: true,
-	}
+	return dsn
 }
 
 func silentLogger() logger.Interface {
@@ -257,4 +291,36 @@ func ensureProtocols(db *gorm.DB) error {
 	}
 
 	return db.Create(&protocols).Error
+}
+
+func ensureBlacklistSchema(db *gorm.DB) error {
+	if db == nil {
+		return fmt.Errorf("nil database connection")
+	}
+
+	stmts := []string{
+		`ALTER TABLE IF EXISTS blacklisted_ips ALTER COLUMN ip TYPE inet USING ip::inet`,
+		`ALTER TABLE IF EXISTS blacklisted_ips DROP COLUMN IF EXISTS first_seen_at`,
+		`ALTER TABLE IF EXISTS blacklisted_ips DROP COLUMN IF EXISTS last_seen_at`,
+		`ALTER TABLE IF EXISTS blacklisted_ips SET UNLOGGED`,
+		`CREATE INDEX IF NOT EXISTS idx_blacklisted_ips_gist ON blacklisted_ips USING gist (ip inet_ops)`,
+		`ALTER TABLE IF EXISTS blacklisted_ranges ADD COLUMN IF NOT EXISTS cidr cidr`,
+		`ALTER TABLE IF EXISTS blacklisted_ranges ALTER COLUMN cidr DROP NOT NULL`,
+		`ALTER TABLE IF EXISTS blacklisted_ranges DROP COLUMN IF EXISTS start_ip`,
+		`ALTER TABLE IF EXISTS blacklisted_ranges DROP COLUMN IF EXISTS end_ip`,
+		`ALTER TABLE IF EXISTS blacklisted_ranges DROP COLUMN IF EXISTS first_seen_at`,
+		`ALTER TABLE IF EXISTS blacklisted_ranges DROP COLUMN IF EXISTS last_seen_at`,
+		`ALTER TABLE IF EXISTS blacklisted_ranges SET UNLOGGED`,
+		`DROP INDEX IF EXISTS idx_blacklisted_ranges_cidr`,
+		`CREATE INDEX IF NOT EXISTS idx_blacklisted_ranges_cidr_gist ON blacklisted_ranges USING gist (cidr inet_ops)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_blacklisted_ranges_cidr_btree ON blacklisted_ranges (cidr)`,
+	}
+
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			return fmt.Errorf("blacklist schema: %w", err)
+		}
+	}
+
+	return nil
 }

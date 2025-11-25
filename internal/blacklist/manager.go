@@ -29,7 +29,6 @@ const (
 	maxResponseBytes       = 10 << 20 // 10 MiB safety cap
 	refreshLockKey         = "magpie:leader:blacklist_refresh"
 	defaultRefreshInterval = 6 * time.Hour
-	maxCIDRAddresses       = 1 << 16 // guardrail to prevent runaway expansion when requested
 )
 
 var (
@@ -333,6 +332,8 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 	var (
 		totalFromSources int
 		totalRanges      int
+		allIPs           []domain.BlacklistedIP
+		allRanges        []domain.BlacklistedRange
 	)
 
 	for _, src := range sources {
@@ -348,12 +349,17 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 		totalFromSources += len(ips)
 		totalRanges += len(ranges)
 
-		if _, err := database.UpsertBlacklistedIPs(ctx, src, ips); err != nil {
-			log.Error("Persisting blacklist entries failed", "source", src, "error", err)
+		for _, ip := range ips {
+			allIPs = append(allIPs, domain.BlacklistedIP{IP: ip, Source: src})
 		}
-		if _, err := database.UpsertBlacklistedRanges(ctx, src, ranges); err != nil {
-			log.Error("Persisting blacklist ranges failed", "source", src, "error", err)
+		for _, r := range ranges {
+			r.Source = src
+			allRanges = append(allRanges, r)
 		}
+	}
+
+	if _, _, err := database.ReplaceBlacklistData(ctx, allIPs, allRanges); err != nil {
+		return nil, err
 	}
 
 	if err := LoadCache(ctx); err != nil {
@@ -542,24 +548,15 @@ func parseCIDROrIP(raw string) ([]domain.BlacklistedRange, []string) {
 		return nil, nil
 	}
 
-	hostCount := 1 << (bits - ones)
-	start := ipToUint32(base)
-	lastIP := start + uint32(hostCount) - 1
+	start := ipToUint32(base.Mask(ipnet.Mask))
+	hostCount := uint32(1) << uint32(bits-ones)
+	lastIP := start + hostCount - 1
 
-	if hostCount > maxCIDRAddresses {
-		log.Info("Storing CIDR as range without expansion", "cidr", raw, "count", hostCount)
-		return []domain.BlacklistedRange{{
-			StartIP: start,
-			EndIP:   lastIP,
-		}}, nil
-	}
-
-	ips := make([]string, 0, hostCount)
-	for i := 0; i < hostCount; i++ {
-		ip := uint32ToIP(start + uint32(i))
-		ips = append(ips, ip.String())
-	}
-	return nil, ips
+	return []domain.BlacklistedRange{{
+		CIDR:    ipnet.String(),
+		StartIP: start,
+		EndIP:   lastIP,
+	}}, nil
 }
 
 func ipToUint32(ip net.IP) uint32 {
@@ -568,10 +565,6 @@ func ipToUint32(ip net.IP) uint32 {
 		return 0
 	}
 	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
-}
-
-func uint32ToIP(i uint32) net.IP {
-	return net.IPv4(byte(i>>24), byte(i>>16), byte(i>>8), byte(i))
 }
 
 func inRange(ip string, ranges []domain.BlacklistedRange) bool {

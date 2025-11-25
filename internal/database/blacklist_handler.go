@@ -4,19 +4,28 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
+	"math/bits"
 	"net"
+	"net/netip"
 	"sort"
-	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const (
 	blacklistInsertBatchSize = 500
 )
+
+type cidrSpan struct {
+	start  uint32
+	end    uint32
+	source string
+}
 
 // ListBlacklistedIPs returns all stored blacklist entries as plain IPv4 strings.
 func ListBlacklistedIPs(ctx context.Context) ([]string, error) {
@@ -47,91 +56,221 @@ func ListBlacklistedRanges(ctx context.Context) ([]domain.BlacklistedRange, erro
 		db = db.WithContext(ctx)
 	}
 
-	var ranges []domain.BlacklistedRange
-	if err := db.Order("start_ip ASC").Find(&ranges).Error; err != nil {
+	var rows []struct {
+		ID     uint64
+		CIDR   string
+		Source string
+	}
+	if err := db.Table("blacklisted_ranges").Select("id, cidr, source").Order("cidr ASC").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	return ranges, nil
-}
 
-// UpsertBlacklistedIPs stores (or refreshes) the provided IPs for the given source.
-// IPs are normalised and deduplicated before being persisted.
-func UpsertBlacklistedIPs(ctx context.Context, source string, ips []string) (int, error) {
-	if DB == nil {
-		return 0, errors.New("database not initialised")
-	}
-
-	normalized := normalizeIPList(ips)
-	if len(normalized) == 0 {
-		return 0, nil
-	}
-
-	now := time.Now().UTC()
-	records := make([]domain.BlacklistedIP, 0, len(normalized))
-	for _, ip := range normalized {
-		records = append(records, domain.BlacklistedIP{
-			IP:         ip,
-			Source:     source,
-			LastSeenAt: now,
+	ranges := make([]domain.BlacklistedRange, 0, len(rows))
+	for _, row := range rows {
+		start, end, err := cidrBounds(row.CIDR)
+		if err != nil {
+			continue
+		}
+		ranges = append(ranges, domain.BlacklistedRange{
+			ID:      row.ID,
+			CIDR:    row.CIDR,
+			Source:  row.Source,
+			StartIP: start,
+			EndIP:   end,
 		})
 	}
 
-	db := DB
-	if ctx != nil {
-		db = db.WithContext(ctx)
-	}
-
-	err := db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "ip"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"source":       gorm.Expr("EXCLUDED.source"),
-			"last_seen_at": gorm.Expr("EXCLUDED.last_seen_at"),
-		}),
-	}).CreateInBatches(&records, blacklistInsertBatchSize).Error
-	if err != nil {
-		return 0, err
-	}
-
-	return len(normalized), nil
+	return ranges, nil
 }
 
-// UpsertBlacklistedRanges stores or refreshes start/end pairs for a source.
-func UpsertBlacklistedRanges(ctx context.Context, source string, ranges []domain.BlacklistedRange) (int, error) {
+// ReplaceBlacklistData truncates and bulk-loads blacklist entries using COPY (or a batch fallback).
+func ReplaceBlacklistData(ctx context.Context, ips []domain.BlacklistedIP, ranges []domain.BlacklistedRange) (int, int, error) {
 	if DB == nil {
-		return 0, errors.New("database not initialised")
-	}
-	if len(ranges) == 0 {
-		return 0, nil
+		return 0, 0, errors.New("database not initialised")
 	}
 
-	now := time.Now().UTC()
-	for i := range ranges {
-		ranges[i].Source = source
-		ranges[i].LastSeenAt = now
-		if ranges[i].FirstSeenAt.IsZero() {
-			ranges[i].FirstSeenAt = now
+	cleanIPs := dedupeIPs(ips)
+	cleanRanges := dedupeRanges(ranges)
+
+	if len(cleanIPs) == 0 && len(cleanRanges) == 0 {
+		// Still clear existing entries to align with "replace" semantics.
+		db := DB
+		if ctx != nil {
+			db = db.WithContext(ctx)
 		}
-		if ranges[i].StartIP > ranges[i].EndIP {
-			ranges[i].StartIP, ranges[i].EndIP = ranges[i].EndIP, ranges[i].StartIP
+		if err := db.Exec("TRUNCATE TABLE blacklisted_ips, blacklisted_ranges RESTART IDENTITY").Error; err != nil {
+			return 0, 0, err
+		}
+		return 0, 0, nil
+	}
+
+	if dsn := getDSN(); dsn != "" {
+		if ipCount, rangeCount, err := replaceBlacklistWithCopy(ctx, dsn, cleanIPs, cleanRanges); err == nil {
+			return ipCount, rangeCount, nil
 		}
 	}
 
+	ipCount, rangeCount, err := replaceBlacklistWithBatches(ctx, cleanIPs, cleanRanges)
+	return ipCount, rangeCount, err
+}
+
+func replaceBlacklistWithCopy(ctx context.Context, dsn string, ips []domain.BlacklistedIP, ranges []domain.BlacklistedRange) (int, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer conn.Close(ctx)
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, "TRUNCATE TABLE blacklisted_ips, blacklisted_ranges RESTART IDENTITY"); err != nil {
+		return 0, 0, err
+	}
+
+	if len(ips) > 0 {
+		rows := make([][]any, len(ips))
+		for i := range ips {
+			rows[i] = []any{ips[i].IP, ips[i].Source}
+		}
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"blacklisted_ips"}, []string{"ip", "source"}, pgx.CopyFromRows(rows)); err != nil {
+			return 0, 0, err
+		}
+	}
+
+	if len(ranges) > 0 {
+		rows := make([][]any, len(ranges))
+		for i := range ranges {
+			cidr := ranges[i].CIDR
+			if cidr == "" {
+				continue
+			}
+			rows[i] = []any{cidr, ranges[i].Source}
+		}
+		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"blacklisted_ranges"}, []string{"cidr", "source"}, pgx.CopyFromRows(rows)); err != nil {
+			return 0, 0, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, err
+	}
+
+	return len(ips), len(ranges), nil
+}
+
+func replaceBlacklistWithBatches(ctx context.Context, ips []domain.BlacklistedIP, ranges []domain.BlacklistedRange) (int, int, error) {
 	db := DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
 
-	err := db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "start_ip"}, {Name: "end_ip"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"source":       gorm.Expr("EXCLUDED.source"),
-			"last_seen_at": gorm.Expr("EXCLUDED.last_seen_at"),
-		}),
-	}).CreateInBatches(&ranges, blacklistInsertBatchSize).Error
-	if err != nil {
-		return 0, err
+	if err := db.Exec("TRUNCATE TABLE blacklisted_ips, blacklisted_ranges RESTART IDENTITY").Error; err != nil {
+		return 0, 0, err
 	}
-	return len(ranges), nil
+
+	if len(ips) > 0 {
+		if err := db.CreateInBatches(ips, blacklistInsertBatchSize).Error; err != nil {
+			return 0, 0, err
+		}
+	}
+
+	if len(ranges) > 0 {
+		filtered := make([]domain.BlacklistedRange, 0, len(ranges))
+		for _, r := range ranges {
+			if r.CIDR == "" {
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+		if len(filtered) > 0 {
+			if err := db.CreateInBatches(filtered, blacklistInsertBatchSize).Error; err != nil {
+				return len(ips), 0, err
+			}
+			return len(ips), len(filtered), nil
+		}
+	}
+
+	return len(ips), 0, nil
+}
+
+func dedupeIPs(ips []domain.BlacklistedIP) []domain.BlacklistedIP {
+	if len(ips) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]domain.BlacklistedIP, len(ips))
+	for _, ip := range ips {
+		normalized := normalizeIPv4(ip.IP)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		ip.IP = normalized
+		seen[normalized] = ip
+	}
+
+	out := make([]domain.BlacklistedIP, 0, len(seen))
+	for _, ip := range seen {
+		out = append(out, ip)
+	}
+	return out
+}
+
+func dedupeRanges(ranges []domain.BlacklistedRange) []domain.BlacklistedRange {
+	if len(ranges) == 0 {
+		return nil
+	}
+
+	seenCIDR := make(map[string]cidrSpan, len(ranges))
+	for _, r := range ranges {
+		cidr, start, end, err := normalizeCIDR(r.CIDR)
+		if err != nil {
+			continue
+		}
+		if _, ok := seenCIDR[cidr]; ok {
+			continue
+		}
+		seenCIDR[cidr] = cidrSpan{start: start, end: end, source: r.Source}
+	}
+
+	if len(seenCIDR) == 0 {
+		return nil
+	}
+
+	spans := make([]cidrSpan, 0, len(seenCIDR))
+	for _, s := range seenCIDR {
+		spans = append(spans, s)
+	}
+
+	merged := mergeSpans(spans)
+
+	result := make([]domain.BlacklistedRange, 0, len(merged))
+	for _, m := range merged {
+		for _, cidr := range rangeToCIDRs(m.start, m.end) {
+			cStart, cEnd, err := cidrBounds(cidr)
+			if err != nil {
+				continue
+			}
+			result = append(result, domain.BlacklistedRange{
+				CIDR:    cidr,
+				Source:  m.source,
+				StartIP: cStart,
+				EndIP:   cEnd,
+			})
+		}
+	}
+
+	return result
 }
 
 // BackfillProxyIPHashes fills missing proxy IP hashes for legacy records.
@@ -311,6 +450,106 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 	}
 
 	return totalRemoved, orphaned, nil
+}
+
+func cidrBounds(cidr string) (uint32, uint32, error) {
+	_, start, end, err := normalizeCIDRWithBounds(cidr)
+	return start, end, err
+}
+
+func normalizeCIDR(raw string) (string, uint32, uint32, error) {
+	return normalizeCIDRWithBounds(raw)
+}
+
+func normalizeCIDRWithBounds(raw string) (string, uint32, uint32, error) {
+	prefix, err := netip.ParsePrefix(raw)
+	if err != nil {
+		return "", 0, 0, err
+	}
+	if !prefix.Addr().Is4() {
+		return "", 0, 0, fmt.Errorf("non-ipv4 cidr: %s", raw)
+	}
+	prefix = prefix.Masked()
+	start := ipToUint32(prefix.Addr())
+	if prefix.Bits() == 32 {
+		return prefix.String(), start, start, nil
+	}
+	size := uint32(1) << (32 - prefix.Bits())
+	end := start + size - 1
+	return prefix.String(), start, end, nil
+}
+
+func ipToUint32(addr netip.Addr) uint32 {
+	ip := addr.As4()
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+func uint32ToIP(val uint32) net.IP {
+	return net.IPv4(
+		byte(val>>24),
+		byte(val>>16),
+		byte(val>>8),
+		byte(val),
+	).To4()
+}
+
+func mergeSpans(spans []cidrSpan) []cidrSpan {
+	if len(spans) == 0 {
+		return spans
+	}
+
+	sort.Slice(spans, func(i, j int) bool {
+		if spans[i].start == spans[j].start {
+			return spans[i].end < spans[j].end
+		}
+		return spans[i].start < spans[j].start
+	})
+
+	merged := make([]cidrSpan, 0, len(spans))
+
+	for _, s := range spans {
+		if len(merged) == 0 {
+			merged = append(merged, s)
+			continue
+		}
+		last := &merged[len(merged)-1]
+		if s.start <= last.end+1 {
+			if s.end > last.end {
+				last.end = s.end
+			}
+			continue
+		}
+		merged = append(merged, s)
+	}
+
+	return merged
+}
+
+func rangeToCIDRs(start, end uint32) []string {
+	var cidrs []string
+
+	s := uint64(start)
+	e := uint64(end)
+
+	for s <= e {
+		maxSize := uint64(bits.TrailingZeros32(uint32(s)))
+		remaining := e - s + 1
+		maxAllowed := uint64(bits.Len64(remaining) - 1)
+
+		hostBits := maxAllowed
+		if maxSize < hostBits {
+			hostBits = maxSize
+		}
+
+		prefixLen := 32 - hostBits
+
+		cidr := fmt.Sprintf("%s/%d", uint32ToIP(uint32(s)).String(), prefixLen)
+		cidrs = append(cidrs, cidr)
+
+		s += 1 << hostBits
+	}
+
+	return cidrs
 }
 
 func normalizeIPList(ips []string) []string {

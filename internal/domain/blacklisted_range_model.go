@@ -1,15 +1,14 @@
 package domain
 
-import "time"
-
 // BlacklistedRange stores IPv4 ranges (CIDRs expanded to start/end) for blacklist enforcement.
 type BlacklistedRange struct {
 	ID uint64 `gorm:"primaryKey;autoIncrement"`
 
-	StartIP uint32 `gorm:"not null;index"` // inclusive
-	EndIP   uint32 `gorm:"not null;index"` // inclusive
-	Source  string `gorm:"size:512;not null;default:''"`
+	// CIDR holds the normalized network string (e.g. 192.0.2.0/24).
+	CIDR   string `gorm:"type:cidr;uniqueIndex;not null"`
+	Source string `gorm:"size:512;not null;default:''"`
 
-	FirstSeenAt time.Time `gorm:"autoCreateTime"`
-	LastSeenAt  time.Time `gorm:"autoUpdateTime"`
+	// Computed bounds used in-memory; not persisted.
+	StartIP uint32 `gorm:"-"`
+	EndIP   uint32 `gorm:"-"`
 }
