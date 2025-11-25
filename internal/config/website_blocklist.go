@@ -34,6 +34,11 @@ func IsWebsiteBlocked(rawURL string) bool {
 	return isWebsiteBlocked(rawURL, websiteBlocklistSet.Load().(map[string]struct{}))
 }
 
+// IsWebsiteBlockedForSet reports whether the URL or hostname matches the provided blocklist set.
+func IsWebsiteBlockedForSet(rawURL string, blockedSet map[string]struct{}) bool {
+	return isWebsiteBlocked(rawURL, blockedSet)
+}
+
 // FindBlockedURLs returns the subset of urls whose host is present in the given blocklist set.
 func FindBlockedURLs(urls []string, blockedSet map[string]struct{}) []string {
 	if len(urls) == 0 || len(blockedSet) == 0 {
