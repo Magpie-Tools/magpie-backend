@@ -35,8 +35,20 @@ Build the backend image from this repository root:
 docker build -t magpie-backend:dev .
 ```
 
+After authenticating to the target registry, publish the default multi-platform
+image with:
+
+```bash
+./scripts/push-docker-image.sh <tag>
+```
+
+Set `MAGPIE_BACKEND_IMAGE` to publish under another image name,
+`DOCKER_PLATFORMS` to change target platforms, or `PUSH_LATEST=0` to avoid
+updating the `latest` tag.
+
 ## Related repositories
 
+- [Distribution and deployment](https://github.com/Kuucheen/magpie)
 - [Frontend](https://github.com/Magpie-Tools/magpie-frontend)
 - [Website](https://github.com/Magpie-Tools/magpie-website)
 - [Documentation](https://github.com/Magpie-Tools/magpie-docs)
