@@ -1,0 +1,10 @@
+# .dockerignore
+.git
+.github
+.idea
+.env
+.env.*
+bin
+dist
+tmp
+*.swp

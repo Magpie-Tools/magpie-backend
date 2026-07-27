@@ -1,4 +1,6 @@
 .idea/
+.codex
+/magpie
 bin/
 dist/
 tmp/
