@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	githubReleasesURL = "https://api.github.com/repos/Kuucheen/magpie/releases"
+	githubReleasesURL = "https://api.github.com/repos/Magpie-Tools/magpie/releases"
 	cacheTTL          = 15 * time.Minute
 )
 
