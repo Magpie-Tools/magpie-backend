@@ -3,9 +3,11 @@ package security
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -24,9 +26,12 @@ const (
 )
 
 var (
-	proxyCipherOnce sync.Once
-	proxyCipherInst *proxyCipher
-	proxyCipherErr  error
+	proxyCipherOnce       sync.Once
+	proxyCipherInst       *proxyCipher
+	proxyCipherErr        error
+	proxyFingerprintOnce  sync.Once
+	proxyFingerprintKey   []byte
+	proxyFingerprintError error
 )
 
 type proxyCipher struct {
@@ -147,6 +152,64 @@ func normalizeKey(key []byte) []byte {
 	}
 }
 
+// FingerprintProxyRoute returns a keyed, case-sensitive identifier for a
+// concrete proxy route. The fingerprint can be stored for deduplication
+// without exposing an offline password oracle in a database dump.
+func FingerprintProxyRoute(ip string, port uint16, username, password string) ([]byte, error) {
+	key, err := getProxyFingerprintKey()
+	if err != nil {
+		return nil, err
+	}
+
+	mac := hmac.New(sha256.New, key)
+	writeFingerprintField(mac, []byte("magpie/proxy-route/v1"))
+	writeFingerprintField(mac, []byte(ip))
+
+	var portBytes [2]byte
+	binary.BigEndian.PutUint16(portBytes[:], port)
+	writeFingerprintField(mac, portBytes[:])
+	writeFingerprintField(mac, []byte(username))
+	writeFingerprintField(mac, []byte(password))
+
+	return mac.Sum(nil), nil
+}
+
+func getProxyFingerprintKey() ([]byte, error) {
+	proxyFingerprintOnce.Do(func() {
+		rawKey := strings.TrimSpace(os.Getenv(proxyEncryptionKeyEnv))
+		if rawKey == "" {
+			proxyFingerprintError = errors.New("proxy encryption key not set: " + proxyEncryptionKeyEnv)
+			return
+		}
+		if err := validateProxyEncryptionKey(rawKey); err != nil {
+			proxyFingerprintError = err
+			return
+		}
+
+		masterKey, err := deriveProxyKey(rawKey)
+		if err != nil {
+			proxyFingerprintError = fmt.Errorf("derive proxy fingerprint key: %w", err)
+			return
+		}
+
+		mac := hmac.New(sha256.New, masterKey)
+		_, _ = mac.Write([]byte("magpie/proxy-route-fingerprint-key/v1"))
+		proxyFingerprintKey = mac.Sum(nil)
+	})
+
+	if proxyFingerprintError != nil {
+		return nil, proxyFingerprintError
+	}
+	return proxyFingerprintKey, nil
+}
+
+func writeFingerprintField(mac interface{ Write([]byte) (int, error) }, value []byte) {
+	var size [4]byte
+	binary.BigEndian.PutUint32(size[:], uint32(len(value)))
+	_, _ = mac.Write(size[:])
+	_, _ = mac.Write(value)
+}
+
 func EncryptProxySecret(plain string) (string, error) {
 	if plain == "" {
 		return "", nil
@@ -212,4 +275,7 @@ func ResetProxyCipherForTests() {
 	proxyCipherOnce = sync.Once{}
 	proxyCipherInst = nil
 	proxyCipherErr = nil
+	proxyFingerprintOnce = sync.Once{}
+	proxyFingerprintKey = nil
+	proxyFingerprintError = nil
 }

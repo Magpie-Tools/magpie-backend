@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/security"
 )
 
 func TestHandleExportProxiesStreamError_SanitizesClientMessage(t *testing.T) {
@@ -47,6 +48,7 @@ func TestHandleExportProxiesStreamError_DoesNotWriteAfterStreamingBegan(t *testi
 
 func TestRequeueProxy_ReturnsQueuedProxy(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
+	configureProxyHashTest(t)
 
 	originalGetProxy := getQueuedProxyForUser
 	originalRemoveQueued := removeQueuedProxies
@@ -68,7 +70,9 @@ func TestRequeueProxy_ReturnsQueuedProxy(t *testing.T) {
 			Password: "pass",
 			Users:    []domain.User{{ID: 7}},
 		}
-		proxy.GenerateHash()
+		if err := proxy.GenerateHash(); err != nil {
+			t.Fatalf("generate proxy hash: %v", err)
+		}
 		return &proxy, nil
 	}
 	removeQueuedProxies = func(proxies []domain.Proxy) error {
@@ -138,6 +142,7 @@ func TestRequeueProxy_ReturnsNotFoundWhenProxyMissing(t *testing.T) {
 
 func TestRequeueProxy_ReturnsServiceUnavailableOnQueueFailure(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
+	configureProxyHashTest(t)
 
 	originalGetProxy := getQueuedProxyForUser
 	originalRemoveQueued := removeQueuedProxies
@@ -153,7 +158,9 @@ func TestRequeueProxy_ReturnsServiceUnavailableOnQueueFailure(t *testing.T) {
 			Port:  8080,
 			Users: []domain.User{{ID: 7}},
 		}
-		proxy.GenerateHash()
+		if err := proxy.GenerateHash(); err != nil {
+			t.Fatalf("generate proxy hash: %v", err)
+		}
 		return &proxy, nil
 	}
 	removeQueuedProxies = func(proxies []domain.Proxy) error {
@@ -177,6 +184,13 @@ func TestRequeueProxy_ReturnsServiceUnavailableOnQueueFailure(t *testing.T) {
 	if payload["error"] != "Failed to queue proxy" {
 		t.Fatalf("error = %q, want failure message", payload["error"])
 	}
+}
+
+func configureProxyHashTest(t *testing.T) {
+	t.Helper()
+	t.Setenv("PROXY_ENCRYPTION_KEY", "server-route-proxy-test-key")
+	security.ResetProxyCipherForTests()
+	t.Cleanup(security.ResetProxyCipherForTests)
 }
 
 func TestRequeueProxy_ReturnsBadRequestOnInvalidID(t *testing.T) {

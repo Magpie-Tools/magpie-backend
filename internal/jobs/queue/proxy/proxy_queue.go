@@ -15,6 +15,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/runtime"
+	"magpie/internal/security"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -22,7 +23,9 @@ import (
 )
 
 const (
-	proxyKeyPrefix = "proxy:"
+	proxyKeyPrefix             = "proxy:"
+	queuedProxyVersion         = 2
+	envEncryptQueueCredentials = "PROXY_QUEUE_ENCRYPT_CREDENTIALS"
 
 	legacyQueueKey          = "proxy_queue"
 	proxyQueueHeadKey       = "proxy_queue_heads"
@@ -50,9 +53,11 @@ type RedisProxyQueue struct {
 
 type proxyPopResult struct {
 	Found       bool
+	Member      string
 	ProxyJSON   string
 	ScoreMs     int64
 	NextReadyMs int64
+	QueueKey    string
 }
 
 type queuedProxyUser struct {
@@ -60,14 +65,17 @@ type queuedProxyUser struct {
 }
 
 type queuedProxy struct {
-	ID       uint64            `json:"ID"`
-	IP       string            `json:"IP"`
-	Port     uint16            `json:"Port"`
-	Username string            `json:"Username"`
-	Password string            `json:"Password"`
-	Hash     []byte            `json:"Hash"`
-	UserIDs  []uint            `json:"UserIDs,omitempty"`
-	Users    []queuedProxyUser `json:"Users,omitempty"` // Legacy payload compatibility
+	Version           uint8             `json:"Version,omitempty"`
+	ID                uint64            `json:"ID"`
+	IP                string            `json:"IP"`
+	Port              uint16            `json:"Port"`
+	UsernameEncrypted string            `json:"UsernameEncrypted,omitempty"`
+	PasswordEncrypted string            `json:"PasswordEncrypted,omitempty"`
+	Username          string            `json:"Username,omitempty"`
+	Password          string            `json:"Password,omitempty"`
+	Hash              []byte            `json:"Hash,omitempty"`
+	UserIDs           []uint            `json:"UserIDs,omitempty"`
+	Users             []queuedProxyUser `json:"Users,omitempty"` // Legacy payload compatibility
 }
 
 var PublicProxyQueue RedisProxyQueue
@@ -416,10 +424,131 @@ func (rpq *RedisProxyQueue) GetNextProxyContext(ctx context.Context) (domain.Pro
 		if err := json.Unmarshal([]byte(popResult.ProxyJSON), &payload); err != nil {
 			return domain.Proxy{}, time.Time{}, fmt.Errorf("failed to unmarshal proxy: %w", err)
 		}
-		proxy := payload.toDomainProxy()
+		rewritePayload := payload.needsRewrite()
+		proxy, err := payload.toDomainProxy()
+		if err != nil {
+			return domain.Proxy{}, time.Time{}, fmt.Errorf("decode queued proxy: %w", err)
+		}
+		if payload.Version >= queuedProxyVersion && len(payload.Hash) > 0 && popResult.Member != string(payload.Hash) {
+			return domain.Proxy{}, time.Time{}, errors.New("queued proxy hash does not match its sorted-set member")
+		}
+		leaseScoreMs := currentTimeMs + int64(processingLease/time.Millisecond)
+		if err := rpq.migrateDequeuedProxyMember(ctx, client, popResult, &proxy, leaseScoreMs, rewritePayload); err != nil {
+			return domain.Proxy{}, time.Time{}, fmt.Errorf("migrate queued proxy member: %w", err)
+		}
 
 		return proxy, time.UnixMilli(popResult.ScoreMs), nil
 	}
+}
+
+func (rpq *RedisProxyQueue) migrateDequeuedProxyMember(
+	ctx context.Context,
+	client *redis.Client,
+	popResult proxyPopResult,
+	proxy *domain.Proxy,
+	leaseScoreMs int64,
+	rewritePayload bool,
+) error {
+	if client == nil || proxy == nil {
+		return errors.New("queue member migration requires a client and proxy")
+	}
+
+	oldMember := popResult.Member
+	newMember := string(proxy.Hash)
+	if oldMember == "" || newMember == "" {
+		return nil
+	}
+	sameMember := oldMember == newMember
+	if sameMember && !rewritePayload {
+		return nil
+	}
+
+	newProxyKey := proxyKeyPrefix + newMember
+	if !sameMember {
+		if existingJSON, err := client.Get(ctx, newProxyKey).Result(); err == nil {
+			var existingPayload queuedProxy
+			if decodeErr := json.Unmarshal([]byte(existingJSON), &existingPayload); decodeErr == nil {
+				if existingProxy, domainErr := existingPayload.toDomainProxy(); domainErr == nil {
+					proxy.Users = mergeQueuedProxyUsers(proxy.Users, existingProxy.Users)
+				}
+			}
+		} else if !errors.Is(err, redis.Nil) {
+			return err
+		}
+	}
+
+	payload, err := marshalQueuedProxy(*proxy)
+	if err != nil {
+		return err
+	}
+
+	newQueueKey := rpq.queueKeyForMember(newMember)
+
+	pipe := client.TxPipeline()
+	pipe.Set(ctx, newProxyKey, payload, 0)
+	if !sameMember {
+		oldQueueKeys := uniqueQueueKeys(popResult.QueueKey, legacyQueueKey, rpq.queueKeyForMember(oldMember))
+		pipe.Del(ctx, proxyKeyPrefix+oldMember)
+		for _, queueKey := range oldQueueKeys {
+			pipe.ZRem(ctx, queueKey, oldMember)
+		}
+		pipe.ZAddArgs(ctx, newQueueKey, redis.ZAddArgs{
+			GT: true,
+			Members: []redis.Z{{
+				Score:  float64(leaseScoreMs),
+				Member: newMember,
+			}},
+		})
+		pipe.ZAddArgs(ctx, proxyQueueHeadKey, redis.ZAddArgs{
+			LT: true,
+			Members: []redis.Z{{
+				Score:  float64(leaseScoreMs),
+				Member: newQueueKey,
+			}},
+		})
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func uniqueQueueKeys(keys ...string) []string {
+	result := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
+}
+
+func mergeQueuedProxyUsers(primary, additional []domain.User) []domain.User {
+	result := append([]domain.User(nil), primary...)
+	seen := make(map[uint]struct{}, len(primary)+len(additional))
+	for _, user := range primary {
+		if user.ID != 0 {
+			seen[user.ID] = struct{}{}
+		}
+	}
+	for _, user := range additional {
+		if user.ID == 0 {
+			continue
+		}
+		if _, exists := seen[user.ID]; exists {
+			continue
+		}
+		seen[user.ID] = struct{}{}
+		result = append(result, user)
+	}
+	return result
 }
 
 func dequeueWaitDuration(nextReadyMs int64, currentMs int64) time.Duration {
@@ -505,6 +634,17 @@ func coerceLuaInt64(value interface{}) (int64, error) {
 }
 
 func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, lastCheckTime time.Time) error {
+	return rpq.requeueProxy(proxy, lastCheckTime, false)
+}
+
+// RequeueProxyWithPayload persists changed ownership or credentials before
+// rescheduling. The normal checker path should use RequeueProxy so each check
+// only updates sorted-set scheduling state.
+func (rpq *RedisProxyQueue) RequeueProxyWithPayload(proxy domain.Proxy, lastCheckTime time.Time) error {
+	return rpq.requeueProxy(proxy, lastCheckTime, true)
+}
+
+func (rpq *RedisProxyQueue) requeueProxy(proxy domain.Proxy, lastCheckTime time.Time, persistPayload bool) error {
 	client, err := rpq.clientOrErr()
 	if err != nil {
 		return err
@@ -519,16 +659,16 @@ func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, lastCheckTime time.
 	}
 	nextCheck := base.Add(interval)
 	hashKey := string(proxy.Hash)
-	proxyKey := proxyKeyPrefix + hashKey
 	queueKey := rpq.queueKeyForMember(hashKey)
 
-	proxyJSON, err := marshalQueuedProxy(proxy)
-	if err != nil {
-		return fmt.Errorf("failed to marshal proxy: %w", err)
-	}
-
 	pipe := client.Pipeline()
-	pipe.Set(ctx, proxyKey, proxyJSON, 0)
+	if persistPayload {
+		proxyJSON, err := marshalQueuedProxy(proxy)
+		if err != nil {
+			return fmt.Errorf("failed to marshal proxy: %w", err)
+		}
+		pipe.Set(ctx, proxyKeyPrefix+hashKey, proxyJSON, 0)
+	}
 	if queueKey != legacyQueueKey {
 		pipe.ZRem(ctx, legacyQueueKey, hashKey)
 	}
@@ -577,22 +717,60 @@ func parseIntervalStateMillis(raw string, fallback time.Duration) time.Duration 
 }
 
 func marshalQueuedProxy(proxy domain.Proxy) ([]byte, error) {
-	return json.Marshal(newQueuedProxy(proxy))
-}
-
-func newQueuedProxy(proxy domain.Proxy) queuedProxy {
-	return queuedProxy{
-		ID:       proxy.ID,
-		IP:       proxy.GetIp(),
-		Port:     proxy.Port,
-		Username: proxy.Username,
-		Password: proxy.Password,
-		Hash:     proxy.Hash,
-		UserIDs:  collectQueuedUserIDs(proxy.Users),
+	queued, err := newQueuedProxy(proxy)
+	if err != nil {
+		return nil, err
 	}
+	return json.Marshal(queued)
 }
 
-func (qp queuedProxy) toDomainProxy() domain.Proxy {
+func newQueuedProxy(proxy domain.Proxy) (queuedProxy, error) {
+	queued := queuedProxy{
+		Version: queuedProxyVersion,
+		ID:      proxy.ID,
+		IP:      proxy.GetIp(),
+		Port:    proxy.Port,
+		Hash:    append([]byte(nil), proxy.Hash...),
+		UserIDs: collectQueuedUserIDs(proxy.Users),
+	}
+
+	if !encryptProxyQueueCredentials() {
+		queued.Username = proxy.Username
+		queued.Password = proxy.Password
+		return queued, nil
+	}
+
+	username, err := security.EncryptProxySecret(proxy.Username)
+	if err != nil {
+		return queuedProxy{}, err
+	}
+	password, err := security.EncryptProxySecret(proxy.Password)
+	if err != nil {
+		return queuedProxy{}, err
+	}
+	queued.UsernameEncrypted = username
+	queued.PasswordEncrypted = password
+	return queued, nil
+}
+
+func encryptProxyQueueCredentials() bool {
+	return support.GetEnvBool(envEncryptQueueCredentials, false)
+}
+
+func (qp queuedProxy) needsRewrite() bool {
+	if qp.Version < queuedProxyVersion || len(qp.Hash) == 0 {
+		return true
+	}
+
+	hasEncryptedCredentials := qp.UsernameEncrypted != "" || qp.PasswordEncrypted != ""
+	hasPlainCredentials := qp.Username != "" || qp.Password != ""
+	if encryptProxyQueueCredentials() {
+		return hasPlainCredentials
+	}
+	return hasEncryptedCredentials
+}
+
+func (qp queuedProxy) toDomainProxy() (domain.Proxy, error) {
 	userIDs := qp.UserIDs
 	if len(userIDs) == 0 && len(qp.Users) > 0 {
 		userIDs = make([]uint, 0, len(qp.Users))
@@ -617,15 +795,39 @@ func (qp queuedProxy) toDomainProxy() domain.Proxy {
 		users = append(users, domain.User{ID: userID})
 	}
 
-	return domain.Proxy{
+	username := qp.Username
+	if qp.UsernameEncrypted != "" {
+		plain, _, err := security.DecryptProxySecret(qp.UsernameEncrypted)
+		if err != nil {
+			return domain.Proxy{}, err
+		}
+		username = plain
+	}
+	password := qp.Password
+	if qp.PasswordEncrypted != "" {
+		plain, _, err := security.DecryptProxySecret(qp.PasswordEncrypted)
+		if err != nil {
+			return domain.Proxy{}, err
+		}
+		password = plain
+	}
+
+	proxy := domain.Proxy{
 		ID:       qp.ID,
 		IP:       qp.IP,
 		Port:     qp.Port,
-		Username: qp.Username,
-		Password: qp.Password,
-		Hash:     qp.Hash,
+		Username: username,
+		Password: password,
 		Users:    users,
 	}
+	if qp.Version >= queuedProxyVersion && len(qp.Hash) > 0 {
+		proxy.Hash = append([]byte(nil), qp.Hash...)
+	} else {
+		if err := proxy.GenerateHash(); err != nil {
+			return domain.Proxy{}, err
+		}
+	}
+	return proxy, nil
 }
 
 func collectQueuedUserIDs(users []domain.User) []uint {
@@ -805,6 +1007,14 @@ func parseProxyPopResult(result interface{}) (proxyPopResult, error) {
 	if err != nil {
 		return proxyPopResult{}, fmt.Errorf("invalid proxy payload: %w", err)
 	}
+	member, err := coerceLuaString(resSlice[1])
+	if err != nil {
+		return proxyPopResult{}, fmt.Errorf("invalid proxy member: %w", err)
+	}
+	queueKey, err := coerceLuaString(resSlice[4])
+	if err != nil {
+		return proxyPopResult{}, fmt.Errorf("invalid proxy queue key: %w", err)
+	}
 
 	score, err := coerceLuaInt64(resSlice[3])
 	if err != nil {
@@ -813,8 +1023,10 @@ func parseProxyPopResult(result interface{}) (proxyPopResult, error) {
 
 	return proxyPopResult{
 		Found:       true,
+		Member:      member,
 		ProxyJSON:   proxyJSON,
 		ScoreMs:     score,
 		NextReadyMs: -1,
+		QueueKey:    queueKey,
 	}, nil
 }

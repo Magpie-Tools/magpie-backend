@@ -231,9 +231,19 @@ Actions:
 - In multi-instance deployments, keep the same mail settings on all instances.
 
 ### Proxy encryption key (`PROXY_ENCRYPTION_KEY`)
+- Encrypts proxy usernames and passwords in PostgreSQL.
+- Derives the keyed, case-sensitive fingerprint used to identify proxy routes.
+- Encrypts Redis queue credentials only when `PROXY_QUEUE_ENCRYPT_CREDENTIALS=true`.
+- Does not encrypt proxy IP addresses. PostgreSQL stores them as native `inet` values for sorting, subnet search, and blacklist range queries.
 - Rotate only with explicit migration/export plan.
 - Changing key without migration breaks decryption of stored proxy secrets.
 - With `STRICT_SECRET_VALIDATION=true`, weak/placeholder values are rejected at startup.
+
+### Redis proxy queue credentials (`PROXY_QUEUE_ENCRYPT_CREDENTIALS`)
+- Default: `false` so the checker does not encrypt, decrypt, or recompute a route fingerprint for every proxy check.
+- With the default, Redis queue readers and Redis backups can see proxy usernames and passwords. Keep Redis private, require authentication, restrict ACLs, use TLS for remote Redis, and encrypt volumes and backups.
+- Set to `true` only when that exposure is outside the deployment's trust model and the measured checker-throughput cost is acceptable.
+- Existing queue payloads are rewritten lazily into the selected format when dequeued. Keep `PROXY_ENCRYPTION_KEY` stable until old encrypted payloads have been converted.
 
 ### Secret validation mode (`STRICT_SECRET_VALIDATION`)
 - Local default: `false`
@@ -256,14 +266,37 @@ Actions:
 - `DB_AUTO_MIGRATE` local default: `true`
 - `DB_AUTO_MIGRATE` production mode default: `false`
 - Explicit `DB_AUTO_MIGRATE` env override always wins.
-- In multi-instance deployments, keep `DB_AUTO_MIGRATE` identical on all instances (recommended: `false` + explicit migration job).
+- `DB_AUTO_MIGRATE=false` prevents startup DDL, index creation, and read-model backfills.
+- Run the current backend image with `--migrate-only` to apply migrations and exit.
+
+For Docker Compose:
+
+```bash
+docker compose stop backend
+docker compose run --rm backend --migrate-only
+docker compose up -d backend
+```
+
+Take coordinated PostgreSQL and Redis backups first. Keep all backend instances
+stopped while migrating.
+The proxy storage migration removes the legacy encrypted-IP and shared-credential
+columns after it verifies the backfill. Rolling back that release requires a
+database restore as well as the previous backend image.
 
 ## Rollback
 
-1. Deploy previous known-good backend image.
+For an ordinary release with no destructive migration:
+
+1. Deploy the previous known-good backend image.
 2. Confirm `/healthz` and `/readyz`.
 3. Verify login and proxy operations.
-4. Capture incident notes and timeline before closing.
+
+After the proxy storage migration, stop every backend instance and restore the
+coordinated pre-migration PostgreSQL and Redis backups before deploying the
+previous image. The old image needs the removed database columns, and queue
+members and payload versions may differ after the migration.
+
+Capture incident notes and the recovery timeline before closing.
 
 ## Container Runtime Hardening
 

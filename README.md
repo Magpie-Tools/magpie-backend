@@ -20,10 +20,31 @@ go run ./cmd/magpie
 
 The API listens on `http://localhost:5656` by default.
 
+## Database migrations
+
+Run migrations as a one-off command before starting a new production backend:
+
+```bash
+go run ./cmd/magpie --migrate-only
+```
+
+`DB_AUTO_MIGRATE=false` now prevents every startup schema change. The migration
+command overrides that setting, applies the schema and data backfills, then
+exits.
+
+Proxy IP addresses use PostgreSQL's native `inet` type and remain visible to a
+database reader. Proxy usernames and passwords are encrypted on each user's
+proxy access row. Redis queue payloads keep credentials in plaintext by default
+because proxy checking is a high-volume hot path. Protect Redis as trusted
+infrastructure. Set `PROXY_QUEUE_ENCRYPT_CREDENTIALS=true` only when the added
+per-check decryption cost is acceptable.
+
 ## Validation
 
 ```bash
 go test ./...
+go test -race ./...
+go vet ./...
 go build ./cmd/magpie
 ```
 

@@ -101,3 +101,38 @@ func TestBuildProxySearchPredicate_NumericIncludesTypedMatches(t *testing.T) {
 		t.Fatalf("expected uint16 numeric argument in %#v", args)
 	}
 }
+
+func TestBuildIPSearchNetwork(t *testing.T) {
+	testCases := []struct {
+		search   string
+		network  string
+		fallback string
+		exact    bool
+		valid    bool
+	}{
+		{search: "192", network: "192.0.0.0/8", fallback: "192", valid: true},
+		{search: "192.168.", network: "192.168.0.0/16", fallback: "192.168", valid: true},
+		{search: "192.168.4", network: "192.168.4.0/24", fallback: "192.168.4", valid: true},
+		{search: "192.168.4.9", network: "192.168.4.9/32", fallback: "192.168.4.9", exact: true, valid: true},
+		{search: "192..4", valid: false},
+		{search: "256.1", valid: false},
+	}
+
+	for _, testCase := range testCases {
+		network, fallback, exact, valid := buildIPSearchNetwork(testCase.search)
+		if network != testCase.network || fallback != testCase.fallback || exact != testCase.exact || valid != testCase.valid {
+			t.Errorf(
+				"buildIPSearchNetwork(%q) = %q, %q, %v, %v; want %q, %q, %v, %v",
+				testCase.search,
+				network,
+				fallback,
+				exact,
+				valid,
+				testCase.network,
+				testCase.fallback,
+				testCase.exact,
+				testCase.valid,
+			)
+		}
+	}
+}

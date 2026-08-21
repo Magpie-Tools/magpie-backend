@@ -46,7 +46,7 @@ for _ = 1, 8 do
         local lease_score = current_time + lease_milliseconds
         redis.call('ZADD', queue_key, lease_score, member)
         refresh_head(queue_key)
-        return {1, member, proxy_data, score, -1}
+        return {1, member, proxy_data, score, queue_key}
       end
     end
   end

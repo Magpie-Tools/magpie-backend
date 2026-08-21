@@ -2,7 +2,6 @@ package database
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net"
@@ -320,62 +319,6 @@ func dedupeRanges(ranges []domain.BlacklistedRange) []domain.BlacklistedRange {
 	return result
 }
 
-// BackfillProxyIPMetadata fills missing IP hashes and IP ints for legacy rows.
-func BackfillProxyIPMetadata(ctx context.Context) (int64, int64, error) {
-	if DB == nil {
-		return 0, 0, errors.New("database not initialised")
-	}
-
-	db := DB
-	if ctx != nil {
-		db = db.WithContext(ctx)
-	}
-
-	var (
-		hashUpdated int64
-		intUpdated  int64
-		batch       []domain.Proxy
-	)
-
-	result := db.
-		Where("COALESCE(octet_length(ip_hash), 0) = 0 OR ip_int = 0").
-		FindInBatches(&batch, maxParamsPerBatch, func(tx *gorm.DB, _ int) error {
-			if len(batch) == 0 {
-				return nil
-			}
-
-			for i := range batch {
-				batch[i].GenerateHash()
-			}
-
-			for i := range batch {
-				if len(batch[i].IPHash) > 0 {
-					if err := tx.Model(&domain.Proxy{}).
-						Where("id = ?", batch[i].ID).
-						Updates(map[string]any{
-							"ip_hash": batch[i].IPHash,
-							"ip_int":  batch[i].IPInt,
-						}).Error; err != nil {
-						return err
-					}
-					hashUpdated++
-					if batch[i].IPInt != 0 {
-						intUpdated++
-					}
-				}
-			}
-
-			batch = batch[:0]
-			return nil
-		})
-
-	if result.Error != nil {
-		return hashUpdated, intUpdated, result.Error
-	}
-
-	return hashUpdated, intUpdated, nil
-}
-
 // RemoveProxiesByIPs removes proxy/user associations for proxies whose IP is in the given list.
 // It returns the number of user-proxy relations removed and any orphaned proxies that can be purged from queues.
 func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Proxy, error) {
@@ -388,14 +331,6 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 		return 0, nil, nil
 	}
 
-	hashes := make([][]byte, 0, len(normalized))
-	for _, ip := range normalized {
-		sum := sha256.Sum256([]byte(ip))
-		hash := make([]byte, len(sum))
-		copy(hash, sum[:])
-		hashes = append(hashes, hash)
-	}
-
 	db := DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
@@ -403,7 +338,7 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 
 	var proxies []domain.Proxy
 	if err := db.Preload("Users").
-		Where("ip_hash IN ?", hashes).
+		Where("ip_address IN ?", normalized).
 		Find(&proxies).Error; err != nil {
 		return 0, nil, err
 	}
@@ -571,10 +506,8 @@ func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange
 
 	var proxies []domain.Proxy
 	for _, s := range merged {
-		var batch []domain.Proxy
-		if err := db.Preload("Users").
-			Where("ip_int BETWEEN ? AND ?", s.start, s.end).
-			Find(&batch).Error; err != nil {
+		batch, err := findProxiesInIPRange(db, s.start, s.end)
+		if err != nil {
 			return 0, nil, err
 		}
 		proxies = append(proxies, batch...)
@@ -614,4 +547,32 @@ func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange
 	}
 
 	return totalRemoved, orphaned, nil
+}
+
+func findProxiesInIPRange(db *gorm.DB, start, end uint32) ([]domain.Proxy, error) {
+	if isPostgresDialect(db) {
+		var proxies []domain.Proxy
+		err := db.Preload("Users").
+			Where("ip_address BETWEEN ?::inet AND ?::inet", uint32ToIP(start).String(), uint32ToIP(end).String()).
+			Find(&proxies).Error
+		return proxies, err
+	}
+
+	var candidates []domain.Proxy
+	if err := db.Preload("Users").Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+
+	proxies := make([]domain.Proxy, 0)
+	for _, proxy := range candidates {
+		address, err := netip.ParseAddr(proxy.GetIp())
+		if err != nil || !address.Is4() {
+			continue
+		}
+		value := ipToUint32(address)
+		if value >= start && value <= end {
+			proxies = append(proxies, proxy)
+		}
+	}
+	return proxies, nil
 }

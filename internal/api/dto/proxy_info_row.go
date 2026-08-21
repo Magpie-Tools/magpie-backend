@@ -7,7 +7,7 @@ import (
 
 type ProxyInfoRow struct {
 	Id             int             `gorm:"column:id"`
-	IPEncrypted    string          `gorm:"column:ip_encrypted"`
+	IPAddress      string          `gorm:"column:ip_address"`
 	Port           uint16          `gorm:"column:port"`
 	EstimatedType  string          `gorm:"column:estimated_type"`
 	ResponseTime   uint16          `gorm:"column:response_time"`

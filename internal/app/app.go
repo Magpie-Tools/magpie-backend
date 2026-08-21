@@ -16,6 +16,7 @@ import (
 	"magpie/internal/app/server"
 	"magpie/internal/auth"
 	"magpie/internal/config"
+	"magpie/internal/database"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/jobs/runtime"
@@ -36,9 +37,22 @@ func Run() error {
 
 	backendPortFlag := flag.Int("backend-port", defaultBackendPort, "Port for API server")
 	productionFlag := flag.Bool("production", false, "Run in production mode")
+	migrateOnlyFlag := flag.Bool("migrate-only", false, "Run database migrations and exit")
 	flag.Parse()
 
 	config.SetProductionMode(*productionFlag || config.RuntimeEnvironmentIndicatesProduction())
+	if *migrateOnlyFlag {
+		if err := security.RequireProxyEncryptionKeyConfigured(); err != nil {
+			return err
+		}
+		if _, err := database.SetupDB(func(cfg *database.Config) {
+			cfg.AutoMigrate = true
+		}); err != nil {
+			return err
+		}
+		log.Info("Database migration completed; exiting")
+		return nil
+	}
 
 	if err := auth.RequireJWTSecretConfigured(); err != nil {
 		return err

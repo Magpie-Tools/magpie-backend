@@ -105,12 +105,12 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 		if err := ensurePostMigrateSchemas(DB); err != nil {
 			return nil, err
 		}
-	}
-	if err := ensureProxyListPerformanceSchema(DB); err != nil {
-		return nil, err
-	}
-	if err := ensureReadModelBackfill(DB); err != nil {
-		return nil, err
+		if err := ensureProxyListPerformanceSchema(DB); err != nil {
+			return nil, err
+		}
+		if err := ensureReadModelBackfill(DB); err != nil {
+			return nil, err
+		}
 	}
 
 	return DB, nil
@@ -299,6 +299,7 @@ type schemaEnsureStep struct {
 func ensurePostMigrateSchemas(db *gorm.DB) error {
 	steps := []schemaEnsureStep{
 		{name: "user auth schema", run: ensureUserAuthSchema},
+		{name: "proxy access storage schema", run: ensureProxyAccessStorageSchema},
 		{name: "proxy reputation schema", run: ensureProxyReputationSchema},
 		{name: "proxy statistics retention schema", run: ensureProxyStatisticsRetentionSchema},
 		{name: "proxy timeline retention schema", run: ensureProxyTimelineRetentionSchema},

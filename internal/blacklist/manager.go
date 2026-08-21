@@ -91,13 +91,8 @@ func init() {
 	rangeCache.Store(nil)
 }
 
-// Initialize hydrates the in-memory blacklist cache and backfills missing proxy hashes.
+// Initialize hydrates the in-memory blacklist cache.
 func Initialize(ctx context.Context) error {
-	if hashUpdated, intUpdated, err := database.BackfillProxyIPMetadata(ctx); err != nil {
-		return fmt.Errorf("backfill proxy ip metadata: %w", err)
-	} else if hashUpdated > 0 || intUpdated > 0 {
-		log.Info("Backfilled proxy IP metadata", "hash_count", hashUpdated, "int_count", intUpdated)
-	}
 	return LoadCache(ctx)
 }
 

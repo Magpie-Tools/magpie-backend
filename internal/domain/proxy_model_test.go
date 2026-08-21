@@ -27,12 +27,18 @@ func TestProxySetIP(t *testing.T) {
 }
 
 func TestProxyGenerateHash(t *testing.T) {
+	t.Setenv("PROXY_ENCRYPTION_KEY", "unit-test-encryption-key")
+	security.ResetProxyCipherForTests()
+	t.Cleanup(security.ResetProxyCipherForTests)
+
 	proxy1 := Proxy{Port: 8080, Username: "User", Password: "Secret"}
 	if err := proxy1.SetIP("10.0.0.1"); err != nil {
 		t.Fatalf("SetIP returned error: %v", err)
 	}
 
-	proxy1.GenerateHash()
+	if err := proxy1.GenerateHash(); err != nil {
+		t.Fatalf("GenerateHash returned error: %v", err)
+	}
 	if len(proxy1.Hash) != 32 {
 		t.Fatalf("GenerateHash produced hash with length %d, want 32", len(proxy1.Hash))
 	}
@@ -43,10 +49,12 @@ func TestProxyGenerateHash(t *testing.T) {
 	if err := proxy2.SetIP("10.0.0.1"); err != nil {
 		t.Fatalf("SetIP returned error: %v", err)
 	}
-	proxy2.GenerateHash()
+	if err := proxy2.GenerateHash(); err != nil {
+		t.Fatalf("GenerateHash returned error: %v", err)
+	}
 
-	if !bytes.Equal(hashCopy, proxy2.Hash) {
-		t.Fatal("GenerateHash should ignore username/password casing differences")
+	if bytes.Equal(hashCopy, proxy2.Hash) {
+		t.Fatal("GenerateHash must preserve username/password casing")
 	}
 }
 
@@ -72,39 +80,39 @@ func TestProxyGetters(t *testing.T) {
 	}
 }
 
-func TestProxyBeforeSaveEncryptsAndAfterFindDecrypts(t *testing.T) {
+func TestUserProxyBeforeSaveEncryptsAndAfterFindDecrypts(t *testing.T) {
 	t.Setenv("PROXY_ENCRYPTION_KEY", "unit-test-encryption-key")
 	security.ResetProxyCipherForTests()
+	t.Cleanup(security.ResetProxyCipherForTests)
 
-	proxy := Proxy{Port: 8080, Username: "user", Password: "secret"}
-	if err := proxy.SetIP("10.0.0.1"); err != nil {
-		t.Fatalf("SetIP returned error: %v", err)
-	}
-
-	if err := proxy.BeforeSave(nil); err != nil {
+	access := UserProxy{UserID: 7, ProxyID: 12, Username: "user", Password: "secret"}
+	if err := access.BeforeSave(nil); err != nil {
 		t.Fatalf("BeforeSave returned error: %v", err)
 	}
 
-	if proxy.IPEncrypted == "" {
-		t.Fatal("BeforeSave did not populate IPEncrypted")
+	if access.UsernameEncrypted == "" {
+		t.Fatal("BeforeSave did not populate UsernameEncrypted")
 	}
-	if !security.IsProxySecretEncrypted(proxy.IPEncrypted) {
-		t.Fatalf("IPEncrypted %q does not have encryption prefix", proxy.IPEncrypted)
+	if !security.IsProxySecretEncrypted(access.UsernameEncrypted) {
+		t.Fatalf("UsernameEncrypted %q does not have encryption prefix", access.UsernameEncrypted)
 	}
 
-	if proxy.PasswordEncrypted == "" {
+	if access.PasswordEncrypted == "" {
 		t.Fatal("BeforeSave did not populate PasswordEncrypted")
 	}
-	if !security.IsProxySecretEncrypted(proxy.PasswordEncrypted) {
-		t.Fatalf("PasswordEncrypted %q does not have encryption prefix", proxy.PasswordEncrypted)
+	if !security.IsProxySecretEncrypted(access.PasswordEncrypted) {
+		t.Fatalf("PasswordEncrypted %q does not have encryption prefix", access.PasswordEncrypted)
 	}
 
-	decrypted := Proxy{IPEncrypted: proxy.IPEncrypted, PasswordEncrypted: proxy.PasswordEncrypted}
+	decrypted := UserProxy{
+		UsernameEncrypted: access.UsernameEncrypted,
+		PasswordEncrypted: access.PasswordEncrypted,
+	}
 	if err := decrypted.AfterFind(nil); err != nil {
 		t.Fatalf("AfterFind returned error: %v", err)
 	}
-	if decrypted.IP != "10.0.0.1" {
-		t.Fatalf("AfterFind returned IP %q, want 10.0.0.1", decrypted.IP)
+	if decrypted.Username != "user" {
+		t.Fatalf("AfterFind returned username %q, want user", decrypted.Username)
 	}
 	if decrypted.Password != "secret" {
 		t.Fatalf("AfterFind returned password %q, want secret", decrypted.Password)

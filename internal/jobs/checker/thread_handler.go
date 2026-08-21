@@ -27,6 +27,7 @@ var (
 	userCache             sync.Map
 	checkProxyWithRetries = CheckProxyWithRetries
 	enqueueProxyStatistic = jobruntime.AddProxyStatisticForUsers
+	getUsersForChecker    = database.GetUsersByIDsForChecker
 )
 
 const (
@@ -190,13 +191,15 @@ func work(parent context.Context) {
 			continue
 		}
 
-		proxy = refreshProxyUsers(proxy)
+		var payloadChanged bool
+		proxy, payloadChanged = refreshProxyUsers(proxy)
 
 		judgeRequests, userSuccess, userHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy)
 		saveResponses := config.GetConfig().Checker.SaveResponses
 		processJudgeAssignments(proxy, judgeRequests, userSuccess, maxTimeout, maxRetries, saveResponses)
 
 		removedUsers, orphaned := handleFailureTracking(proxy, userSuccess, userHasChecks)
+		payloadChanged = payloadChanged || len(removedUsers) > 0
 		if len(removedUsers) > 0 {
 			proxy = filterRemovedUsers(proxy, removedUsers)
 		}
@@ -211,7 +214,9 @@ func work(parent context.Context) {
 		if err != nil {
 			log.Error("failed to verify proxy ownership before requeue", "proxy_id", proxy.ID, "error", err)
 			// Requeue to avoid dropping proxies on transient errors
-			proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
+			if err := requeueCheckedProxy(proxy, scheduledTime, payloadChanged); err != nil {
+				log.Error("failed to requeue proxy after ownership check error", "proxy_id", proxy.ID, "error", err)
+			}
 			continue
 		}
 		if !hasUsers {
@@ -222,8 +227,17 @@ func work(parent context.Context) {
 		}
 
 		// Requeue the proxy for the next check
-		proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
+		if err := requeueCheckedProxy(proxy, scheduledTime, payloadChanged); err != nil {
+			log.Error("failed to requeue proxy", "proxy_id", proxy.ID, "error", err)
+		}
 	}
+}
+
+func requeueCheckedProxy(proxy domain.Proxy, scheduledTime time.Time, persistPayload bool) error {
+	if persistPayload {
+		return proxyqueue.PublicProxyQueue.RequeueProxyWithPayload(proxy, scheduledTime)
+	}
+	return proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
 }
 
 func createWorkerContext(parent context.Context) (context.Context, func()) {
@@ -251,9 +265,9 @@ func createWorkerContext(parent context.Context) (context.Context, func()) {
 	return ctx, cleanup
 }
 
-func refreshProxyUsers(proxy domain.Proxy) domain.Proxy {
+func refreshProxyUsers(proxy domain.Proxy) (domain.Proxy, bool) {
 	if len(proxy.Users) == 0 {
-		return proxy
+		return proxy, false
 	}
 
 	ids := make([]uint, 0, len(proxy.Users))
@@ -286,12 +300,15 @@ func refreshProxyUsers(proxy domain.Proxy) domain.Proxy {
 	}
 
 	if len(missing) > 0 {
-		dbUsers, err := database.GetUsersByIDsForChecker(missing)
+		dbUsers, err := getUsersForChecker(missing)
 		if err != nil {
 			log.Error("refresh proxy users", "error", err)
-			if len(refreshedUsers) == 0 {
-				return proxy
+			for i := range proxy.Users {
+				if fresh, ok := refreshedUsers[proxy.Users[i].ID]; ok {
+					proxy.Users[i] = fresh
+				}
 			}
+			return proxy, false
 		} else {
 			expiry := now.Add(userCacheTTL)
 			for id, user := range dbUsers {
@@ -304,17 +321,25 @@ func refreshProxyUsers(proxy domain.Proxy) domain.Proxy {
 		}
 	}
 
-	if len(refreshedUsers) == 0 {
-		return proxy
-	}
-
-	for i := range proxy.Users {
-		if fresh, ok := refreshedUsers[proxy.Users[i].ID]; ok {
-			proxy.Users[i] = fresh
+	refreshed := make([]domain.User, 0, len(proxy.Users))
+	payloadChanged := false
+	seenRefreshed := make(map[uint]struct{}, len(proxy.Users))
+	for _, queuedUser := range proxy.Users {
+		fresh, ok := refreshedUsers[queuedUser.ID]
+		if !ok {
+			payloadChanged = true
+			continue
 		}
+		if _, duplicate := seenRefreshed[fresh.ID]; duplicate {
+			payloadChanged = true
+			continue
+		}
+		seenRefreshed[fresh.ID] = struct{}{}
+		refreshed = append(refreshed, fresh)
 	}
+	proxy.Users = refreshed
 
-	return proxy
+	return proxy, payloadChanged
 }
 
 func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {

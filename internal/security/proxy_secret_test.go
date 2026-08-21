@@ -1,6 +1,7 @@
 package security
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
@@ -48,6 +49,32 @@ func TestDecryptLegacyProxySecret(t *testing.T) {
 	}
 	if plain != "legacy-secret" {
 		t.Fatalf("DecryptProxySecret returned %q, want legacy-secret", plain)
+	}
+}
+
+func TestFingerprintProxyRouteIsDeterministicAndCaseSensitive(t *testing.T) {
+	t.Setenv(proxyEncryptionKeyEnv, testEncryptionKey)
+	ResetProxyCipherForTests()
+	t.Cleanup(ResetProxyCipherForTests)
+
+	first, err := FingerprintProxyRoute("192.0.2.5", 8080, "User", "Secret")
+	if err != nil {
+		t.Fatalf("fingerprint first route: %v", err)
+	}
+	repeated, err := FingerprintProxyRoute("192.0.2.5", 8080, "User", "Secret")
+	if err != nil {
+		t.Fatalf("fingerprint repeated route: %v", err)
+	}
+	caseVariant, err := FingerprintProxyRoute("192.0.2.5", 8080, "user", "secret")
+	if err != nil {
+		t.Fatalf("fingerprint case variant: %v", err)
+	}
+
+	if !bytes.Equal(first, repeated) {
+		t.Fatal("equal routes produced different fingerprints")
+	}
+	if bytes.Equal(first, caseVariant) {
+		t.Fatal("credential casing variants produced the same fingerprint")
 	}
 }
 

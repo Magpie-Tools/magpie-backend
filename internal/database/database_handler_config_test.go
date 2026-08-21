@@ -5,6 +5,10 @@ import (
 	"testing"
 
 	"magpie/internal/config"
+	"magpie/internal/domain"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 const envDBAutoMigrate = "DB_AUTO_MIGRATE"
@@ -42,6 +46,29 @@ func TestDefaultConfig_AutoMigrateExplicitOverrideWins(t *testing.T) {
 	cfg = defaultConfig()
 	if cfg.AutoMigrate {
 		t.Fatal("expected AutoMigrate=false when DB_AUTO_MIGRATE=false")
+	}
+}
+
+func TestSetupDBWithAutoMigrateDisabledDoesNotMutateSchema(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:auto-migrate-disabled?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+
+	previousDB := DB
+	t.Cleanup(func() { DB = previousDB })
+
+	if _, err := SetupDB(func(cfg *Config) {
+		cfg.ExistingDB = db
+		cfg.Dialector = nil
+		cfg.AutoMigrate = false
+		cfg.SeedDefaults = false
+		cfg.Migrations = []any{domain.User{}}
+	}); err != nil {
+		t.Fatalf("setup database: %v", err)
+	}
+	if db.Migrator().HasTable(&domain.User{}) {
+		t.Fatal("SetupDB created a table while AutoMigrate was disabled")
 	}
 }
 

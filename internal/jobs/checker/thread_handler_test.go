@@ -153,6 +153,68 @@ func TestProcessJudgeAssignments_RecordsFailedCheckOnce(t *testing.T) {
 	}
 }
 
+func TestRefreshProxyUsers_RemovesMissingOwnershipOnce(t *testing.T) {
+	originalGetUsers := getUsersForChecker
+	clearCheckerUserCache()
+	t.Cleanup(func() {
+		getUsersForChecker = originalGetUsers
+		clearCheckerUserCache()
+	})
+
+	getUsersForChecker = func(ids []uint) (map[uint]domain.User, error) {
+		if len(ids) != 2 {
+			t.Fatalf("lookup ids = %#v, want both queued users", ids)
+		}
+		return map[uint]domain.User{
+			4: {ID: 4, Timeout: 2500, Retries: 3},
+		}, nil
+	}
+
+	proxy := domain.Proxy{Users: []domain.User{
+		{ID: 4, Timeout: 100},
+		{ID: 9, Timeout: 100},
+	}}
+	refreshed, payloadChanged := refreshProxyUsers(proxy)
+	if !payloadChanged {
+		t.Fatal("missing user did not mark queue payload as changed")
+	}
+	if len(refreshed.Users) != 1 || refreshed.Users[0].ID != 4 {
+		t.Fatalf("refreshed users = %#v, want only user 4", refreshed.Users)
+	}
+	if refreshed.Users[0].Timeout != 2500 || refreshed.Users[0].Retries != 3 {
+		t.Fatalf("user settings were not refreshed: %#v", refreshed.Users[0])
+	}
+}
+
+func TestRefreshProxyUsers_PreservesUnknownUsersOnLookupFailure(t *testing.T) {
+	originalGetUsers := getUsersForChecker
+	clearCheckerUserCache()
+	t.Cleanup(func() {
+		getUsersForChecker = originalGetUsers
+		clearCheckerUserCache()
+	})
+
+	getUsersForChecker = func([]uint) (map[uint]domain.User, error) {
+		return nil, errors.New("database unavailable")
+	}
+
+	proxy := domain.Proxy{Users: []domain.User{{ID: 4}, {ID: 9}}}
+	refreshed, payloadChanged := refreshProxyUsers(proxy)
+	if payloadChanged {
+		t.Fatal("lookup failure must not remove users from the queue payload")
+	}
+	if len(refreshed.Users) != len(proxy.Users) {
+		t.Fatalf("lookup failure changed users from %#v to %#v", proxy.Users, refreshed.Users)
+	}
+}
+
+func clearCheckerUserCache() {
+	userCache.Range(func(key, _ any) bool {
+		userCache.Delete(key)
+		return true
+	})
+}
+
 func TestRequestCheckerWorkerStop_DoesNotBlockWithoutListener(t *testing.T) {
 	originalStopChannel := stopChannel
 	stopChannel = make(chan struct{})

@@ -104,7 +104,7 @@ type loginFailureLimiter struct {
 }
 
 var (
-	authRateLimitsOnce sync.Once
+	authRateLimitsOnce = &sync.Once{}
 	globalAuthLimits   authRateLimits
 	authRedisMu        sync.Mutex
 	authRedisRetryAt   time.Time

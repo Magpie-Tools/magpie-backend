@@ -15,7 +15,6 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/config"
 	"magpie/internal/domain"
-	"magpie/internal/security"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -80,7 +79,10 @@ func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain
 		return nil, nil
 	}
 
-	uniqueProxies := deduplicateProxies(proxies)
+	uniqueProxies, err := deduplicateProxies(proxies)
+	if err != nil {
+		return nil, err
+	}
 	if len(uniqueProxies) == 0 {
 		return nil, nil
 	}
@@ -135,8 +137,11 @@ func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain
 	}
 
 	hashToID := make(map[string]uint64, len(uniqueProxies))
+	hashToProxy := make(map[string]domain.Proxy, len(uniqueProxies))
 	for i := range uniqueProxies {
-		hashToID[string(uniqueProxies[i].Hash)] = uniqueProxies[i].ID
+		key := string(uniqueProxies[i].Hash)
+		hashToID[key] = uniqueProxies[i].ID
+		hashToProxy[key] = uniqueProxies[i]
 	}
 
 	for _, userID := range userIDs {
@@ -145,17 +150,19 @@ func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain
 			continue
 		}
 
-		proxyIDs := make([]uint64, 0, len(hashes))
+		userProxies := make([]domain.Proxy, 0, len(hashes))
 		for _, hash := range hashes {
 			if id, ok := hashToID[hash]; ok {
-				proxyIDs = append(proxyIDs, id)
+				proxy := hashToProxy[hash]
+				proxy.ID = id
+				userProxies = append(userProxies, proxy)
 			}
 		}
-		if len(proxyIDs) == 0 {
+		if len(userProxies) == 0 {
 			continue
 		}
 
-		if err := createUserAssociations(tx, proxyIDs, userID, batchSize); err != nil {
+		if err := createUserAssociations(tx, userProxies, userID, batchSize); err != nil {
 			tx.Rollback()
 			return nil, err
 		}
@@ -219,18 +226,20 @@ func lockUserForProxyLimit(tx *gorm.DB, userID uint, limitCfg config.ProxyLimitC
 	return nil
 }
 
-func deduplicateProxies(proxies []domain.Proxy) []domain.Proxy {
+func deduplicateProxies(proxies []domain.Proxy) ([]domain.Proxy, error) {
 	seen := make(map[string]struct{}, len(proxies))
 	unique := make([]domain.Proxy, 0, len(proxies))
 	for _, p := range proxies {
-		p.GenerateHash()
+		if err := p.GenerateHash(); err != nil {
+			return nil, err
+		}
 		key := string(p.Hash)
 		if _, exists := seen[key]; !exists {
 			seen[key] = struct{}{}
 			unique = append(unique, p)
 		}
 	}
-	return unique
+	return unique, nil
 }
 
 func calculateBatchSize(proxyCount int) int {
@@ -260,7 +269,7 @@ func clamp(value, min, max int) int {
 func insertProxies(tx *gorm.DB, proxies []domain.Proxy, batchSize int) error {
 	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "hash"}},
-		DoUpdates: clause.AssignmentColumns([]string{"hash", "ip_hash", "ip_int"}), // To get the ids from duplicates
+		DoUpdates: clause.AssignmentColumns([]string{"hash"}), // Return IDs for existing routes.
 	}).CreateInBatches(proxies, batchSize).Error
 }
 
@@ -430,22 +439,26 @@ func ensureProxyIDs(tx *gorm.DB, proxies []domain.Proxy) error {
 	return nil
 }
 
-func createUserAssociations(tx *gorm.DB, proxyIDs []uint64, userID uint, batchSize int) error {
-	if len(proxyIDs) == 0 {
+func createUserAssociations(tx *gorm.DB, proxies []domain.Proxy, userID uint, batchSize int) error {
+	if len(proxies) == 0 {
 		return nil
 	}
 
-	associations := make([]domain.UserProxy, len(proxyIDs))
-	for i, id := range proxyIDs {
+	associations := make([]domain.UserProxy, len(proxies))
+	proxyIDs := make([]uint64, len(proxies))
+	for i, proxy := range proxies {
+		proxyIDs[i] = proxy.ID
 		associations[i] = domain.UserProxy{
-			UserID:  userID,
-			ProxyID: id,
+			UserID:   userID,
+			ProxyID:  proxy.ID,
+			Username: proxy.Username,
+			Password: proxy.Password,
 		}
 	}
 
 	if err := tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}, {Name: "proxy_id"}},
-		DoNothing: true,
+		DoUpdates: clause.AssignmentColumns([]string{"username", "password"}),
 	}).CreateInBatches(associations, batchSize).Error; err != nil {
 		return err
 	}
@@ -462,6 +475,10 @@ func fetchProxiesWithUsers(tx *gorm.DB, proxies []domain.Proxy) ([]domain.Proxy,
 	}
 
 	var results []domain.Proxy
+	credentialsByID := make(map[uint64]domain.Proxy, len(proxies))
+	for _, proxy := range proxies {
+		credentialsByID[proxy.ID] = proxy
+	}
 	for i := 0; i < len(ids); i += maxParamsPerBatch {
 		end := i + maxParamsPerBatch
 		if end > len(ids) {
@@ -475,6 +492,12 @@ func fetchProxiesWithUsers(tx *gorm.DB, proxies []domain.Proxy) ([]domain.Proxy,
 			Find(&batch).Error
 		if err != nil {
 			return nil, err
+		}
+		for idx := range batch {
+			if original, ok := credentialsByID[batch[idx].ID]; ok {
+				batch[idx].Username = original.Username
+				batch[idx].Password = original.Password
+			}
 		}
 		results = append(results, batch...)
 	}
@@ -523,6 +546,9 @@ func ForEachProxyBatch(batchSize int, fn func([]domain.Proxy) error) error {
 			if len(batchProxies) == 0 {
 				return nil
 			}
+			if err := hydrateProxyCredentials(tx, batchProxies, 0); err != nil {
+				return err
+			}
 
 			currentBatch := make([]domain.Proxy, len(batchProxies))
 			copy(currentBatch, batchProxies)
@@ -561,7 +587,7 @@ func RefreshRecentProxyChecksCache(userID uint, limit int) []dto.ProxyRecentChec
 
 	type recentProxyCheckRow struct {
 		ID           uint64       `gorm:"column:id"`
-		IPEncrypted  string       `gorm:"column:ip_encrypted"`
+		IPAddress    string       `gorm:"column:ip_address"`
 		Port         uint16       `gorm:"column:port"`
 		ResponseTime uint16       `gorm:"column:response_time"`
 		Alive        bool         `gorm:"column:alive"`
@@ -573,7 +599,7 @@ func RefreshRecentProxyChecksCache(userID uint, limit int) []dto.ProxyRecentChec
 WITH candidates AS (
 	SELECT
 		p.id,
-		p.ip AS ip_encrypted,
+			p.ip_address,
 		p.port,
 		COALESCE(pos.overall_alive, FALSE) AS alive,
 		pos.last_checked_at
@@ -589,7 +615,7 @@ WITH candidates AS (
 )
 SELECT
 	c.id,
-	c.ip_encrypted,
+		c.ip_address,
 	c.port,
 	COALESCE(latest.response_time, 0) AS response_time,
 	c.alive,
@@ -610,12 +636,6 @@ ORDER BY c.alive DESC, latest_check DESC, c.id ASC
 
 	result := make([]dto.ProxyRecentCheck, 0, len(rows))
 	for _, row := range rows {
-		ip, _, err := security.DecryptProxySecret(row.IPEncrypted)
-		if err != nil {
-			log.Errorf("decrypt proxy ip: %v", err)
-			ip = ""
-		}
-
 		latestCheck := time.Time{}
 		if row.LatestCheck.Valid {
 			latestCheck = row.LatestCheck.Time
@@ -623,7 +643,7 @@ ORDER BY c.alive DESC, latest_check DESC, c.id ASC
 
 		result = append(result, dto.ProxyRecentCheck{
 			ID:           row.ID,
-			IP:           ip,
+			IP:           row.IPAddress,
 			Port:         row.Port,
 			ResponseTime: row.ResponseTime,
 			Alive:        row.Alive,
@@ -663,7 +683,7 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 
 	type fastestAliveProxyRow struct {
 		ID              uint64       `gorm:"column:id"`
-		IPEncrypted     string       `gorm:"column:ip_encrypted"`
+		IPAddress       string       `gorm:"column:ip_address"`
 		Port            uint16       `gorm:"column:port"`
 		ResponseTime    uint16       `gorm:"column:response_time"`
 		Country         string       `gorm:"column:country"`
@@ -676,7 +696,7 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 	if err := DB.Model(&domain.Proxy{}).
 		Select(
 			"proxies.id AS id, "+
-				"proxies.ip AS ip_encrypted, "+
+				"proxies.ip_address AS ip_address, "+
 				"proxies.port AS port, "+
 				"COALESCE(latest.response_time, 0) AS response_time, "+
 				"COALESCE(NULLIF(proxies.country, ''), 'N/A') AS country, "+
@@ -695,12 +715,6 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 
 	result := make([]dto.ProxyFastestAlive, 0, len(rows))
 	for _, row := range rows {
-		ip, _, err := security.DecryptProxySecret(row.IPEncrypted)
-		if err != nil {
-			log.Errorf("decrypt fastest alive proxy ip: %v", err)
-			ip = ""
-		}
-
 		latestCheck := time.Time{}
 		if row.LatestCheck.Valid {
 			latestCheck = row.LatestCheck.Time
@@ -708,7 +722,7 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 
 		result = append(result, dto.ProxyFastestAlive{
 			ID:              row.ID,
-			IP:              ip,
+			IP:              row.IPAddress,
 			Port:            row.Port,
 			ResponseTime:    row.ResponseTime,
 			Country:         row.Country,
@@ -777,7 +791,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select(
 			"ufi.proxy_id AS id, "+
-				"ufi.ip AS ip_encrypted, "+
+				"ufi.ip_address AS ip_address, "+
 				"ufi.port AS port, "+
 				"ufi.estimated_type AS estimated_type, "+
 				"ufi.response_time AS response_time, "+
@@ -855,12 +869,12 @@ func GetProxyInfoPageWithFiltersAndOptions(
 		return proxies, total
 	}
 
-	rangeStart, rangeEnd, ok := buildIPIntSearchRange(lowerSearch)
+	network, fallbackPrefix, exact, ok := buildIPSearchNetwork(lowerSearch)
 	if !ok {
 		return []dto.ProxyInfo{}, 0
 	}
 
-	matchedProxyIDs := buildProxyIPSearchIDQuery(userId, filterQuery, rangeStart, rangeEnd)
+	matchedProxyIDs := buildProxyIPSearchIDQuery(userId, filterQuery, network, fallbackPrefix, exact)
 
 	var total int64
 	if err := DB.Table("(?) AS matched", matchedProxyIDs).Count(&total).Error; err != nil {
@@ -995,9 +1009,9 @@ func proxyPageSortExpressions(field string) []string {
 	case "health_socks5":
 		return []string{"ufi.health_socks5"}
 	case "ip":
-		return []string{"ufi.ip_int"}
+		return []string{"ufi.ip_address"}
 	case "ip_port":
-		return []string{"ufi.ip_int", "ufi.port"}
+		return []string{"ufi.ip_address", "ufi.port"}
 	case "port":
 		return []string{"ufi.port"}
 	case "response_time":
@@ -1030,9 +1044,9 @@ func isLikelyProxyIPSearch(search string) bool {
 	return strings.Contains(search, ".")
 }
 
-func buildIPIntSearchRange(search string) (uint32, uint32, bool) {
+func buildIPSearchNetwork(search string) (network string, fallbackPrefix string, exact bool, ok bool) {
 	if search == "" {
-		return 0, 0, false
+		return "", "", false, false
 	}
 
 	parts := strings.Split(search, ".")
@@ -1040,36 +1054,36 @@ func buildIPIntSearchRange(search string) (uint32, uint32, bool) {
 		parts = parts[:len(parts)-1]
 	}
 	if len(parts) == 0 || len(parts) > 4 {
-		return 0, 0, false
+		return "", "", false, false
 	}
 
-	octets := make([]uint32, 0, len(parts))
+	octets := make([]int, 0, len(parts))
 	for _, part := range parts {
 		if part == "" {
-			return 0, 0, false
+			return "", "", false, false
 		}
 		value, err := strconv.Atoi(part)
 		if err != nil || value < 0 || value > 255 {
-			return 0, 0, false
+			return "", "", false, false
 		}
-		octets = append(octets, uint32(value))
+		octets = append(octets, value)
 	}
 
-	var start uint32
-	var end uint32
-	for idx := 0; idx < 4; idx++ {
-		shift := uint(24 - (idx * 8))
-
-		if idx < len(octets) {
-			start |= octets[idx] << shift
-			end |= octets[idx] << shift
-			continue
+	canonicalParts := make([]string, 4)
+	for index := 0; index < 4; index++ {
+		if index < len(octets) {
+			canonicalParts[index] = strconv.Itoa(octets[index])
+		} else {
+			canonicalParts[index] = "0"
 		}
-
-		end |= uint32(255) << shift
 	}
 
-	return start, end, true
+	fallbackParts := make([]string, len(octets))
+	for index, octet := range octets {
+		fallbackParts[index] = strconv.Itoa(octet)
+	}
+	exact = len(octets) == 4
+	return strings.Join(canonicalParts, ".") + "/" + strconv.Itoa(len(octets)*8), strings.Join(fallbackParts, "."), exact, true
 }
 
 func buildProxySearchIDQuery(userId uint, filterQuery *gorm.DB, lowerSearch string) *gorm.DB {
@@ -1085,11 +1099,17 @@ func buildProxySearchIDQuery(userId uint, filterQuery *gorm.DB, lowerSearch stri
 	return query.Group("ufi.proxy_id")
 }
 
-func buildProxyIPSearchIDQuery(userId uint, filterQuery *gorm.DB, rangeStart, rangeEnd uint32) *gorm.DB {
+func buildProxyIPSearchIDQuery(userId uint, filterQuery *gorm.DB, network, fallbackPrefix string, exact bool) *gorm.DB {
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id AS id").
-		Where("ufi.user_id = ?", userId).
-		Where("ufi.ip_int BETWEEN ? AND ?", rangeStart, rangeEnd)
+		Where("ufi.user_id = ?", userId)
+	if isPostgresDialect(DB) {
+		query = query.Where("ufi.ip_address <<= ?::cidr", network)
+	} else if exact {
+		query = query.Where("ufi.ip_address = ?", fallbackPrefix)
+	} else {
+		query = query.Where("ufi.ip_address LIKE ?", fallbackPrefix+".%")
+	}
 
 	if filterQuery != nil {
 		query = query.Where("ufi.proxy_id IN (?)", filterQuery)
@@ -1345,15 +1365,9 @@ func extractProxyFilterValues(rows []proxyFilterValueRow) []string {
 func proxyInfoRowsToDTO(rows []dto.ProxyInfoRow) []dto.ProxyInfo {
 	results := make([]dto.ProxyInfo, 0, len(rows))
 	for _, row := range rows {
-		ip, _, err := security.DecryptProxySecret(row.IPEncrypted)
-		if err != nil {
-			log.Errorf("decrypt proxy ip: %v", err)
-			ip = ""
-		}
-
 		results = append(results, dto.ProxyInfo{
 			Id:             row.Id,
-			IP:             ip,
+			IP:             row.IPAddress,
 			Port:           row.Port,
 			EstimatedType:  row.EstimatedType,
 			ResponseTime:   row.ResponseTime,
@@ -1658,6 +1672,9 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := hydrateProxyCredential(DB, &proxy, userId); err != nil {
+		return nil, err
+	}
 
 	var latestStat *dto.ProxyStatistic
 	var latestCheck *time.Time
@@ -1700,6 +1717,9 @@ func GetQueuedProxyForUser(userId uint, proxyId uint64) (*domain.Proxy, error) {
 		return nil, nil
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := hydrateProxyCredential(DB, &proxy, userId); err != nil {
 		return nil, err
 	}
 
@@ -2208,7 +2228,7 @@ func StreamProxiesForExport(userID uint, settings dto.ExportSettings, batchSize 
 			break
 		}
 
-		proxies, err := loadExportProxyBatch(tx, ids)
+		proxies, err := loadExportProxyBatch(tx, userID, ids)
 		if err != nil {
 			return err
 		}
@@ -2284,7 +2304,7 @@ func normalizeFilterValues(values []string) []string {
 	return normalized
 }
 
-func loadExportProxyBatch(tx *gorm.DB, ids []uint64) ([]domain.Proxy, error) {
+func loadExportProxyBatch(tx *gorm.DB, userID uint, ids []uint64) ([]domain.Proxy, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -2297,6 +2317,9 @@ func loadExportProxyBatch(tx *gorm.DB, ids []uint64) ([]domain.Proxy, error) {
 	}
 	if len(proxies) == 0 {
 		return nil, nil
+	}
+	if err := hydrateProxyCredentials(tx, proxies, userID); err != nil {
+		return nil, err
 	}
 
 	indexByID := make(map[uint64]int, len(proxies))

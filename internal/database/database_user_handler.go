@@ -14,7 +14,6 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/config"
 	"magpie/internal/domain"
-	"magpie/internal/security"
 	"magpie/internal/support"
 )
 
@@ -479,7 +478,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 	go func() {
 		defer wg.Done()
 		result := DB.Table("user_proxy_filter_indexes ufi").
-			Select("ufi.proxy_id, ufi.reputation_score AS score, ufi.reputation_label AS label, ufi.ip, ufi.port").
+			Select("ufi.proxy_id, ufi.reputation_score AS score, ufi.reputation_label AS label, ufi.ip_address AS ip, ufi.port").
 			Where("ufi.user_id = ? AND ufi.reputation_score IS NOT NULL", userid).
 			Order("ufi.reputation_score DESC, ufi.proxy_id ASC").
 			Limit(1).
@@ -539,14 +538,6 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 
 	if topRowFound {
 		ip := topRow.IP
-		if ip != "" {
-			plain, _, err := security.DecryptProxySecret(ip)
-			if err != nil {
-				log.Errorf("decrypt top reputation proxy ip: %v", err)
-			} else {
-				ip = plain
-			}
-		}
 
 		info.TopReputationProxy = &struct {
 			ProxyID uint64  `json:"proxy_id"`

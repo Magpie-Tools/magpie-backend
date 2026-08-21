@@ -342,8 +342,10 @@ func TestGetNextRotatingProxy_RotatesAcrossAliveProxies(t *testing.T) {
 			t.Fatalf("create proxy %d: %v", idx, err)
 		}
 		if err := db.Create(&domain.UserProxy{
-			UserID:  user.ID,
-			ProxyID: proxies[idx].ID,
+			UserID:   user.ID,
+			ProxyID:  proxies[idx].ID,
+			Username: proxies[idx].Username,
+			Password: proxies[idx].Password,
 		}).Error; err != nil {
 			t.Fatalf("link proxy %d: %v", idx, err)
 		}
@@ -381,6 +383,9 @@ func TestGetNextRotatingProxy_RotatesAcrossAliveProxies(t *testing.T) {
 	if first.ProxyID != proxies[0].ID {
 		t.Fatalf("first proxy id = %d, want %d", first.ProxyID, proxies[0].ID)
 	}
+	if first.Username != "user-one" || first.Password != "pass-one" {
+		t.Fatalf("first proxy credentials = %q:%q", first.Username, first.Password)
+	}
 	if first.Protocol != protocol.Name {
 		t.Fatalf("first protocol = %q, want %q", first.Protocol, protocol.Name)
 	}
@@ -402,6 +407,9 @@ func TestGetNextRotatingProxy_RotatesAcrossAliveProxies(t *testing.T) {
 	}
 	if second.ProxyID != proxies[1].ID {
 		t.Fatalf("second proxy id = %d, want %d", second.ProxyID, proxies[1].ID)
+	}
+	if second.Username != "user-two" || second.Password != "pass-two" {
+		t.Fatalf("second proxy credentials = %q:%q", second.Username, second.Password)
 	}
 
 	if err := db.First(&updated, rotator.ID).Error; err != nil {

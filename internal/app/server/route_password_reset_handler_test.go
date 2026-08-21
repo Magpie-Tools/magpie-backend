@@ -424,6 +424,7 @@ func TestResetPassword_RateLimitsByResolvedEmailAcrossIPs(t *testing.T) {
 
 func setupPasswordResetTestDB(t *testing.T) {
 	t.Helper()
+	resetAuthRateLimitsForTest(t)
 
 	prevDB := database.DB
 	t.Cleanup(func() {
@@ -517,7 +518,7 @@ func resetAuthRateLimitsForTest(t *testing.T) {
 	t.Setenv("redisUrl", "redis://127.0.0.1:1")
 	_ = support.CloseRedisClient()
 
-	authRateLimitsOnce = sync.Once{}
+	authRateLimitsOnce = &sync.Once{}
 	globalAuthLimits = authRateLimits{}
 	authRedisRetryAt = time.Time{}
 

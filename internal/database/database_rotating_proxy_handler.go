@@ -409,6 +409,9 @@ func aliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int, labels []
 	if err != nil {
 		return nil, err
 	}
+	if err := hydrateProxyCredentials(tx, proxies, userID); err != nil {
+		return nil, err
+	}
 
 	return proxies, nil
 }
@@ -431,7 +434,7 @@ func nextAliveProxyForProtocol(tx *gorm.DB, userID uint, protocolID int, labels 
 	baseQuery := buildAliveProxyQuery(tx, userID, protocolID, labels, uptimeFilterType, uptimePercentage)
 
 	if lastProxyID != nil {
-		nextAfterCursor, err := fetchAliveProxyCandidate(baseQuery, *lastProxyID, true)
+		nextAfterCursor, err := fetchAliveProxyCandidate(baseQuery, *lastProxyID, true, userID)
 		if err == nil {
 			return nextAfterCursor, nil
 		}
@@ -440,7 +443,7 @@ func nextAliveProxyForProtocol(tx *gorm.DB, userID uint, protocolID int, labels 
 		}
 	}
 
-	first, err := fetchAliveProxyCandidate(baseQuery, 0, false)
+	first, err := fetchAliveProxyCandidate(baseQuery, 0, false, userID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrRotatingProxyNoAliveProxies
@@ -450,7 +453,7 @@ func nextAliveProxyForProtocol(tx *gorm.DB, userID uint, protocolID int, labels 
 	return first, nil
 }
 
-func fetchAliveProxyCandidate(baseQuery *gorm.DB, cursorProxyID uint64, applyCursor bool) (*domain.Proxy, error) {
+func fetchAliveProxyCandidate(baseQuery *gorm.DB, cursorProxyID uint64, applyCursor bool, userID uint) (*domain.Proxy, error) {
 	query := baseQuery.Session(&gorm.Session{})
 	if applyCursor {
 		query = query.Where("proxies.id > ?", cursorProxyID)
@@ -458,6 +461,9 @@ func fetchAliveProxyCandidate(baseQuery *gorm.DB, cursorProxyID uint64, applyCur
 
 	var proxy domain.Proxy
 	if err := query.Order("proxies.id").Limit(1).First(&proxy).Error; err != nil {
+		return nil, err
+	}
+	if err := hydrateProxyCredential(query, &proxy, userID); err != nil {
 		return nil, err
 	}
 
@@ -508,6 +514,9 @@ func fetchUserProxyByID(tx *gorm.DB, userID uint, proxyID uint64) (*domain.Proxy
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userID).
 		First(&proxy).Error
 	if err != nil {
+		return nil, err
+	}
+	if err := hydrateProxyCredential(tx, &proxy, userID); err != nil {
 		return nil, err
 	}
 	return &proxy, nil
