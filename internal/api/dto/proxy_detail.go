@@ -15,4 +15,5 @@ type ProxyDetail struct {
 	LatestCheck     *time.Time                `json:"latest_check,omitempty"`
 	LatestStatistic *ProxyStatistic           `json:"latest_statistic,omitempty"`
 	Reputation      *ProxyReputationBreakdown `json:"reputation,omitempty"`
+	Tags            []ProxyTag                `json:"tags"`
 }

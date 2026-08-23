@@ -46,9 +46,18 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	tagIDs, tagParseErr := parseStrictProxyTagIDs(r.URL.Query()["tagId"])
+	if tagParseErr != nil {
+		writeError(w, "Invalid proxy tag id", http.StatusBadRequest)
+		return
+	}
+	if tagErr := database.ValidateProxyTags(userID, tagIDs); tagErr != nil {
+		writeProxyTagError(w, tagErr)
+		return
+	}
 	startedAt := time.Now()
 	maxBodyBytes := resolveUploadMaxBodyBytes()
-	insertedCount, parseStats, blacklistedCount, err := ingestProxyUploadMultipart(w, r, userID, maxBodyBytes)
+	insertedCount, parseStats, blacklistedCount, err := ingestProxyUploadMultipartWithTags(w, r, userID, tagIDs, maxBodyBytes)
 	if err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
 			writeError(w, "Input line exceeds maximum supported length", http.StatusRequestEntityTooLarge)
@@ -87,6 +96,10 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func ingestProxyUploadMultipart(w http.ResponseWriter, r *http.Request, userID uint, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
+	return ingestProxyUploadMultipartWithTags(w, r, userID, nil, maxBodyBytes)
+}
+
+func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, userID uint, tagIDs []uint64, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
 	if r == nil || r.Body == nil {
 		return 0, support.ProxyParseStats{}, 0, errMissingProxyUploadContent
 	}
@@ -127,6 +140,13 @@ func ingestProxyUploadMultipart(w http.ResponseWriter, r *http.Request, userID u
 		}
 
 		if len(inserted) > 0 {
+			proxyIDs := make([]uint64, 0, len(inserted))
+			for _, proxy := range inserted {
+				proxyIDs = append(proxyIDs, proxy.ID)
+			}
+			if err := database.AddProxyTagsToProxies(userID, proxyIDs, tagIDs); err != nil {
+				return err
+			}
 			insertedCount += len(inserted)
 			database.AsyncEnrichProxyMetadata(inserted)
 			if err := proxyqueue.PublicProxyQueue.AddToQueue(inserted); err != nil {
@@ -264,6 +284,7 @@ func getProxyPage(w http.ResponseWriter, r *http.Request) {
 		MaxTimeout:       parsePositiveIntParam(r.URL.Query().Get("maxTimeout")),
 		MaxRetries:       parsePositiveIntParam(r.URL.Query().Get("maxRetries")),
 		ReputationLabels: normalizeQueryList(r.URL.Query()["reputation"]),
+		TagIDs:           parseProxyTagFilterIDs(r.URL.Query()["tagId"]),
 	}
 
 	includeHealth := parseBoolQueryParam(r.URL.Query().Get("includeHealth"), true)

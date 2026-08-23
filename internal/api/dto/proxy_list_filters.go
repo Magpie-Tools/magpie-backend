@@ -14,4 +14,5 @@ type ProxyListFilters struct {
 	MaxTimeout       int      `json:"maxTimeout,omitempty"`
 	MaxRetries       int      `json:"maxRetries,omitempty"`
 	ReputationLabels []string `json:"reputationLabels,omitempty"`
+	TagIDs           []uint64 `json:"tagIds,omitempty"`
 }

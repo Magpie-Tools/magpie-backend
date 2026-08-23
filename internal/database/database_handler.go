@@ -182,6 +182,8 @@ func defaultMigrations() []any {
 		domain.AbuseIPDBCheck{},
 		domain.ProxyReputation{},
 		domain.UserProxy{},
+		domain.ProxyTag{},
+		domain.ProxyTagAssignment{},
 		domain.UserProxyFilterIndex{},
 		domain.UserScrapeSourceStat{},
 		domain.ProxyDailyCheck{},

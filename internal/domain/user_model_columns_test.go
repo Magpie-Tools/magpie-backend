@@ -13,6 +13,17 @@ func TestNormalizeProxyListColumns_PreservesCheckNow(t *testing.T) {
 	}
 }
 
+func TestNormalizeProxyListColumns_PreservesTags(t *testing.T) {
+	columns := NormalizeProxyListColumns([]string{"alive", "ip_port", "tags", "actions"})
+
+	if len(columns) != 4 {
+		t.Fatalf("len(columns) = %d, want 4", len(columns))
+	}
+	if columns[2] != "tags" {
+		t.Fatalf("columns[2] = %q, want tags", columns[2])
+	}
+}
+
 func TestNormalizeScrapeSourceListColumns_PreservesScrapeNow(t *testing.T) {
 	columns := NormalizeScrapeSourceListColumns([]string{"url", "scrape_now", "actions"})
 

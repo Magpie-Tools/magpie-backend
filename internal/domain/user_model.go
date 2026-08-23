@@ -8,6 +8,7 @@ import (
 var defaultProxyListColumns = []string{
 	"alive",
 	"ip_port",
+	"tags",
 	"response_time",
 	"estimated_type",
 	"country",
@@ -19,6 +20,7 @@ var defaultProxyListColumns = []string{
 var defaultScrapeSourceProxyColumns = []string{
 	"alive",
 	"ip_port",
+	"tags",
 	"response_time",
 	"estimated_type",
 	"country",
@@ -48,6 +50,7 @@ var validProxyListColumns = map[string]struct{}{
 	"response_time":  {},
 	"estimated_type": {},
 	"country":        {},
+	"tags":           {},
 	"reputation":     {},
 	"latest_check":   {},
 	"check_now":      {},

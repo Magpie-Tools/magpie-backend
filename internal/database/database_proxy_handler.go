@@ -40,6 +40,8 @@ const (
 	dashboardFastestAliveLimit    = 100
 )
 
+const proxyTagSearchExistsSQL = "EXISTS (SELECT 1 FROM proxy_tag_assignments pta JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.user_id = pta.user_id WHERE pta.user_id = ufi.user_id AND pta.proxy_id = ufi.proxy_id AND pt.name_key LIKE ?)"
+
 var ErrNoProxiesSelected = errors.New("no proxies selected for deletion")
 
 type dashboardProxyListCacheKey struct {
@@ -831,6 +833,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 		if options.IncludeReputation {
 			attachReputationsToProxyInfos(proxies)
 		}
+		attachProxyTagsForResponse(userId, proxies)
 		if filterQuery == nil {
 			total := GetAllProxyCountOfUser(userId)
 			return proxies, total
@@ -868,6 +871,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 		if options.IncludeReputation {
 			attachReputationsToProxyInfos(proxies)
 		}
+		attachProxyTagsForResponse(userId, proxies)
 		return proxies, total
 	}
 
@@ -876,7 +880,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 		return []dto.ProxyInfo{}, 0
 	}
 
-	matchedProxyIDs := buildProxyIPSearchIDQuery(userId, filterQuery, network, fallbackPrefix, exact)
+	matchedProxyIDs := buildProxyIPSearchIDQuery(userId, filterQuery, network, fallbackPrefix, lowerSearch, exact)
 
 	var total int64
 	if err := DB.Table("(?) AS matched", matchedProxyIDs).Count(&total).Error; err != nil {
@@ -899,7 +903,14 @@ func GetProxyInfoPageWithFiltersAndOptions(
 	if options.IncludeReputation {
 		attachReputationsToProxyInfos(proxies)
 	}
+	attachProxyTagsForResponse(userId, proxies)
 	return proxies, total
+}
+
+func attachProxyTagsForResponse(userID uint, proxies []dto.ProxyInfo) {
+	if err := AttachProxyTagsToInfos(userID, proxies); err != nil {
+		log.Error("failed to attach proxy tags", "error", err, "user_id", userID)
+	}
 }
 
 func normalizeProxyPageQueryOptions(options ProxyPageQueryOptions) ProxyPageQueryOptions {
@@ -1117,16 +1128,17 @@ func buildProxySearchIDQuery(userId uint, filterQuery *gorm.DB, lowerSearch stri
 	return query.Group("ufi.proxy_id")
 }
 
-func buildProxyIPSearchIDQuery(userId uint, filterQuery *gorm.DB, network, fallbackPrefix string, exact bool) *gorm.DB {
+func buildProxyIPSearchIDQuery(userId uint, filterQuery *gorm.DB, network, fallbackPrefix, lowerSearch string, exact bool) *gorm.DB {
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id AS id").
 		Where("ufi.user_id = ?", userId)
+	tagPattern := "%" + strings.ToLower(strings.TrimSpace(lowerSearch)) + "%"
 	if isPostgresDialect(DB) {
-		query = query.Where("ufi.ip_address <<= ?::cidr", network)
+		query = query.Where("(ufi.ip_address <<= ?::cidr OR "+proxyTagSearchExistsSQL+")", network, tagPattern)
 	} else if exact {
-		query = query.Where("ufi.ip_address = ?", fallbackPrefix)
+		query = query.Where("(ufi.ip_address = ? OR "+proxyTagSearchExistsSQL+")", fallbackPrefix, tagPattern)
 	} else {
-		query = query.Where("ufi.ip_address LIKE ?", fallbackPrefix+"%")
+		query = query.Where("(ufi.ip_address LIKE ? OR "+proxyTagSearchExistsSQL+")", fallbackPrefix+"%", tagPattern)
 	}
 
 	if filterQuery != nil {
@@ -1157,8 +1169,10 @@ func buildProxySearchPredicate(lowerSearch string) (string, []interface{}) {
 		"ufi.country_key LIKE ?",
 		"ufi.anonymity_key LIKE ?",
 		"ufi.reputation_label LIKE ?",
+		proxyTagSearchExistsSQL,
 	}
 	args := []interface{}{
+		pattern,
 		pattern,
 		pattern,
 		pattern,
@@ -1265,6 +1279,13 @@ func buildProxyListFilterQuery(userId uint, filters dto.ProxyListFilters) *gorm.
 		query = applyListReputationFilters(query, filters.ReputationLabels, selectedProtocols)
 	}
 
+	if len(filters.TagIDs) > 0 {
+		query = query.Where(
+			"EXISTS (SELECT 1 FROM proxy_tag_assignments pta JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.user_id = pta.user_id WHERE pta.user_id = ufi.user_id AND pta.proxy_id = ufi.proxy_id AND pta.proxy_tag_id IN ?)",
+			filters.TagIDs,
+		)
+	}
+
 	return query.Group("ufi.proxy_id")
 }
 
@@ -1300,7 +1321,7 @@ func hasProxyListFilters(filters dto.ProxyListFilters) bool {
 	if filters.MaxTimeout > 0 || filters.MaxRetries > 0 {
 		return true
 	}
-	if len(filters.Protocols) > 0 || len(filters.Countries) > 0 || len(filters.Types) > 0 || len(filters.AnonymityLevels) > 0 || len(filters.ReputationLabels) > 0 {
+	if len(filters.Protocols) > 0 || len(filters.Countries) > 0 || len(filters.Types) > 0 || len(filters.AnonymityLevels) > 0 || len(filters.ReputationLabels) > 0 || len(filters.TagIDs) > 0 {
 		return true
 	}
 	return false
@@ -1334,10 +1355,16 @@ func GetProxyFilterOptions(userId uint) (dto.ProxyFilterOptions, error) {
 		return dto.ProxyFilterOptions{}, err
 	}
 
+	tags, err := GetProxyTags(userId)
+	if err != nil {
+		return dto.ProxyFilterOptions{}, err
+	}
+
 	return dto.ProxyFilterOptions{
 		Countries:       countries,
 		Types:           types,
 		AnonymityLevels: anonymityLevels,
+		Tags:            tags,
 	}, nil
 }
 
@@ -1461,6 +1488,12 @@ func proxyMatchesSearch(proxy dto.ProxyInfo, search string) bool {
 		strings.ToLower(proxy.EstimatedType),
 		strings.ToLower(proxy.Country),
 		strings.ToLower(proxy.AnonymityLevel),
+	}
+	for _, tag := range proxy.Tags {
+		name := strings.ToLower(strings.TrimSpace(tag.Name))
+		if name != "" && (strings.Contains(name, lowerSearch) || strings.Contains(lowerSearch, name)) {
+			return true
+		}
 	}
 
 	for _, field := range fields {
@@ -1718,6 +1751,10 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 	}
 
 	detail.Reputation = mapReputationsToBreakdown(proxy.Reputations)
+	detail.Tags, err = getProxyTagsForProxy(userId, proxyId)
+	if err != nil {
+		return nil, err
+	}
 
 	return detail, nil
 }
@@ -2299,6 +2336,7 @@ func proxyListFiltersForExport(settings dto.ExportSettings) dto.ProxyListFilters
 		MaxTimeout:       int(settings.MaxTimeout),
 		MaxRetries:       int(settings.MaxRetries),
 		ReputationLabels: settings.ReputationLabels,
+		TagIDs:           settings.TagIDs,
 	}
 }
 

@@ -550,7 +550,9 @@ func isUniqueConstraintError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(err.Error()), "duplicate key value violates unique constraint")
+	normalized := strings.ToLower(err.Error())
+	return strings.Contains(normalized, "duplicate key value violates unique constraint") ||
+		strings.Contains(normalized, "unique constraint failed")
 }
 
 func allocateListenPort(tx *gorm.DB, instanceID string) (uint16, error) {

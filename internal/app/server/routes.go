@@ -94,8 +94,13 @@ func OpenRoutes(ctx context.Context, port int) error {
 	apiMux.Handle("GET /proxies/{id}/statistics", auth.RequireAuth(http.HandlerFunc(getProxyStatistics)))
 	apiMux.Handle("GET /proxies/{id}/statistics/{statisticId}", auth.RequireAuth(http.HandlerFunc(getProxyStatisticResponseBody)))
 	apiMux.Handle("GET /proxies/{id}", auth.RequireAuth(http.HandlerFunc(getProxyDetail)))
+	apiMux.Handle("PUT /proxies/{id}/tags", auth.RequireAuth(http.HandlerFunc(replaceProxyTags)))
 	apiMux.Handle("POST /addProxies", auth.RequireAuth(http.HandlerFunc(addProxies)))
 	apiMux.Handle("DELETE /proxies", auth.RequireAuth(http.HandlerFunc(deleteProxies)))
+	apiMux.Handle("GET /proxyTags", auth.RequireAuth(http.HandlerFunc(listProxyTags)))
+	apiMux.Handle("POST /proxyTags", auth.RequireAuth(http.HandlerFunc(createProxyTag)))
+	apiMux.Handle("PUT /proxyTags/{id}", auth.RequireAuth(http.HandlerFunc(updateProxyTag)))
+	apiMux.Handle("DELETE /proxyTags/{id}", auth.RequireAuth(http.HandlerFunc(deleteProxyTag)))
 
 	apiMux.Handle("GET /rotatingProxies", auth.RequireAuth(http.HandlerFunc(listRotatingProxies)))
 	apiMux.Handle("GET /rotatingProxies/instances", auth.RequireAuth(http.HandlerFunc(listRotatingProxyInstances)))

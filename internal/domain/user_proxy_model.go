@@ -17,6 +17,8 @@ type UserProxy struct {
 	PasswordEncrypted   string    `gorm:"column:password;default:''" json:"-"`
 	ConsecutiveFailures uint16    `gorm:"not null;default:0"`
 	CreatedAt           time.Time `gorm:"autoCreateTime"`
+
+	TagAssignments []ProxyTagAssignment `gorm:"foreignKey:UserID,ProxyID;references:UserID,ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 }
 
 func (access *UserProxy) BeforeSave(_ *gorm.DB) error {

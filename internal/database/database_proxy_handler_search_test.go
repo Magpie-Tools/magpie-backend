@@ -16,6 +16,9 @@ func TestProxyMatchesSearch(t *testing.T) {
 		AnonymityLevel: "High",
 		ResponseTime:   450,
 		Alive:          true,
+		Tags: []dto.ProxyTag{
+			{ID: 1, Name: "Premium Europe", Color: "#22C55E"},
+		},
 		Reputation: &dto.ProxyReputationSummary{
 			Overall: &dto.ProxyReputation{
 				Kind:  "overall",
@@ -53,6 +56,8 @@ func TestProxyMatchesSearch(t *testing.T) {
 		"87":                                               true,
 		"neutral":                                          true,
 		"75.5":                                             true,
+		"premium":                                          true,
+		"europe":                                           true,
 		"notfound":                                         false,
 		"bad":                                              false,
 	}
@@ -78,6 +83,9 @@ func TestBuildProxySearchPredicate_AvoidsCastHeavyPredicates(t *testing.T) {
 	}
 	if !strings.Contains(sql, "LOWER(ufi.host) LIKE ?") {
 		t.Fatalf("expected hostname predicate in %q", sql)
+	}
+	if !strings.Contains(sql, "proxy_tag_assignments") || !strings.Contains(sql, "pt.name_key LIKE ?") {
+		t.Fatalf("expected user-owned tag predicate in %q", sql)
 	}
 }
 

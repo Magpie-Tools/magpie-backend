@@ -19,5 +19,6 @@ type ExportSettings struct {
 	AnonymityLevels  []string `json:"anonymityLevels"`
 	ProxyStatus      string   `json:"proxyStatus"`
 	ReputationLabels []string `json:"reputationLabels"`
+	TagIDs           []uint64 `json:"tagIds"`
 	OutputFormat     string   `json:"outputFormat"`
 }

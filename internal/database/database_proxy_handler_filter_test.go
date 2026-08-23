@@ -85,3 +85,9 @@ func TestHasProxyListFilters_HealthThresholdsCountAsFilters(t *testing.T) {
 		t.Fatal("expected health threshold to count as a proxy list filter")
 	}
 }
+
+func TestHasProxyListFilters_TagSelectionCountsAsFilter(t *testing.T) {
+	if !hasProxyListFilters(dto.ProxyListFilters{TagIDs: []uint64{12}}) {
+		t.Fatal("expected tag selection to count as a proxy list filter")
+	}
+}

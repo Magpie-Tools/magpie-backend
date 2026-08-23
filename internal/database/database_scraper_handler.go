@@ -559,6 +559,9 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 		if options.IncludeReputation {
 			attachReputationsToProxyInfos(proxies)
 		}
+		if err := AttachProxyTagsToInfos(userId, proxies); err != nil {
+			return []dto.ProxyInfo{}, 0, err
+		}
 
 		var total int64
 		countQuery := DB.Table("user_proxy_filter_indexes ufi").
@@ -583,6 +586,9 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 	if options.IncludeReputation {
 		attachReputationsToProxyInfos(proxies)
 	}
+	if err := AttachProxyTagsToInfos(userId, proxies); err != nil {
+		return []dto.ProxyInfo{}, 0, err
+	}
 	filtered := filterProxiesBySearch(proxies, normalizedSearch)
 	total := int64(len(filtered))
 	start := (page - 1) * pageSize
@@ -595,12 +601,7 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 		end = len(filtered)
 	}
 
-	pageSlice := filtered[start:end]
-	if options.IncludeReputation {
-		attachReputationsToProxyInfos(pageSlice)
-	}
-
-	return pageSlice, total, nil
+	return filtered[start:end], total, nil
 }
 
 func DeleteOrphanProxyScrapeSiteRelations(ctx context.Context) (int64, error) {

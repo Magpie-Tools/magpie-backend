@@ -26,12 +26,12 @@ type UserProxyFilterIndex struct {
 
 	HealthOverall *float32
 	HealthHTTP    *float32
-	HealthHTTPS   *float32
+	HealthHTTPS   *float32 `gorm:"column:health_https"`
 	HealthSOCKS4  *float32
 	HealthSOCKS5  *float32
 
 	AliveHTTP   bool `gorm:"not null;default:false;index"`
-	AliveHTTPS  bool `gorm:"not null;default:false;index"`
+	AliveHTTPS  bool `gorm:"column:alive_https;not null;default:false;index"`
 	AliveSOCKS4 bool `gorm:"not null;default:false;index"`
 	AliveSOCKS5 bool `gorm:"not null;default:false;index"`
 

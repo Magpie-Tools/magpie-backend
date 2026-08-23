@@ -69,5 +69,6 @@ func proxyListFiltersForDelete(settings dto.DeleteSettings) dto.ProxyListFilters
 		MaxTimeout:       int(settings.MaxTimeout),
 		MaxRetries:       int(settings.MaxRetries),
 		ReputationLabels: settings.ReputationLabels,
+		TagIDs:           settings.TagIDs,
 	}
 }

@@ -165,6 +165,7 @@ func getScrapeSourceProxies(w http.ResponseWriter, r *http.Request) {
 		MaxTimeout:       parsePositiveIntParam(r.URL.Query().Get("maxTimeout")),
 		MaxRetries:       parsePositiveIntParam(r.URL.Query().Get("maxRetries")),
 		ReputationLabels: normalizeQueryList(r.URL.Query()["reputation"]),
+		TagIDs:           parseProxyTagFilterIDs(r.URL.Query()["tagId"]),
 	}
 
 	proxies, total, dbErr := database.GetScrapeSiteProxyPageWithOptions(userID, sourceID, page, pageSize, search, filters, database.ProxyPageQueryOptions{

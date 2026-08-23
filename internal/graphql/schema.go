@@ -76,6 +76,15 @@ func NewSchema() (gql.Schema, error) {
 		},
 	})
 
+	proxyTagType := gql.NewObject(gql.ObjectConfig{
+		Name: "ProxyTag",
+		Fields: gql.Fields{
+			"id":    &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"name":  &gql.Field{Type: gql.NewNonNull(gql.String)},
+			"color": &gql.Field{Type: gql.NewNonNull(gql.String)},
+		},
+	})
+
 	dashboardReputationBreakdownType := gql.NewObject(gql.ObjectConfig{
 		Name: "DashboardReputationBreakdown",
 		Fields: gql.Fields{
@@ -100,6 +109,7 @@ func NewSchema() (gql.Schema, error) {
 			"alive":          &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
 			"latestCheck":    &gql.Field{Type: gql.DateTime},
 			"reputation":     &gql.Field{Type: proxyReputationSummaryType},
+			"tags":           &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(proxyTagType)))},
 		},
 	})
 
@@ -660,6 +670,12 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 	proxies := database.GetProxyInfoPage(userID, page)
 	items := make([]map[string]interface{}, 0, len(proxies))
 	for _, proxy := range proxies {
+		tags := make([]map[string]interface{}, 0, len(proxy.Tags))
+		for _, tag := range proxy.Tags {
+			tags = append(tags, map[string]interface{}{
+				"id": int(tag.ID), "name": tag.Name, "color": tag.Color,
+			})
+		}
 		items = append(items, map[string]interface{}{
 			"id":             proxy.Id,
 			"ip":             proxy.IP,
@@ -671,6 +687,7 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 			"alive":          proxy.Alive,
 			"latestCheck":    proxy.LatestCheck,
 			"reputation":     buildGraphQLReputationSummary(proxy.Reputation),
+			"tags":           tags,
 		})
 	}
 
