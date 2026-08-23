@@ -478,7 +478,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 	go func() {
 		defer wg.Done()
 		result := DB.Table("user_proxy_filter_indexes ufi").
-			Select("ufi.proxy_id, ufi.reputation_score AS score, ufi.reputation_label AS label, ufi.ip_address AS ip, ufi.port").
+			Select("ufi.proxy_id, ufi.reputation_score AS score, ufi.reputation_label AS label, ufi.host AS ip, ufi.port").
 			Where("ufi.user_id = ? AND ufi.reputation_score IS NOT NULL", userid).
 			Order("ufi.reputation_score DESC, ufi.proxy_id ASC").
 			Limit(1).

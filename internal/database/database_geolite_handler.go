@@ -247,7 +247,12 @@ func EnrichProxiesWithCountryAndType(proxies *[]domain.Proxy) []residentialOverr
 			defer wg.Done()
 			for idx := range jobs {
 				proxy := &(*proxies)[idx]
-				ip := proxy.GetIp()
+				ip := proxy.GetIPAddress()
+				if ip == "" {
+					proxy.Country = "N/A"
+					proxy.EstimatedType = "N/A"
+					continue
+				}
 				proxy.Country = GetCountryCode(ip)
 				typeValue, needsDNS := determineProxyTypeByASN(ip)
 				proxy.EstimatedType = typeValue

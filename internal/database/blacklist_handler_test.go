@@ -65,6 +65,13 @@ func TestFindProxiesInIPRangesMatchesIPv4AndIPv6(t *testing.T) {
 			t.Fatalf("create proxy %q: %v", address, err)
 		}
 	}
+	hostnameProxy := domain.Proxy{Port: 8080, Country: "N/A", EstimatedType: "N/A"}
+	if err := hostnameProxy.SetHost("gateway.provider.example"); err != nil {
+		t.Fatalf("SetHost: %v", err)
+	}
+	if err := db.Create(&hostnameProxy).Error; err != nil {
+		t.Fatalf("create hostname proxy: %v", err)
+	}
 
 	proxies, err := findProxiesInIPRanges(db, []netip.Prefix{
 		netip.MustParsePrefix("192.0.2.0/24"),

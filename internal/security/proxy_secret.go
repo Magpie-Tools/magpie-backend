@@ -153,9 +153,9 @@ func normalizeKey(key []byte) []byte {
 }
 
 // FingerprintProxyRoute returns a keyed, case-sensitive identifier for a
-// concrete proxy route. The fingerprint can be stored for deduplication
+// concrete canonical-host proxy route. The fingerprint can be stored for deduplication
 // without exposing an offline password oracle in a database dump.
-func FingerprintProxyRoute(ip string, port uint16, username, password string) ([]byte, error) {
+func FingerprintProxyRoute(host string, port uint16, username, password string) ([]byte, error) {
 	key, err := getProxyFingerprintKey()
 	if err != nil {
 		return nil, err
@@ -163,7 +163,7 @@ func FingerprintProxyRoute(ip string, port uint16, username, password string) ([
 
 	mac := hmac.New(sha256.New, key)
 	writeFingerprintField(mac, []byte("magpie/proxy-route/v1"))
-	writeFingerprintField(mac, []byte(ip))
+	writeFingerprintField(mac, []byte(host))
 
 	var portBytes [2]byte
 	binary.BigEndian.PutUint16(portBytes[:], port)

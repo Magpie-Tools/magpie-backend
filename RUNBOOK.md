@@ -234,7 +234,7 @@ Actions:
 - Encrypts proxy usernames and passwords in PostgreSQL.
 - Derives the keyed, case-sensitive fingerprint used to identify proxy routes.
 - Encrypts Redis queue credentials only when `PROXY_QUEUE_ENCRYPT_CREDENTIALS=true`.
-- Does not encrypt proxy IP addresses. PostgreSQL stores them as native `inet` values for sorting, subnet search, and blacklist range queries.
+- Does not encrypt proxy hosts. PostgreSQL stores the canonical host as text and keeps a nullable native `inet` projection for literal-IP sorting, subnet search, and blacklist range queries.
 - Rotate only with explicit migration/export plan.
 - Changing key without migration breaks decryption of stored proxy secrets.
 - With `STRICT_SECRET_VALIDATION=true`, weak/placeholder values are rejected at startup.

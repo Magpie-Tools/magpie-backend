@@ -211,7 +211,7 @@ func TestQueuedProxyToDomainProxy_CurrentPlaintextPayloadReusesHashWithoutEncryp
 	payload := queuedProxy{
 		Version:  queuedProxyVersion,
 		ID:       7,
-		IP:       "198.51.100.7",
+		IP:       "gateway.provider.example",
 		Port:     8080,
 		Username: "user",
 		Password: "pass",
@@ -227,6 +227,9 @@ func TestQueuedProxyToDomainProxy_CurrentPlaintextPayloadReusesHashWithoutEncryp
 	}
 	if proxy.Username != "user" || proxy.Password != "pass" {
 		t.Fatalf("decoded credentials = %q:%q", proxy.Username, proxy.Password)
+	}
+	if proxy.GetHost() != "gateway.provider.example" {
+		t.Fatalf("decoded route host = %q", proxy.GetHost())
 	}
 	if payload.needsRewrite() {
 		t.Fatal("current plaintext payload unexpectedly requires a rewrite")

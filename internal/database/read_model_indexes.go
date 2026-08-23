@@ -41,15 +41,15 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 		if err := db.Model(&domain.UserProxyFilterIndex{}).Count(&count).Error; err != nil {
 			return fmt.Errorf("read model: count proxy filter index: %w", err)
 		}
-		var missingIPAddresses int64
+		var missingHosts int64
 		if count > 0 {
 			if err := db.Model(&domain.UserProxyFilterIndex{}).
-				Where("ip_address IS NULL").
-				Count(&missingIPAddresses).Error; err != nil {
-				return fmt.Errorf("read model: count missing proxy IP addresses: %w", err)
+				Where("host IS NULL OR BTRIM(host) = ''").
+				Count(&missingHosts).Error; err != nil {
+				return fmt.Errorf("read model: count missing proxy hosts: %w", err)
 			}
 		}
-		if count == 0 || missingIPAddresses > 0 {
+		if count == 0 || missingHosts > 0 {
 			if err := refreshAllUserProxyFilterIndexes(db); err != nil {
 				return err
 			}
@@ -70,31 +70,32 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 		}
 	}
 
-	return finalizeReadModelIPAddressSchema(db)
+	return finalizeReadModelHostSchema(db)
 }
 
-func finalizeReadModelIPAddressSchema(db *gorm.DB) error {
+func finalizeReadModelHostSchema(db *gorm.DB) error {
 	if db == nil || !isPostgresDialect(db) || !db.Migrator().HasTable(&domain.UserProxyFilterIndex{}) {
 		return nil
 	}
 
 	var missing int64
-	if err := db.Model(&domain.UserProxyFilterIndex{}).Where("ip_address IS NULL").Count(&missing).Error; err != nil {
-		return fmt.Errorf("read model: verify proxy IP addresses: %w", err)
+	if err := db.Model(&domain.UserProxyFilterIndex{}).Where("host IS NULL OR BTRIM(host) = ''").Count(&missing).Error; err != nil {
+		return fmt.Errorf("read model: verify proxy hosts: %w", err)
 	}
 	if missing > 0 {
-		return fmt.Errorf("read model: %d proxy rows have no IP address", missing)
+		return fmt.Errorf("read model: %d proxy rows have no host", missing)
 	}
 
 	stmts := []string{
 		`DROP INDEX IF EXISTS idx_user_proxy_filter_ip_int`,
-		`ALTER TABLE user_proxy_filter_indexes ALTER COLUMN ip_address SET NOT NULL`,
+		`ALTER TABLE user_proxy_filter_indexes ALTER COLUMN host SET NOT NULL`,
+		`ALTER TABLE user_proxy_filter_indexes ALTER COLUMN ip_address DROP NOT NULL`,
 		`ALTER TABLE user_proxy_filter_indexes DROP COLUMN IF EXISTS ip`,
 		`ALTER TABLE user_proxy_filter_indexes DROP COLUMN IF EXISTS ip_int`,
 	}
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil {
-			return fmt.Errorf("read model IP address schema: %w", err)
+			return fmt.Errorf("read model host schema: %w", err)
 		}
 	}
 
@@ -112,6 +113,7 @@ func ensureReadModelSchema(db *gorm.DB) error {
 			proxy_id bigint NOT NULL,
 			PRIMARY KEY (user_id, proxy_id)
 		)`,
+		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS host varchar(253)`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS ip_address inet`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS port integer NOT NULL DEFAULT 0`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS country varchar(56) NOT NULL DEFAULT 'N/A'`,
@@ -142,6 +144,7 @@ func ensureReadModelSchema(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_type ON user_proxy_filter_indexes (user_id, type_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_reputation ON user_proxy_filter_indexes (user_id, reputation_label, reputation_score DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_proxy_id ON user_proxy_filter_indexes (proxy_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_host ON user_proxy_filter_indexes (host)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_ip_address ON user_proxy_filter_indexes (ip_address)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_ip_address_gist ON user_proxy_filter_indexes USING gist (ip_address inet_ops)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_port ON user_proxy_filter_indexes (port)`,
@@ -407,6 +410,7 @@ rows AS (
 	SELECT
 		up.user_id,
 		p.id AS proxy_id,
+		p.host,
 		p.ip_address,
 		p.port,
 		COALESCE(NULLIF(TRIM(p.country), ''), 'N/A') AS country,
@@ -439,7 +443,7 @@ rows AS (
 	LEFT JOIN proxy_reputations pr ON pr.proxy_id = p.id AND pr.kind = 'overall'
 )
 INSERT INTO user_proxy_filter_indexes (
-	user_id, proxy_id, ip_address, port,
+	user_id, proxy_id, host, ip_address, port,
 	country, country_key, estimated_type, type_key, anonymity_level, anonymity_key,
 	alive, latest_check, response_time, attempt,
 	health_overall, health_http, health_https, health_socks4, health_socks5,
@@ -447,7 +451,7 @@ INSERT INTO user_proxy_filter_indexes (
 	reputation_label, reputation_score, created_at, updated_at
 )
 SELECT
-	user_id, proxy_id, ip_address, port,
+	user_id, proxy_id, host, ip_address, port,
 	country, country_key, estimated_type, type_key, anonymity_level, anonymity_key,
 	alive, latest_check, response_time, attempt,
 	health_overall, health_http, health_https, health_socks4, health_socks5,
@@ -455,6 +459,7 @@ SELECT
 	reputation_label, reputation_score, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM rows
 ON CONFLICT (user_id, proxy_id) DO UPDATE SET
+	host = EXCLUDED.host,
 	ip_address = EXCLUDED.ip_address,
 	port = EXCLUDED.port,
 	country = EXCLUDED.country,

@@ -532,8 +532,14 @@ func ensureProxyQueryIndexSchema(db *gorm.DB) error {
 		} else {
 			if db.Migrator().HasTable(&domain.Proxy{}) {
 				stmts = append(stmts,
+					`CREATE INDEX IF NOT EXISTS idx_proxies_host_search_trgm ON proxies USING gin (LOWER(COALESCE(host, '')) gin_trgm_ops)`,
 					`CREATE INDEX IF NOT EXISTS idx_proxies_country_search_trgm ON proxies USING gin (LOWER(COALESCE(NULLIF(country, ''), 'n/a')) gin_trgm_ops)`,
 					`CREATE INDEX IF NOT EXISTS idx_proxies_estimated_type_search_trgm ON proxies USING gin (LOWER(COALESCE(NULLIF(estimated_type, ''), 'n/a')) gin_trgm_ops)`,
+				)
+			}
+			if db.Migrator().HasTable(&domain.UserProxyFilterIndex{}) {
+				stmts = append(stmts,
+					`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_host_search_trgm ON user_proxy_filter_indexes USING gin (LOWER(COALESCE(host, '')) gin_trgm_ops)`,
 				)
 			}
 			if db.Migrator().HasTable(&domain.ProxyReputation{}) {

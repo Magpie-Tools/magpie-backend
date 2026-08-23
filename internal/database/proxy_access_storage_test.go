@@ -1,6 +1,7 @@
 package database
 
 import (
+	"database/sql"
 	"testing"
 
 	"magpie/internal/domain"
@@ -116,6 +117,58 @@ func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
 	}
 	if got := inserted[0].GetFullProxy(); got != "[2001:db8::42]:8080" {
 		t.Fatalf("stored proxy address = %q, want bracketed address", got)
+	}
+}
+
+func TestProxyAccessStoragePersistsProviderHostname(t *testing.T) {
+	t.Setenv("PROXY_ENCRYPTION_KEY", "proxy-access-storage-hostname-test-key")
+	security.ResetProxyCipherForTests()
+	t.Cleanup(security.ResetProxyCipherForTests)
+
+	db, err := gorm.Open(sqlite.Open("file:proxy-access-storage-hostname?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.User{}, &domain.Proxy{}, &domain.UserProxy{}); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	previousDB := DB
+	DB = db
+	t.Cleanup(func() { DB = previousDB })
+
+	user := domain.User{Email: "hostname@example.test", Password: "hash", Role: "user"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	proxy := domain.Proxy{Port: 3128, Country: "N/A", EstimatedType: "N/A"}
+	if err := proxy.SetHost("Gateway.Provider.Example."); err != nil {
+		t.Fatalf("set provider hostname: %v", err)
+	}
+	inserted, err := InsertAndGetProxiesWithUser([]domain.Proxy{proxy}, user.ID)
+	if err != nil {
+		t.Fatalf("insert hostname proxy: %v", err)
+	}
+	if len(inserted) != 1 {
+		t.Fatalf("inserted proxy count = %d, want 1", len(inserted))
+	}
+	if got := inserted[0].GetHost(); got != "gateway.provider.example" {
+		t.Fatalf("stored provider hostname = %q", got)
+	}
+	if got := inserted[0].GetFullProxy(); got != "gateway.provider.example:3128" {
+		t.Fatalf("stored proxy address = %q", got)
+	}
+
+	var stored struct {
+		Host      string         `gorm:"column:host"`
+		IPAddress sql.NullString `gorm:"column:ip_address"`
+	}
+	if err := db.Table("proxies").Select("host", "ip_address").Where("id = ?", inserted[0].ID).Scan(&stored).Error; err != nil {
+		t.Fatalf("load stored hostname projection: %v", err)
+	}
+	if stored.Host != "gateway.provider.example" || stored.IPAddress.Valid {
+		t.Fatalf("stored host/IP projection = %q/%v, want hostname with null IP", stored.Host, stored.IPAddress)
 	}
 }
 

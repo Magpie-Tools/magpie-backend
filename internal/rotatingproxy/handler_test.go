@@ -190,6 +190,24 @@ func TestBuildHTTPTransport_ConfiguresProxyURL(t *testing.T) {
 	}
 }
 
+func TestBuildHTTPTransport_ConfiguresProviderHostname(t *testing.T) {
+	next := &dto.RotatingProxyNext{
+		Protocol: "http",
+		IP:       "gateway.provider.example",
+		Port:     3128,
+	}
+	transport := buildHTTPTransport(next)
+
+	request := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	proxyURL, err := transport.Proxy(request)
+	if err != nil {
+		t.Fatalf("proxy function returned error: %v", err)
+	}
+	if proxyURL.Host != "gateway.provider.example:3128" {
+		t.Fatalf("proxy host = %q", proxyURL.Host)
+	}
+}
+
 func TestLoadHandshakeTimeout_DefaultAndClamp(t *testing.T) {
 	t.Setenv(envRotatingProxyHandshakeTimeoutMS, "")
 	if got := loadHandshakeTimeout(); got != defaultHandshakeTimeout {

@@ -2,17 +2,19 @@ package support
 
 import (
 	"fmt"
-	"magpie/internal/config"
-	"magpie/internal/domain"
 	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"magpie/internal/config"
+	"magpie/internal/domain"
 )
 
 func ParseTextToProxies(text string) []domain.Proxy {
 	proxies, _ := parseTextToProxiesWithStats(text, proxyParseOptions{
 		allowIPv6:       true,
+		allowHostnames:  true,
 		allowColonAuth:  true,
 		allowSuffixAuth: true,
 	})
@@ -20,17 +22,20 @@ func ParseTextToProxies(text string) []domain.Proxy {
 }
 
 type ProxyParseStats struct {
-	SubmittedCount     int
-	ParsedCount        int
-	InvalidFormatCount int
-	InvalidIPCount     int
-	InvalidIPv4Count   int
-	InvalidPortCount   int
+	SubmittedCount      int
+	ParsedCount         int
+	InvalidFormatCount  int
+	InvalidAddressCount int
+	// InvalidIPCount is kept as an API compatibility alias for InvalidAddressCount.
+	InvalidIPCount   int
+	InvalidIPv4Count int
+	InvalidPortCount int
 }
 
 func ParseTextToProxiesWithStats(text string) ([]domain.Proxy, ProxyParseStats) {
 	return parseTextToProxiesWithStats(text, proxyParseOptions{
 		allowIPv6:       true,
+		allowHostnames:  true,
 		allowColonAuth:  true,
 		allowSuffixAuth: true,
 	})
@@ -48,6 +53,7 @@ func ParseScrapedTextToIPv4Proxies(text string) []domain.Proxy {
 
 type proxyParseOptions struct {
 	allowIPv6       bool
+	allowHostnames  bool
 	allowColonAuth  bool
 	allowSuffixAuth bool
 }
@@ -72,16 +78,20 @@ func parseTextToProxiesWithStats(text string, options proxyParseOptions) ([]doma
 			continue
 		}
 
-		parsedIP, err := parseProxyIP(parsedLine.host)
-		if err != nil {
+		proxy := domain.Proxy{
+			Port:     0,
+			Username: parsedLine.username,
+			Password: parsedLine.password,
+		}
+		if err := setParsedProxyHost(&proxy, parsedLine.host, options.allowHostnames); err != nil {
+			stats.InvalidAddressCount++
 			stats.InvalidIPCount++
 			continue
 		}
-		if parsedIP.Is6() && !options.allowIPv6 {
+		if ip := proxy.GetIPAddress(); ip != "" && strings.Contains(ip, ":") && !options.allowIPv6 {
 			stats.InvalidIPv4Count++
 			continue
 		}
-		ip := parsedIP.String()
 
 		port, err := strconv.Atoi(parsedLine.port)
 		if err != nil || port < 1 || port > 65535 {
@@ -89,16 +99,7 @@ func parseTextToProxiesWithStats(text string, options proxyParseOptions) ([]doma
 			continue
 		}
 
-		proxy := domain.Proxy{
-			Port:     uint16(port),
-			Username: parsedLine.username,
-			Password: parsedLine.password,
-		}
-
-		if err := proxy.SetIP(ip); err != nil {
-			stats.InvalidIPCount++
-			continue
-		}
+		proxy.Port = uint16(port)
 
 		proxies = append(proxies, proxy)
 		stats.ParsedCount++
@@ -124,22 +125,26 @@ func parseProxyLine(line string, options proxyParseOptions) (parsedProxyLine, bo
 		left := strings.TrimSpace(line[:at])
 		right := strings.TrimSpace(line[at+1:])
 
-		if host, port, tail, ok := splitProxyHostPort(right); ok && tail == "" && isProxyIP(host) {
+		rightHost, rightPort, rightTail, rightOK := splitProxyHostPort(right)
+		rightIsRoute := rightOK && rightTail == "" && isProxyHost(rightHost, options.allowHostnames)
+		leftHost, leftPort, leftTail, leftOK := splitProxyHostPort(left)
+		leftIsRoute := options.allowSuffixAuth && leftOK && leftTail == "" && isProxyHost(leftHost, options.allowHostnames)
+
+		preferSuffix := leftIsRoute && (!rightIsRoute || !isProxyPortSyntax(rightPort) && isProxyPortSyntax(leftPort))
+		if rightIsRoute && !preferSuffix {
 			username, password, credentialsOK := splitProxyCredentials(left)
 			if !credentialsOK {
 				return parsedProxyLine{}, false
 			}
-			return parsedProxyLine{host: host, port: port, username: username, password: password}, true
+			return parsedProxyLine{host: rightHost, port: rightPort, username: username, password: password}, true
 		}
 
-		if options.allowSuffixAuth {
-			if host, port, tail, ok := splitProxyHostPort(left); ok && tail == "" && isProxyIP(host) {
-				username, password, credentialsOK := splitProxyCredentials(right)
-				if !credentialsOK {
-					return parsedProxyLine{}, false
-				}
-				return parsedProxyLine{host: host, port: port, username: username, password: password}, true
+		if leftIsRoute {
+			username, password, credentialsOK := splitProxyCredentials(right)
+			if !credentialsOK {
+				return parsedProxyLine{}, false
 			}
+			return parsedProxyLine{host: leftHost, port: leftPort, username: username, password: password}, true
 		}
 
 		return parsedProxyLine{}, false
@@ -164,6 +169,11 @@ func parseProxyLine(line string, options proxyParseOptions) (parsedProxyLine, bo
 	return parsed, true
 }
 
+func isProxyPortSyntax(value string) bool {
+	port, err := strconv.Atoi(strings.TrimSpace(value))
+	return err == nil && port >= 1 && port <= 65535
+}
+
 func splitProxyHostPort(value string) (host string, port string, tail string, ok bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -176,6 +186,9 @@ func splitProxyHostPort(value string) (host string, port string, tail string, ok
 			return "", "", "", false
 		}
 		host = strings.TrimSpace(value[1:closingBracket])
+		if !isProxyIP(host) {
+			return "", "", "", false
+		}
 		value = value[closingBracket+2:]
 	} else {
 		separator := strings.IndexByte(value, ':')
@@ -208,12 +221,7 @@ func splitProxyCredentials(value string) (username string, password string, ok b
 }
 
 func clearProxyString(proxies string) string {
-	proxies = strings.ReplaceAll(proxies, "\r", "")
-
-	proxies = strings.ReplaceAll(proxies, "..", ".0.")
-	proxies = strings.ReplaceAll(proxies, ".:", ".0:")
-
-	return proxies
+	return strings.ReplaceAll(proxies, "\r", "")
 }
 
 func normalizeIPv4(value string) string {
@@ -226,7 +234,7 @@ func normalizeIPv4(value string) string {
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
 		if part == "" {
-			return value
+			part = "0"
 		}
 		num, err := strconv.Atoi(part)
 		if err != nil || num < 0 || num > 255 {
@@ -250,6 +258,19 @@ func parseProxyIP(value string) (netip.Addr, error) {
 func isProxyIP(value string) bool {
 	_, err := parseProxyIP(value)
 	return err == nil
+}
+
+func isProxyHost(value string, allowHostnames bool) bool {
+	proxy := domain.Proxy{}
+	return setParsedProxyHost(&proxy, value, allowHostnames) == nil
+}
+
+func setParsedProxyHost(proxy *domain.Proxy, value string, allowHostnames bool) error {
+	value = normalizeIPv4(strings.TrimSpace(value))
+	if allowHostnames {
+		return proxy.SetHost(value)
+	}
+	return proxy.SetIP(value)
 }
 
 var ipCandidateRegex = regexp.MustCompile(`[0-9A-Fa-f:.]+`)

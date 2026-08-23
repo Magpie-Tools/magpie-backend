@@ -34,6 +34,64 @@ func TestProxySetIP(t *testing.T) {
 	if got := proxy.GetIp(); got != "192.0.2.10" {
 		t.Fatalf("GetIp returned %s, want unmapped IPv4 address", got)
 	}
+	if got := proxy.GetIPAddress(); got != "192.0.2.10" {
+		t.Fatalf("literal IP projection = %q, want 192.0.2.10", got)
+	}
+}
+
+func TestProxySetHostCanonicalizesProviderHostname(t *testing.T) {
+	proxy := Proxy{Port: 8080}
+	if err := proxy.SetHost(" Gateway.B\u00dcCHER.Example. "); err != nil {
+		t.Fatalf("SetHost returned error: %v", err)
+	}
+
+	if got := proxy.GetHost(); got != "gateway.xn--bcher-kva.example" {
+		t.Fatalf("canonical hostname = %q, want gateway.xn--bcher-kva.example", got)
+	}
+	if got := proxy.GetIPAddress(); got != "" {
+		t.Fatalf("hostname IP projection = %q, want empty", got)
+	}
+	if !proxy.IsHostname() {
+		t.Fatal("expected provider gateway to be identified as a hostname")
+	}
+	if got := proxy.GetFullProxy(); got != "gateway.xn--bcher-kva.example:8080" {
+		t.Fatalf("full hostname proxy = %q", got)
+	}
+}
+
+func TestProxySetHostRejectsInvalidHostnames(t *testing.T) {
+	for _, value := range []string{"", "-gateway.example", "gateway_.example", "gateway..example", "bad:host", "fe80::1%eth0"} {
+		proxy := Proxy{}
+		if err := proxy.SetHost(value); err == nil {
+			t.Fatalf("SetHost(%q) accepted an invalid hostname", value)
+		}
+	}
+}
+
+func TestProxyHostnameFingerprintUsesCanonicalDNSIdentity(t *testing.T) {
+	t.Setenv("PROXY_ENCRYPTION_KEY", "hostname-fingerprint-test-key")
+	security.ResetProxyCipherForTests()
+	t.Cleanup(security.ResetProxyCipherForTests)
+
+	first := Proxy{Port: 8080, Username: "User", Password: "Secret"}
+	if err := first.SetHost("GATEWAY.Provider.Example."); err != nil {
+		t.Fatalf("SetHost first: %v", err)
+	}
+	if err := first.GenerateHash(); err != nil {
+		t.Fatalf("GenerateHash first: %v", err)
+	}
+
+	second := Proxy{Port: 8080, Username: "User", Password: "Secret"}
+	if err := second.SetHost("gateway.provider.example"); err != nil {
+		t.Fatalf("SetHost second: %v", err)
+	}
+	if err := second.GenerateHash(); err != nil {
+		t.Fatalf("GenerateHash second: %v", err)
+	}
+
+	if !bytes.Equal(first.Hash, second.Hash) {
+		t.Fatal("equivalent DNS hostnames generated different route fingerprints")
+	}
 }
 
 func TestProxyGenerateHash(t *testing.T) {

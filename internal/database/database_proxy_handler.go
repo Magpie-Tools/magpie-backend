@@ -601,7 +601,7 @@ func RefreshRecentProxyChecksCache(userID uint, limit int) []dto.ProxyRecentChec
 WITH candidates AS (
 	SELECT
 		p.id,
-			p.ip_address,
+			p.host AS ip_address,
 		p.port,
 		COALESCE(pos.overall_alive, FALSE) AS alive,
 		pos.last_checked_at
@@ -698,7 +698,7 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 	if err := DB.Model(&domain.Proxy{}).
 		Select(
 			"proxies.id AS id, "+
-				"proxies.ip_address AS ip_address, "+
+				"proxies.host AS ip_address, "+
 				"proxies.port AS port, "+
 				"COALESCE(latest.response_time, 0) AS response_time, "+
 				"COALESCE(NULLIF(proxies.country, ''), 'N/A') AS country, "+
@@ -793,7 +793,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select(
 			"ufi.proxy_id AS id, "+
-				"ufi.ip_address AS ip_address, "+
+				"ufi.host AS ip_address, "+
 				"ufi.port AS port, "+
 				"ufi.estimated_type AS estimated_type, "+
 				"ufi.response_time AS response_time, "+
@@ -1011,9 +1011,9 @@ func proxyPageSortExpressions(field string) []string {
 	case "health_socks5":
 		return []string{"ufi.health_socks5"}
 	case "ip":
-		return []string{"ufi.ip_address"}
+		return []string{"ufi.host"}
 	case "ip_port":
-		return []string{"ufi.ip_address", "ufi.port"}
+		return []string{"ufi.host", "ufi.port"}
 	case "port":
 		return []string{"ufi.port"}
 	case "response_time":
@@ -1152,12 +1152,14 @@ func buildProxySearchPredicate(lowerSearch string) (string, []interface{}) {
 
 	pattern := "%" + lowerSearch + "%"
 	conditions := []string{
+		"LOWER(ufi.host) LIKE ?",
 		"ufi.type_key LIKE ?",
 		"ufi.country_key LIKE ?",
 		"ufi.anonymity_key LIKE ?",
 		"ufi.reputation_label LIKE ?",
 	}
 	args := []interface{}{
+		pattern,
 		pattern,
 		pattern,
 		pattern,

@@ -6,4 +6,4 @@ Magpie continuously checks millions of proxy routes. Encrypting credentials when
 
 ## Consequences
 
-A Redis reader or backup reader can see proxy IP addresses, ports, usernames, and passwords in the default mode. Redis must stay on a private network with authentication and restricted ACLs; remote connections should use TLS, and volumes and backups must be encrypted. High-volume installations should keep the default unless benchmarks show that encrypted mode meets their throughput target. Changing `PROXY_ENCRYPTION_KEY` before legacy encrypted queue payloads are rewritten prevents those payloads from being decrypted.
+A Redis reader or backup reader can see proxy hosts, ports, usernames, and passwords in the default mode. Redis must stay on a private network with authentication and restricted ACLs; remote connections should use TLS, and volumes and backups must be encrypted. High-volume installations should keep the default unless benchmarks show that encrypted mode meets their throughput target. Changing `PROXY_ENCRYPTION_KEY` before legacy encrypted queue payloads are rewritten prevents those payloads from being decrypted.

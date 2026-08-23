@@ -76,6 +76,18 @@ func TestBuildProxySearchPredicate_AvoidsCastHeavyPredicates(t *testing.T) {
 	if !strings.Contains(sql, "ufi.alive") {
 		t.Fatalf("expected status predicate in %q", sql)
 	}
+	if !strings.Contains(sql, "LOWER(ufi.host) LIKE ?") {
+		t.Fatalf("expected hostname predicate in %q", sql)
+	}
+}
+
+func TestProxyMatchesSearchFindsProviderHostname(t *testing.T) {
+	proxy := dto.ProxyInfo{IP: "gateway.provider.example", Port: 3128}
+	for _, search := range []string{"gateway.provider.example", "provider", "gateway.provider.example:3128"} {
+		if !proxyMatchesSearch(proxy, search) {
+			t.Errorf("proxyMatchesSearch(%q) did not match provider hostname", search)
+		}
+	}
 }
 
 func TestBuildProxySearchPredicate_NumericIncludesTypedMatches(t *testing.T) {

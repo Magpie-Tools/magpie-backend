@@ -22,6 +22,7 @@ func GetNextAbuseIPDBProxyToCheck(ctx context.Context, staleBefore time.Time) (*
 	err := DB.WithContext(ctx).
 		Model(&domain.Proxy{}).
 		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id)").
+		Where("proxies.ip_address IS NOT NULL").
 		Joins("LEFT JOIN abuseipdb_checks ac ON ac.proxy_id = proxies.id").
 		Where("ac.checked_at IS NULL OR ac.checked_at < ?", staleBefore).
 		Order("ac.checked_at ASC NULLS FIRST, proxies.id ASC").

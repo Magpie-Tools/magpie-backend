@@ -3,7 +3,6 @@ package database
 import (
 	"bytes"
 	"fmt"
-	"net/netip"
 	"strings"
 
 	"magpie/internal/domain"
@@ -20,6 +19,7 @@ type legacyProxyStorageRow struct {
 	LegacyIP           string `gorm:"column:legacy_ip"`
 	LegacyUsername     string `gorm:"column:legacy_username"`
 	LegacyPassword     string `gorm:"column:legacy_password"`
+	CurrentHost        string `gorm:"column:current_host"`
 	CurrentIPAddress   string `gorm:"column:current_ip_address"`
 	CurrentFingerprint []byte `gorm:"column:current_fingerprint"`
 }
@@ -32,8 +32,8 @@ func ensureProxyAccessStorageSchema(db *gorm.DB) error {
 		return nil
 	}
 
-	if !db.Migrator().HasColumn(&domain.Proxy{}, "ip_address") {
-		return fmt.Errorf("proxy access storage: ip_address column was not created")
+	if !db.Migrator().HasColumn(&domain.Proxy{}, "host") || !db.Migrator().HasColumn(&domain.Proxy{}, "ip_address") {
+		return fmt.Errorf("proxy access storage: host columns were not created")
 	}
 	if !db.Migrator().HasTable(&domain.UserProxy{}) ||
 		!db.Migrator().HasColumn(&domain.UserProxy{}, "username") ||
@@ -50,13 +50,16 @@ func ensureProxyAccessStorageSchema(db *gorm.DB) error {
 			return err
 		}
 	}
-
-	var missingAddresses int64
-	if err := db.Table("proxies").Where("ip_address IS NULL").Count(&missingAddresses).Error; err != nil {
-		return fmt.Errorf("proxy access storage: verify IP addresses: %w", err)
+	if err := db.Exec(`UPDATE proxies SET host = host(ip_address) WHERE (host IS NULL OR BTRIM(host) = '') AND ip_address IS NOT NULL`).Error; err != nil {
+		return fmt.Errorf("proxy access storage: backfill route hosts: %w", err)
 	}
-	if missingAddresses != 0 {
-		return fmt.Errorf("proxy access storage: %d routes have no IP address", missingAddresses)
+
+	var missingHosts int64
+	if err := db.Table("proxies").Where("host IS NULL OR BTRIM(host) = ''").Count(&missingHosts).Error; err != nil {
+		return fmt.Errorf("proxy access storage: verify route hosts: %w", err)
+	}
+	if missingHosts != 0 {
+		return fmt.Errorf("proxy access storage: %d routes have no host", missingHosts)
 	}
 
 	stmts := []string{
@@ -67,8 +70,10 @@ func ensureProxyAccessStorageSchema(db *gorm.DB) error {
 		`ALTER TABLE user_proxies ALTER COLUMN password SET DEFAULT ''`,
 		`ALTER TABLE user_proxies ALTER COLUMN password SET NOT NULL`,
 		`DROP INDEX IF EXISTS idx_proxy_addr`,
-		`ALTER TABLE proxies ALTER COLUMN ip_address SET NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_proxy_addr ON proxies (ip_address, port)`,
+		`ALTER TABLE proxies ALTER COLUMN host SET NOT NULL`,
+		`ALTER TABLE proxies ALTER COLUMN ip_address DROP NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_proxy_addr ON proxies (host, port)`,
+		`CREATE INDEX IF NOT EXISTS idx_proxies_ip_address ON proxies (ip_address)`,
 	}
 	if legacyIPExists {
 		stmts = append(stmts,
@@ -112,6 +117,7 @@ func migrateLegacyProxyStorage(db *gorm.DB, hasUsername, hasPassword bool) error
 			       COALESCE(ip, '') AS legacy_ip,
 			       %s AS legacy_username,
 			       %s AS legacy_password,
+			       COALESCE(proxies.host, '') AS current_host,
 			       COALESCE(host(ip_address), '') AS current_ip_address,
 			       hash AS current_fingerprint
 			FROM proxies
@@ -144,32 +150,43 @@ func migrateLegacyProxyStorage(db *gorm.DB, hasUsername, hasPassword bool) error
 }
 
 func migrateLegacyProxyStorageRow(tx *gorm.DB, row legacyProxyStorageRow) error {
-	ipAddress := strings.TrimSpace(row.CurrentIPAddress)
-	if ipAddress == "" {
+	routeHost := strings.TrimSpace(row.CurrentHost)
+	if routeHost == "" {
+		routeHost = strings.TrimSpace(row.CurrentIPAddress)
+	}
+	if routeHost == "" {
 		plainIP, _, err := security.DecryptProxySecret(row.LegacyIP)
 		if err != nil {
 			return fmt.Errorf("proxy access storage: decrypt IP for route %d: %w", row.ID, err)
 		}
-		parsed, parseErr := netip.ParseAddr(strings.TrimSpace(plainIP))
-		if parseErr != nil {
-			return fmt.Errorf("proxy access storage: route %d has invalid IP address", row.ID)
-		}
-		ipAddress = parsed.Unmap().String()
+		routeHost = plainIP
 	}
+
+	proxy := domain.Proxy{}
+	if err := proxy.SetHost(routeHost); err != nil {
+		return fmt.Errorf("proxy access storage: route %d has invalid host", row.ID)
+	}
+	routeHost = proxy.GetHost()
+	ipAddress := proxy.GetIPAddress()
 
 	password, _, err := security.DecryptProxySecret(row.LegacyPassword)
 	if err != nil {
 		return fmt.Errorf("proxy access storage: decrypt password for route %d: %w", row.ID, err)
 	}
-	fingerprint, err := security.FingerprintProxyRoute(ipAddress, row.Port, row.LegacyUsername, password)
+	fingerprint, err := security.FingerprintProxyRoute(routeHost, row.Port, row.LegacyUsername, password)
 	if err != nil {
 		return fmt.Errorf("proxy access storage: fingerprint route %d: %w", row.ID, err)
 	}
 
-	if ipAddress != row.CurrentIPAddress || !bytes.Equal(fingerprint, row.CurrentFingerprint) {
+	if routeHost != row.CurrentHost || ipAddress != row.CurrentIPAddress || !bytes.Equal(fingerprint, row.CurrentFingerprint) {
+		var storedIPAddress any
+		if ipAddress != "" {
+			storedIPAddress = ipAddress
+		}
 		if err := tx.Exec(
-			`UPDATE proxies SET ip_address = ?::inet, hash = ? WHERE id = ?`,
-			ipAddress,
+			`UPDATE proxies SET host = ?, ip_address = ?::inet, hash = ? WHERE id = ?`,
+			routeHost,
+			storedIPAddress,
 			fingerprint,
 			row.ID,
 		).Error; err != nil {

@@ -89,11 +89,21 @@ func TestFilterProxiesBlocksExactAndRangedIPv6Addresses(t *testing.T) {
 		makeProxy("2001:db8::10"),
 		makeProxy("2001:db8:abcd::20"),
 		makeProxy("2001:db9::30"),
+		func() domain.Proxy {
+			proxy := domain.Proxy{Port: 8080}
+			if err := proxy.SetHost("gateway.provider.example"); err != nil {
+				t.Fatalf("SetHost: %v", err)
+			}
+			return proxy
+		}(),
 	})
-	if len(blocked) != 2 || len(allowed) != 1 {
-		t.Fatalf("blocked/allowed counts = %d/%d, want 2/1", len(blocked), len(allowed))
+	if len(blocked) != 2 || len(allowed) != 2 {
+		t.Fatalf("blocked/allowed counts = %d/%d, want 2/2", len(blocked), len(allowed))
 	}
 	if got := allowed[0].GetIp(); got != "2001:db9::30" {
 		t.Fatalf("allowed proxy = %q, want 2001:db9::30", got)
+	}
+	if got := allowed[1].GetHost(); got != "gateway.provider.example" {
+		t.Fatalf("allowed hostname route = %q", got)
 	}
 }

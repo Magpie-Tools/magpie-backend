@@ -7,8 +7,9 @@ type UserProxyFilterIndex struct {
 	UserID  uint   `gorm:"primaryKey;index:idx_user_proxy_filter_user_alive_latest,priority:1;index:idx_user_proxy_filter_user_country,priority:1;index:idx_user_proxy_filter_user_type,priority:1;index:idx_user_proxy_filter_user_reputation,priority:1"`
 	ProxyID uint64 `gorm:"primaryKey;index"`
 
-	IPAddress string `gorm:"column:ip_address;type:inet;index"`
-	Port      uint16 `gorm:"not null;index"`
+	Host      string  `gorm:"column:host;type:varchar(253);index"`
+	IPAddress *string `gorm:"column:ip_address;type:inet;index"`
+	Port      uint16  `gorm:"not null;index"`
 
 	Country       string `gorm:"size:56;not null;default:'N/A'"`
 	CountryKey    string `gorm:"size:56;not null;default:'n/a';index:idx_user_proxy_filter_user_country,priority:2"`

@@ -72,14 +72,15 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 	response := dto.AddProxiesResponse{
 		ProxyCount: insertedCount,
 		Details: dto.AddProxiesDetails{
-			SubmittedCount:     parseStats.SubmittedCount,
-			ParsedCount:        parseStats.ParsedCount,
-			InvalidFormatCount: parseStats.InvalidFormatCount,
-			InvalidIPCount:     parseStats.InvalidIPCount,
-			InvalidIPv4Count:   parseStats.InvalidIPv4Count,
-			InvalidPortCount:   parseStats.InvalidPortCount,
-			BlacklistedCount:   blacklistedCount,
-			ProcessingMs:       processingMs,
+			SubmittedCount:      parseStats.SubmittedCount,
+			ParsedCount:         parseStats.ParsedCount,
+			InvalidFormatCount:  parseStats.InvalidFormatCount,
+			InvalidAddressCount: parseStats.InvalidAddressCount,
+			InvalidIPCount:      parseStats.InvalidIPCount,
+			InvalidIPv4Count:    parseStats.InvalidIPv4Count,
+			InvalidPortCount:    parseStats.InvalidPortCount,
+			BlacklistedCount:    blacklistedCount,
+			ProcessingMs:        processingMs,
 		},
 	}
 	json.NewEncoder(w).Encode(response)
@@ -145,6 +146,7 @@ func ingestProxyUploadMultipart(w http.ResponseWriter, r *http.Request, userID u
 		stats.SubmittedCount += parseStats.SubmittedCount
 		stats.ParsedCount += parseStats.ParsedCount
 		stats.InvalidFormatCount += parseStats.InvalidFormatCount
+		stats.InvalidAddressCount += parseStats.InvalidAddressCount
 		stats.InvalidIPCount += parseStats.InvalidIPCount
 		stats.InvalidIPv4Count += parseStats.InvalidIPv4Count
 		stats.InvalidPortCount += parseStats.InvalidPortCount

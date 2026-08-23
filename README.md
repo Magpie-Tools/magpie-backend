@@ -32,12 +32,14 @@ go run ./cmd/magpie --migrate-only
 command overrides that setting, applies the schema and data backfills, then
 exits.
 
-Proxy IP addresses use PostgreSQL's native `inet` type and remain visible to a
-database reader. Proxy usernames and passwords are encrypted on each user's
-proxy access row. Redis queue payloads keep credentials in plaintext by default
-because proxy checking is a high-volume hot path. Protect Redis as trusted
-infrastructure. Set `PROXY_QUEUE_ENCRYPT_CREDENTIALS=true` only when the added
-per-check decryption cost is acceptable.
+Canonical proxy hosts, including provider gateway hostnames, remain visible to
+a database reader. Literal IP hosts also use a nullable PostgreSQL `inet`
+projection for indexed subnet operations. Proxy usernames and passwords are
+encrypted on each user's proxy access row. Redis queue payloads keep hosts and
+credentials in plaintext by default because proxy checking is a high-volume hot
+path. Protect Redis as trusted infrastructure. Set
+`PROXY_QUEUE_ENCRYPT_CREDENTIALS=true` only when the added per-check decryption
+cost is acceptable.
 
 ## Validation
 

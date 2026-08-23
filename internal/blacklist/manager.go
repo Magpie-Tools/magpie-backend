@@ -156,6 +156,7 @@ func FilterProxies(proxies []domain.Proxy) (allowed []domain.Proxy, blocked []do
 	for _, proxy := range proxies {
 		ip := normalizeIP(proxy.GetIp())
 		if ip == "" {
+			allowed = append(allowed, proxy)
 			continue
 		}
 		if _, found := set[ip]; found {

@@ -8,7 +8,7 @@ import (
 )
 
 func TestClearProxyString(t *testing.T) {
-	input := "user:pass@1.1.1.1:80\r\n5.5.5.5.:443"
+	input := "user:pass@1.1.1.1:80\r\ngateway..provider.example:443"
 	got := clearProxyString(input)
 
 	if strings.Contains(got, "\r") {
@@ -17,11 +17,8 @@ func TestClearProxyString(t *testing.T) {
 	if !strings.Contains(got, "@") {
 		t.Fatalf("clearProxyString removed the authentication delimiter, got %q", got)
 	}
-	if strings.Contains(got, "..") {
-		t.Fatalf("clearProxyString did not normalize dot sequences, got %q", got)
-	}
-	if strings.Contains(got, ".:") {
-		t.Fatalf("clearProxyString did not normalize dot-colon sequence, got %q", got)
+	if !strings.Contains(got, "gateway..provider.example") {
+		t.Fatalf("clearProxyString rewrote hostname content, got %q", got)
 	}
 }
 
@@ -35,12 +32,16 @@ func TestParseTextToProxies(t *testing.T) {
 		"[2001:0db8::10]:3128",
 		"v6user:v6pass@[2001:db8::20]:8080",
 		"[2001:db8::30]:8081:v6suffix:secret",
+		"Gateway.Provider.Example.:8000",
+		"hostuser:hostpass@gateway2.provider.example:8001",
+		"gateway3.provider.example:8002@hostuser2:hostpass2",
+		"gateway4.provider.example:8003:hostuser3:hostpass3",
 		"2.2.2.2:badport",
 	}, "\r\n")
 
 	parsed := ParseTextToProxies(input)
-	if len(parsed) != 7 {
-		t.Fatalf("ParseTextToProxies returned %d proxies, want 7", len(parsed))
+	if len(parsed) != 11 {
+		t.Fatalf("ParseTextToProxies returned %d proxies, want 11: %#v", len(parsed), parsed)
 	}
 
 	if got := parsed[0].GetFullProxy(); got != "1.1.1.1:80" {
@@ -77,10 +78,22 @@ func TestParseTextToProxies(t *testing.T) {
 	if parsed[6].Username != "v6suffix" || parsed[6].Password != "secret" {
 		t.Fatalf("unexpected IPv6 colon credentials: %s:%s", parsed[6].Username, parsed[6].Password)
 	}
+	if got := parsed[7].GetFullProxy(); got != "gateway.provider.example:8000" {
+		t.Fatalf("provider hostname proxy was %s", got)
+	}
+	if parsed[8].Username != "hostuser" || parsed[8].Password != "hostpass" {
+		t.Fatalf("unexpected hostname prefix credentials: %s:%s", parsed[8].Username, parsed[8].Password)
+	}
+	if parsed[9].Username != "hostuser2" || parsed[9].Password != "hostpass2" {
+		t.Fatalf("unexpected hostname suffix credentials: %s:%s", parsed[9].Username, parsed[9].Password)
+	}
+	if parsed[10].Username != "hostuser3" || parsed[10].Password != "hostpass3" {
+		t.Fatalf("unexpected hostname colon credentials: %s:%s", parsed[10].Username, parsed[10].Password)
+	}
 }
 
 func TestParseScrapedTextToIPv4ProxiesKeepsIPv4OnlyBoundary(t *testing.T) {
-	input := "3.3.3.3:8080:user:pass\nuser:pass@4.4.4.4:9000\n[2001:db8::1]:8080\n"
+	input := "3.3.3.3:8080:user:pass\nuser:pass@4.4.4.4:9000\n[2001:db8::1]:8080\ngateway.provider.example:8080\n"
 
 	parsed := ParseScrapedTextToIPv4Proxies(input)
 	if len(parsed) != 2 {
@@ -108,19 +121,21 @@ func TestParseTextToProxiesWithStatsAcceptsIPv6(t *testing.T) {
 		"[2001:db8::2]:bad",
 		"[not-an-ip]:8080",
 		"2001:db8::3:8080",
+		"bad_host.example:8080",
+		"Gateway.Provider.Example.:9000",
 	}, "\n"))
 
-	if len(parsed) != 1 {
-		t.Fatalf("parsed proxy count = %d, want 1", len(parsed))
+	if len(parsed) != 2 {
+		t.Fatalf("parsed proxy count = %d, want 2", len(parsed))
 	}
-	if stats.SubmittedCount != 4 || stats.ParsedCount != 1 {
-		t.Fatalf("submitted/parsed counts = %d/%d, want 4/1", stats.SubmittedCount, stats.ParsedCount)
+	if stats.SubmittedCount != 6 || stats.ParsedCount != 2 {
+		t.Fatalf("submitted/parsed counts = %d/%d, want 6/2", stats.SubmittedCount, stats.ParsedCount)
 	}
 	if stats.InvalidIPv4Count != 0 {
 		t.Fatalf("invalid IPv4 count = %d, want 0 for manual IPv6 import", stats.InvalidIPv4Count)
 	}
-	if stats.InvalidPortCount != 1 || stats.InvalidIPCount != 2 {
-		t.Fatalf("invalid port/IP counts = %d/%d, want 1/2", stats.InvalidPortCount, stats.InvalidIPCount)
+	if stats.InvalidPortCount != 1 || stats.InvalidAddressCount != 2 || stats.InvalidIPCount != 2 || stats.InvalidFormatCount != 1 {
+		t.Fatalf("invalid counts = port %d, address %d, IP alias %d, format %d", stats.InvalidPortCount, stats.InvalidAddressCount, stats.InvalidIPCount, stats.InvalidFormatCount)
 	}
 }
 
@@ -172,5 +187,16 @@ func TestFormatProxyBracketsIPv6AddressWithPort(t *testing.T) {
 
 	if got := FormatProxy(proxy, "http://ip:port"); got != "http://[2001:db8::7]:8080" {
 		t.Fatalf("FormatProxy returned %q, want bracketed IPv6 URL", got)
+	}
+}
+
+func TestFormatProxyUsesProviderHostname(t *testing.T) {
+	proxy := domain.Proxy{Port: 8080}
+	if err := proxy.SetHost("Gateway.Provider.Example."); err != nil {
+		t.Fatalf("SetHost returned error: %v", err)
+	}
+
+	if got := FormatProxy(proxy, "http://ip:port"); got != "http://gateway.provider.example:8080" {
+		t.Fatalf("FormatProxy returned %q", got)
 	}
 }
