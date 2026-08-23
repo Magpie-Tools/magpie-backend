@@ -21,8 +21,18 @@ func TestProxySetIP(t *testing.T) {
 		t.Fatal("expected error for invalid IP, got nil")
 	}
 
-	if err := proxy.SetIP("::1"); err == nil {
-		t.Fatal("expected error for IPv6 address, got nil")
+	if err := proxy.SetIP("2001:0db8:0:0:0:0:0:1"); err != nil {
+		t.Fatalf("SetIP returned error for IPv6 address: %v", err)
+	}
+	if got := proxy.GetIp(); got != "2001:db8::1" {
+		t.Fatalf("GetIp returned %s, want canonical IPv6 address", got)
+	}
+
+	if err := proxy.SetIP("::ffff:192.0.2.10"); err != nil {
+		t.Fatalf("SetIP returned error for IPv4-mapped address: %v", err)
+	}
+	if got := proxy.GetIp(); got != "192.0.2.10" {
+		t.Fatalf("GetIp returned %s, want unmapped IPv4 address", got)
 	}
 }
 
@@ -77,6 +87,17 @@ func TestProxyGetters(t *testing.T) {
 	proxy.Password = ""
 	if proxy.HasAuth() {
 		t.Fatal("HasAuth returned true when password missing")
+	}
+}
+
+func TestProxyGetFullProxyBracketsIPv6(t *testing.T) {
+	proxy := Proxy{Port: 8080}
+	if err := proxy.SetIP("2001:db8::5"); err != nil {
+		t.Fatalf("SetIP returned error: %v", err)
+	}
+
+	if got := proxy.GetFullProxy(); got != "[2001:db8::5]:8080" {
+		t.Fatalf("GetFullProxy returned %s, want [2001:db8::5]:8080", got)
 	}
 }
 

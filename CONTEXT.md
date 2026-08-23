@@ -5,7 +5,7 @@ Magpie imports, checks, and organizes proxy routes for individual users.
 ## Language
 
 **Proxy route**:
-An IPv4 address and port combined with one exact credential pair. Health and reputation belong to this identity.
+An IP address and port combined with one exact credential pair. Health and reputation belong to this identity.
 _Avoid_: Proxy endpoint, proxy record
 
 **Proxy access**:

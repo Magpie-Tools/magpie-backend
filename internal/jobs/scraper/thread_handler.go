@@ -733,7 +733,7 @@ func isConnClosed(err error) bool {
 
 func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 	proxyList := support.GetProxiesOfHTML(rawHTML)
-	parsedProxies := support.ParseTextToProxiesStrictAuth(strings.Join(proxyList, "\n"))
+	parsedProxies := support.ParseScrapedTextToIPv4Proxies(strings.Join(proxyList, "\n"))
 
 	parsedProxies, blocked := blacklist.FilterProxies(parsedProxies)
 	if len(blocked) > 0 {

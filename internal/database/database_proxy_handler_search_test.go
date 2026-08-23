@@ -114,6 +114,11 @@ func TestBuildIPSearchNetwork(t *testing.T) {
 		{search: "192.168.", network: "192.168.0.0/16", fallback: "192.168", valid: true},
 		{search: "192.168.4", network: "192.168.4.0/24", fallback: "192.168.4", valid: true},
 		{search: "192.168.4.9", network: "192.168.4.9/32", fallback: "192.168.4.9", exact: true, valid: true},
+		{search: "2001:db8::42", network: "2001:db8::42/128", fallback: "2001:db8::42", exact: true, valid: true},
+		{search: "[2001:db8::42]", network: "2001:db8::42/128", fallback: "2001:db8::42", exact: true, valid: true},
+		{search: "[2001:db8::42]:8080", network: "2001:db8::42/128", fallback: "2001:db8::42", exact: true, valid: true},
+		{search: "2001:db8::/32", network: "2001:db8::/32", fallback: "2001:db8", valid: true},
+		{search: "::/128", network: "::/128", fallback: "::", exact: true, valid: true},
 		{search: "192..4", valid: false},
 		{search: "256.1", valid: false},
 	}
@@ -133,6 +138,19 @@ func TestBuildIPSearchNetwork(t *testing.T) {
 				testCase.exact,
 				testCase.valid,
 			)
+		}
+	}
+}
+
+func TestIsLikelyProxyIPSearchRecognizesBothAddressFamilies(t *testing.T) {
+	for _, search := range []string{"192.0.2", "2001:db8::1", "2001:db8::/32", "[2001:db8::1]:8080"} {
+		if !isLikelyProxyIPSearch(search) {
+			t.Errorf("isLikelyProxyIPSearch(%q) = false, want true", search)
+		}
+	}
+	for _, search := range []string{"", "alive", "3128", "2001:db8"} {
+		if isLikelyProxyIPSearch(search) {
+			t.Errorf("isLikelyProxyIPSearch(%q) = true, want false", search)
 		}
 	}
 }

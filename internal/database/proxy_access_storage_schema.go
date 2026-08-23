@@ -3,7 +3,7 @@ package database
 import (
 	"bytes"
 	"fmt"
-	"net"
+	"net/netip"
 	"strings"
 
 	"magpie/internal/domain"
@@ -150,11 +150,11 @@ func migrateLegacyProxyStorageRow(tx *gorm.DB, row legacyProxyStorageRow) error 
 		if err != nil {
 			return fmt.Errorf("proxy access storage: decrypt IP for route %d: %w", row.ID, err)
 		}
-		parsed := net.ParseIP(strings.TrimSpace(plainIP))
-		if parsed == nil || parsed.To4() == nil {
-			return fmt.Errorf("proxy access storage: route %d has invalid IPv4 address", row.ID)
+		parsed, parseErr := netip.ParseAddr(strings.TrimSpace(plainIP))
+		if parseErr != nil {
+			return fmt.Errorf("proxy access storage: route %d has invalid IP address", row.ID)
 		}
-		ipAddress = parsed.To4().String()
+		ipAddress = parsed.Unmap().String()
 	}
 
 	password, _, err := security.DecryptProxySecret(row.LegacyPassword)

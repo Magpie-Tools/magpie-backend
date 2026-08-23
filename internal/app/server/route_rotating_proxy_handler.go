@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"sort"
@@ -46,14 +45,22 @@ func listRotatingProxies(w http.ResponseWriter, r *http.Request) {
 
 	for idx := range proxies {
 		proxies[idx].ListenHost = rotatorHost
-		if rotatorHost != "" {
-			proxies[idx].ListenAddress = fmt.Sprintf("%s:%d", rotatorHost, proxies[idx].ListenPort)
-		} else {
-			proxies[idx].ListenAddress = fmt.Sprintf("%d", proxies[idx].ListenPort)
-		}
+		proxies[idx].ListenAddress = formatRotatingProxyListenAddress(rotatorHost, proxies[idx].ListenPort)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"rotating_proxies": proxies})
+}
+
+func formatRotatingProxyListenAddress(host string, port uint16) string {
+	portString := strconv.Itoa(int(port))
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return portString
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSpace(host[1 : len(host)-1])
+	}
+	return net.JoinHostPort(host, portString)
 }
 
 func createRotatingProxy(w http.ResponseWriter, r *http.Request) {

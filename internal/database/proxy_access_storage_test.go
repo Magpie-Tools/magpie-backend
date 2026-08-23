@@ -78,6 +78,47 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 	}
 }
 
+func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
+	t.Setenv("PROXY_ENCRYPTION_KEY", "proxy-access-storage-ipv6-test-key")
+	security.ResetProxyCipherForTests()
+	t.Cleanup(security.ResetProxyCipherForTests)
+
+	db, err := gorm.Open(sqlite.Open("file:proxy-access-storage-ipv6?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.User{}, &domain.Proxy{}, &domain.UserProxy{}); err != nil {
+		t.Fatalf("migrate database: %v", err)
+	}
+
+	previousDB := DB
+	DB = db
+	t.Cleanup(func() { DB = previousDB })
+
+	user := domain.User{Email: "ipv6@example.test", Password: "hash", Role: "user"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	proxy := domain.Proxy{Port: 8080, Country: "N/A", EstimatedType: "N/A"}
+	if err := proxy.SetIP("2001:0db8::42"); err != nil {
+		t.Fatalf("set IPv6 address: %v", err)
+	}
+	inserted, err := InsertAndGetProxiesWithUser([]domain.Proxy{proxy}, user.ID)
+	if err != nil {
+		t.Fatalf("insert IPv6 proxy: %v", err)
+	}
+	if len(inserted) != 1 {
+		t.Fatalf("inserted proxy count = %d, want 1", len(inserted))
+	}
+	if got := inserted[0].GetIp(); got != "2001:db8::42" {
+		t.Fatalf("stored IPv6 address = %q, want canonical address", got)
+	}
+	if got := inserted[0].GetFullProxy(); got != "[2001:db8::42]:8080" {
+		t.Fatalf("stored proxy address = %q, want bracketed address", got)
+	}
+}
+
 func assertStoredProxyAccess(t *testing.T, db *gorm.DB, userID uint, proxyID uint64, username, password string) {
 	t.Helper()
 

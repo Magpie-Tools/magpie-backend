@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/netip"
 	"regexp"
 	"sort"
 	"strings"
@@ -33,10 +33,10 @@ const (
 
 var (
 	cache       atomicMap
-	rangeCache  atomicRangeList
+	rangeCache  atomicRangeCache
 	refreshOnce singleflight.Group
 	httpClient  = support.NewRestrictedOutboundHTTPClient(30 * time.Second)
-	ipRegex     = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b`)
+	ipRegex     = regexp.MustCompile(`[0-9A-Fa-f:.]+(?:/[0-9]{1,3})?`)
 )
 
 type atomicMap struct {
@@ -57,21 +57,31 @@ func (a *atomicMap) Store(m map[string]struct{}) {
 	a.val.Store(m)
 }
 
-type atomicRangeList struct {
+type ipRange struct {
+	start netip.Addr
+	end   netip.Addr
+}
+
+type blacklistRangeCache struct {
+	spans   []ipRange
+	entries []domain.BlacklistedRange
+}
+
+type atomicRangeCache struct {
 	val atomic.Value
 }
 
-func (a *atomicRangeList) Load() []domain.BlacklistedRange {
-	raw, ok := a.val.Load().([]domain.BlacklistedRange)
-	if !ok || raw == nil {
-		empty := make([]domain.BlacklistedRange, 0)
+func (a *atomicRangeCache) Load() blacklistRangeCache {
+	raw, ok := a.val.Load().(blacklistRangeCache)
+	if !ok {
+		empty := blacklistRangeCache{}
 		a.val.Store(empty)
 		return empty
 	}
 	return raw
 }
 
-func (a *atomicRangeList) Store(r []domain.BlacklistedRange) {
+func (a *atomicRangeCache) Store(r blacklistRangeCache) {
 	a.val.Store(r)
 }
 
@@ -88,7 +98,7 @@ type RefreshOutcome struct {
 
 func init() {
 	cache.Store(make(map[string]struct{}))
-	rangeCache.Store(nil)
+	rangeCache.Store(blacklistRangeCache{})
 }
 
 // Initialize hydrates the in-memory blacklist cache.
@@ -107,20 +117,20 @@ func LoadCache(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	sort.Slice(ranges, func(i, j int) bool {
-		if ranges[i].StartIP == ranges[j].StartIP {
-			return ranges[i].EndIP < ranges[j].EndIP
-		}
-		return ranges[i].StartIP < ranges[j].StartIP
-	})
-	rangeCache.Store(ranges)
+	compiled, invalidCount := buildBlacklistRangeCache(ranges)
+	if invalidCount > 0 {
+		log.Warn("Blacklist range parse failures", "count", invalidCount)
+	}
+	rangeCache.Store(compiled)
 	return nil
 }
 
 func toSet(ips []string) map[string]struct{} {
 	m := make(map[string]struct{}, len(ips))
 	for _, ip := range ips {
-		m[ip] = struct{}{}
+		if normalized := normalizeIP(ip); normalized != "" {
+			m[normalized] = struct{}{}
+		}
 	}
 	return m
 }
@@ -140,11 +150,11 @@ func FilterProxies(proxies []domain.Proxy) (allowed []domain.Proxy, blocked []do
 	}
 
 	set := cache.Load()
-	ranges := rangeCache.Load()
+	ranges := rangeCache.Load().spans
 	allowed = make([]domain.Proxy, 0, len(proxies))
 
 	for _, proxy := range proxies {
-		ip := normalizeIPv4(proxy.GetIp())
+		ip := normalizeIP(proxy.GetIp())
 		if ip == "" {
 			continue
 		}
@@ -302,7 +312,7 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 	sources := append([]string(nil), cfg.BlacklistSources...)
 
 	before := cloneSet(cache.Load())
-	beforeRanges := rangeCache.Load()
+	beforeRanges := rangeCache.Load().entries
 
 	if len(sources) == 0 {
 		if err := LoadCache(ctx); err != nil {
@@ -353,7 +363,7 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 	}
 
 	current := cache.Load()
-	currentRanges := rangeCache.Load()
+	currentRanges := rangeCache.Load().entries
 	newIPs := diffSets(current, before)
 	newRanges := diffRanges(currentRanges, beforeRanges)
 
@@ -413,19 +423,14 @@ func diffRanges(after, before []domain.BlacklistedRange) []domain.BlacklistedRan
 		return nil
 	}
 
-	type key struct {
-		start uint32
-		end   uint32
-	}
-	beforeSet := make(map[key]struct{}, len(before))
+	beforeSet := make(map[string]struct{}, len(before))
 	for _, r := range before {
-		beforeSet[key{start: r.StartIP, end: r.EndIP}] = struct{}{}
+		beforeSet[r.CIDR] = struct{}{}
 	}
 
 	added := make([]domain.BlacklistedRange, 0, len(after))
 	for _, r := range after {
-		k := key{start: r.StartIP, end: r.EndIP}
-		if _, found := beforeSet[k]; found {
+		if _, found := beforeSet[r.CIDR]; found {
 			continue
 		}
 		added = append(added, r)
@@ -495,6 +500,12 @@ func parseIPs(payload []byte) ([]string, []domain.BlacklistedRange) {
 		for _, match := range matches {
 			ipStr := string(match)
 			cidrs, ips := parseCIDROrIP(ipStr)
+			if len(cidrs) == 0 && len(ips) == 0 {
+				trimmed := strings.TrimRight(ipStr, ".,;:")
+				if trimmed != ipStr {
+					cidrs, ips = parseCIDROrIP(trimmed)
+				}
+			}
 			for _, ip := range ips {
 				seen[ip] = struct{}{}
 			}
@@ -515,80 +526,118 @@ func parseIPs(payload []byte) ([]string, []domain.BlacklistedRange) {
 	return out, ranges
 }
 
-func normalizeIPv4(raw string) string {
-	parsed := net.ParseIP(raw)
-	if parsed == nil {
+func normalizeIP(raw string) string {
+	parsed, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
 		return ""
 	}
-	v4 := parsed.To4()
-	if v4 == nil {
-		return ""
-	}
-	return v4.String()
+	return parsed.Unmap().String()
 }
 
 func parseCIDROrIP(raw string) ([]domain.BlacklistedRange, []string) {
 	if !strings.Contains(raw, "/") {
-		ip := normalizeIPv4(raw)
+		ip := normalizeIP(raw)
 		if ip == "" {
 			return nil, nil
 		}
 		return nil, []string{ip}
 	}
 
-	_, ipnet, err := net.ParseCIDR(raw)
-	if err != nil || ipnet == nil {
+	prefix, err := netip.ParsePrefix(raw)
+	if err != nil || prefix.Addr().Is4In6() {
 		return nil, nil
 	}
-
-	base := ipnet.IP.To4()
-	if base == nil {
-		return nil, nil
-	}
-
-	ones, bits := ipnet.Mask.Size()
-	if bits != 32 || ones < 0 || ones > 32 {
-		return nil, nil
-	}
-
-	start := ipToUint32(base.Mask(ipnet.Mask))
-	hostCount := uint32(1) << uint32(bits-ones)
-	lastIP := start + hostCount - 1
+	prefix = prefix.Masked()
 
 	return []domain.BlacklistedRange{{
-		CIDR:    ipnet.String(),
-		StartIP: start,
-		EndIP:   lastIP,
+		CIDR: prefix.String(),
 	}}, nil
 }
 
-func ipToUint32(ip net.IP) uint32 {
-	ip = ip.To4()
-	if ip == nil {
-		return 0
+func buildBlacklistRangeCache(ranges []domain.BlacklistedRange) (blacklistRangeCache, int) {
+	entries := make([]domain.BlacklistedRange, 0, len(ranges))
+	spans := make([]ipRange, 0, len(ranges))
+	invalidCount := 0
+
+	for _, entry := range ranges {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(entry.CIDR))
+		if err != nil || prefix.Addr().Is4In6() {
+			invalidCount++
+			continue
+		}
+		prefix = prefix.Masked()
+		entry.CIDR = prefix.String()
+		entries = append(entries, entry)
+		spans = append(spans, ipRange{
+			start: prefix.Addr(),
+			end:   lastAddressInPrefix(prefix),
+		})
 	}
-	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+
+	sort.Slice(spans, func(i, j int) bool {
+		if comparison := spans[i].start.Compare(spans[j].start); comparison != 0 {
+			return comparison < 0
+		}
+		return spans[i].end.Compare(spans[j].end) > 0
+	})
+
+	merged := make([]ipRange, 0, len(spans))
+	for _, span := range spans {
+		if len(merged) == 0 {
+			merged = append(merged, span)
+			continue
+		}
+
+		last := &merged[len(merged)-1]
+		if last.start.BitLen() == span.start.BitLen() && span.start.Compare(last.end) <= 0 {
+			if span.end.Compare(last.end) > 0 {
+				last.end = span.end
+			}
+			continue
+		}
+		merged = append(merged, span)
+	}
+
+	return blacklistRangeCache{spans: merged, entries: entries}, invalidCount
 }
 
-func inRange(ip string, ranges []domain.BlacklistedRange) bool {
+func lastAddressInPrefix(prefix netip.Prefix) netip.Addr {
+	prefix = prefix.Masked()
+	address := prefix.Addr()
+
+	if address.Is4() {
+		bytes := address.As4()
+		for bit := prefix.Bits(); bit < 32; bit++ {
+			bytes[bit/8] |= 1 << uint(7-bit%8)
+		}
+		return netip.AddrFrom4(bytes)
+	}
+
+	bytes := address.As16()
+	for bit := prefix.Bits(); bit < 128; bit++ {
+		bytes[bit/8] |= 1 << uint(7-bit%8)
+	}
+	return netip.AddrFrom16(bytes)
+}
+
+func inRange(ip string, ranges []ipRange) bool {
 	if len(ranges) == 0 {
 		return false
 	}
 
-	u := ipToUint32(net.ParseIP(ip))
-
-	lo, hi := 0, len(ranges)
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if u < ranges[mid].StartIP {
-			hi = mid
-			continue
-		}
-		if u > ranges[mid].EndIP {
-			lo = mid + 1
-			continue
-		}
-		return true
+	address, err := netip.ParseAddr(strings.TrimSpace(ip))
+	if err != nil {
+		return false
 	}
-	return false
+	address = address.Unmap()
+
+	index := sort.Search(len(ranges), func(i int) bool {
+		return ranges[i].start.Compare(address) > 0
+	})
+	if index == 0 {
+		return false
+	}
+
+	span := ranges[index-1]
+	return span.start.BitLen() == address.BitLen() && address.Compare(span.end) <= 0
 }

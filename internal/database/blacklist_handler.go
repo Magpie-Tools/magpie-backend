@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/log"
@@ -19,16 +17,11 @@ import (
 )
 
 const (
-	blacklistInsertBatchSize = 500
+	blacklistInsertBatchSize     = 500
+	blacklistRangeQueryBatchSize = 100
 )
 
-type cidrSpan struct {
-	start  uint32
-	end    uint32
-	source string
-}
-
-// ListBlacklistedIPs returns all stored blacklist entries as plain IPv4 strings.
+// ListBlacklistedIPs returns all stored blacklist entries as normalized IP strings.
 func ListBlacklistedIPs(ctx context.Context) ([]string, error) {
 	if DB == nil {
 		return nil, errors.New("database not initialised")
@@ -46,7 +39,7 @@ func ListBlacklistedIPs(ctx context.Context) ([]string, error) {
 	return ips, nil
 }
 
-// ListBlacklistedRanges returns all stored ranges ordered by start IP.
+// ListBlacklistedRanges returns all stored ranges in normalized CIDR form.
 func ListBlacklistedRanges(ctx context.Context) ([]domain.BlacklistedRange, error) {
 	if DB == nil {
 		return nil, errors.New("database not initialised")
@@ -69,17 +62,15 @@ func ListBlacklistedRanges(ctx context.Context) ([]domain.BlacklistedRange, erro
 	invalidCount := 0
 	for _, row := range rows {
 		cidr := strings.TrimSpace(row.CIDR)
-		start, end, err := cidrBounds(cidr)
+		normalized, err := normalizeCIDR(cidr)
 		if err != nil {
 			invalidCount++
 			continue
 		}
 		ranges = append(ranges, domain.BlacklistedRange{
-			ID:      row.ID,
-			CIDR:    cidr,
-			Source:  row.Source,
-			StartIP: start,
-			EndIP:   end,
+			ID:     row.ID,
+			CIDR:   normalized,
+			Source: row.Source,
 		})
 	}
 	if invalidCount > 0 {
@@ -269,7 +260,7 @@ func dedupeIPs(ips []domain.BlacklistedIP) []domain.BlacklistedIP {
 
 	seen := make(map[string]domain.BlacklistedIP, len(ips))
 	for _, ip := range ips {
-		normalized := normalizeIPv4(ip.IP)
+		normalized := normalizeIP(ip.IP)
 		if normalized == "" {
 			continue
 		}
@@ -294,7 +285,7 @@ func dedupeRanges(ranges []domain.BlacklistedRange) []domain.BlacklistedRange {
 
 	seenCIDR := make(map[string]string, len(ranges))
 	for _, r := range ranges {
-		cidr, _, _, err := normalizeCIDR(r.CIDR)
+		cidr, err := normalizeCIDR(r.CIDR)
 		if err != nil {
 			continue
 		}
@@ -382,45 +373,16 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 	return totalRemoved, orphaned, nil
 }
 
-func cidrBounds(cidr string) (uint32, uint32, error) {
-	_, start, end, err := normalizeCIDRWithBounds(cidr)
-	return start, end, err
-}
-
-func normalizeCIDR(raw string) (string, uint32, uint32, error) {
-	return normalizeCIDRWithBounds(raw)
-}
-
-func normalizeCIDRWithBounds(raw string) (string, uint32, uint32, error) {
-	prefix, err := netip.ParsePrefix(raw)
+func normalizeCIDR(raw string) (string, error) {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
 	if err != nil {
-		return "", 0, 0, err
+		return "", err
 	}
-	if !prefix.Addr().Is4() {
-		return "", 0, 0, fmt.Errorf("non-ipv4 cidr: %s", raw)
+	if prefix.Addr().Is4In6() {
+		return "", fmt.Errorf("IPv4-mapped IPv6 CIDR is not supported: %s", raw)
 	}
 	prefix = prefix.Masked()
-	start := ipToUint32(prefix.Addr())
-	if prefix.Bits() == 32 {
-		return prefix.String(), start, start, nil
-	}
-	size := uint32(1) << (32 - prefix.Bits())
-	end := start + size - 1
-	return prefix.String(), start, end, nil
-}
-
-func ipToUint32(addr netip.Addr) uint32 {
-	ip := addr.As4()
-	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
-}
-
-func uint32ToIP(val uint32) net.IP {
-	return net.IPv4(
-		byte(val>>24),
-		byte(val>>16),
-		byte(val>>8),
-		byte(val),
-	).To4()
+	return prefix.String(), nil
 }
 
 func normalizeIPList(ips []string) []string {
@@ -432,7 +394,7 @@ func normalizeIPList(ips []string) []string {
 	out := make([]string, 0, len(ips))
 
 	for _, raw := range ips {
-		ip := normalizeIPv4(raw)
+		ip := normalizeIP(raw)
 		if ip == "" {
 			continue
 		}
@@ -446,16 +408,12 @@ func normalizeIPList(ips []string) []string {
 	return out
 }
 
-func normalizeIPv4(raw string) string {
-	parsed := net.ParseIP(raw)
-	if parsed == nil {
+func normalizeIP(raw string) string {
+	parsed, err := netip.ParseAddr(strings.TrimSpace(raw))
+	if err != nil {
 		return ""
 	}
-	ipv4 := parsed.To4()
-	if ipv4 == nil {
-		return ""
-	}
-	return ipv4.String()
+	return parsed.Unmap().String()
 }
 
 // RemoveProxiesByRanges removes proxies whose IP falls inside any of the provided ranges.
@@ -472,45 +430,27 @@ func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange
 		db = db.WithContext(ctx)
 	}
 
-	type span struct {
-		start uint32
-		end   uint32
-	}
-	spans := make([]span, 0, len(ranges))
+	prefixes := make([]netip.Prefix, 0, len(ranges))
+	seenPrefixes := make(map[string]struct{}, len(ranges))
 	for _, r := range ranges {
-		start := r.StartIP
-		end := r.EndIP
-		if start > end {
-			start, end = end, start
-		}
-		spans = append(spans, span{start: start, end: end})
-	}
-
-	// Sort and merge to reduce queries
-	sort.Slice(spans, func(i, j int) bool { return spans[i].start < spans[j].start })
-	merged := make([]span, 0, len(spans))
-	for _, s := range spans {
-		if len(merged) == 0 {
-			merged = append(merged, s)
-			continue
-		}
-		last := &merged[len(merged)-1]
-		if s.start <= last.end+1 {
-			if s.end > last.end {
-				last.end = s.end
-			}
-			continue
-		}
-		merged = append(merged, s)
-	}
-
-	var proxies []domain.Proxy
-	for _, s := range merged {
-		batch, err := findProxiesInIPRange(db, s.start, s.end)
+		normalized, err := normalizeCIDR(r.CIDR)
 		if err != nil {
-			return 0, nil, err
+			continue
 		}
-		proxies = append(proxies, batch...)
+		if _, exists := seenPrefixes[normalized]; exists {
+			continue
+		}
+		seenPrefixes[normalized] = struct{}{}
+		prefix, _ := netip.ParsePrefix(normalized)
+		prefixes = append(prefixes, prefix)
+	}
+	if len(prefixes) == 0 {
+		return 0, nil, nil
+	}
+
+	proxies, err := findProxiesInIPRanges(db, prefixes)
+	if err != nil {
+		return 0, nil, err
 	}
 
 	if len(proxies) == 0 {
@@ -549,13 +489,38 @@ func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange
 	return totalRemoved, orphaned, nil
 }
 
-func findProxiesInIPRange(db *gorm.DB, start, end uint32) ([]domain.Proxy, error) {
+func findProxiesInIPRanges(db *gorm.DB, prefixes []netip.Prefix) ([]domain.Proxy, error) {
 	if isPostgresDialect(db) {
-		var proxies []domain.Proxy
-		err := db.Preload("Users").
-			Where("ip_address BETWEEN ?::inet AND ?::inet", uint32ToIP(start).String(), uint32ToIP(end).String()).
-			Find(&proxies).Error
-		return proxies, err
+		proxyByID := make(map[uint64]domain.Proxy)
+		for start := 0; start < len(prefixes); start += blacklistRangeQueryBatchSize {
+			end := start + blacklistRangeQueryBatchSize
+			if end > len(prefixes) {
+				end = len(prefixes)
+			}
+
+			conditions := make([]string, 0, end-start)
+			args := make([]any, 0, end-start)
+			for _, prefix := range prefixes[start:end] {
+				conditions = append(conditions, "ip_address <<= ?::cidr")
+				args = append(args, prefix.String())
+			}
+
+			var batch []domain.Proxy
+			if err := db.Preload("Users").
+				Where("("+strings.Join(conditions, " OR ")+")", args...).
+				Find(&batch).Error; err != nil {
+				return nil, err
+			}
+			for _, proxy := range batch {
+				proxyByID[proxy.ID] = proxy
+			}
+		}
+
+		proxies := make([]domain.Proxy, 0, len(proxyByID))
+		for _, proxy := range proxyByID {
+			proxies = append(proxies, proxy)
+		}
+		return proxies, nil
 	}
 
 	var candidates []domain.Proxy
@@ -566,12 +531,15 @@ func findProxiesInIPRange(db *gorm.DB, start, end uint32) ([]domain.Proxy, error
 	proxies := make([]domain.Proxy, 0)
 	for _, proxy := range candidates {
 		address, err := netip.ParseAddr(proxy.GetIp())
-		if err != nil || !address.Is4() {
+		if err != nil {
 			continue
 		}
-		value := ipToUint32(address)
-		if value >= start && value <= end {
-			proxies = append(proxies, proxy)
+		address = address.Unmap()
+		for _, prefix := range prefixes {
+			if prefix.Contains(address) {
+				proxies = append(proxies, proxy)
+				break
+			}
 		}
 	}
 	return proxies, nil

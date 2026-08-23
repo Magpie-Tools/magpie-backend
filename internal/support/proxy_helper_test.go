@@ -8,11 +8,14 @@ import (
 )
 
 func TestClearProxyString(t *testing.T) {
-	input := "1.1.1.1@80\r\n5.5.5.5.:443"
+	input := "user:pass@1.1.1.1:80\r\n5.5.5.5.:443"
 	got := clearProxyString(input)
 
-	if strings.ContainsAny(got, "@\r") {
-		t.Fatalf("clearProxyString did not strip control characters, got %q", got)
+	if strings.Contains(got, "\r") {
+		t.Fatalf("clearProxyString did not strip carriage returns, got %q", got)
+	}
+	if !strings.Contains(got, "@") {
+		t.Fatalf("clearProxyString removed the authentication delimiter, got %q", got)
 	}
 	if strings.Contains(got, "..") {
 		t.Fatalf("clearProxyString did not normalize dot sequences, got %q", got)
@@ -23,11 +26,21 @@ func TestClearProxyString(t *testing.T) {
 }
 
 func TestParseTextToProxies(t *testing.T) {
-	input := "1.1.1.1:80\r\ninvalid\n2.2.2.2:8080:user:pass\n2.2.2.2:badport\n"
+	input := strings.Join([]string{
+		"1.1.1.1:80",
+		"invalid",
+		"2.2.2.2:8080:user:pass",
+		"user2:pass2@3.3.3.3:9000",
+		"4.4.4.4:1080@user3:pass3",
+		"[2001:0db8::10]:3128",
+		"v6user:v6pass@[2001:db8::20]:8080",
+		"[2001:db8::30]:8081:v6suffix:secret",
+		"2.2.2.2:badport",
+	}, "\r\n")
 
 	parsed := ParseTextToProxies(input)
-	if len(parsed) != 2 {
-		t.Fatalf("ParseTextToProxies returned %d proxies, want 2", len(parsed))
+	if len(parsed) != 7 {
+		t.Fatalf("ParseTextToProxies returned %d proxies, want 7", len(parsed))
 	}
 
 	if got := parsed[0].GetFullProxy(); got != "1.1.1.1:80" {
@@ -48,14 +61,30 @@ func TestParseTextToProxies(t *testing.T) {
 	if parsed[1].Username != "user" || parsed[1].Password != "pass" {
 		t.Fatalf("unexpected credentials: %s:%s", parsed[1].Username, parsed[1].Password)
 	}
+
+	if parsed[2].Username != "user2" || parsed[2].Password != "pass2" {
+		t.Fatalf("unexpected prefix credentials: %s:%s", parsed[2].Username, parsed[2].Password)
+	}
+	if parsed[3].Username != "user3" || parsed[3].Password != "pass3" {
+		t.Fatalf("unexpected suffix credentials: %s:%s", parsed[3].Username, parsed[3].Password)
+	}
+	if got := parsed[4].GetFullProxy(); got != "[2001:db8::10]:3128" {
+		t.Fatalf("IPv6 proxy was %s, want [2001:db8::10]:3128", got)
+	}
+	if parsed[5].Username != "v6user" || parsed[5].Password != "v6pass" {
+		t.Fatalf("unexpected IPv6 prefix credentials: %s:%s", parsed[5].Username, parsed[5].Password)
+	}
+	if parsed[6].Username != "v6suffix" || parsed[6].Password != "secret" {
+		t.Fatalf("unexpected IPv6 colon credentials: %s:%s", parsed[6].Username, parsed[6].Password)
+	}
 }
 
-func TestParseTextToProxiesStrictAuth(t *testing.T) {
-	input := "3.3.3.3:8080:user:pass\nuser:pass@4.4.4.4:9000\n"
+func TestParseScrapedTextToIPv4ProxiesKeepsIPv4OnlyBoundary(t *testing.T) {
+	input := "3.3.3.3:8080:user:pass\nuser:pass@4.4.4.4:9000\n[2001:db8::1]:8080\n"
 
-	parsed := ParseTextToProxiesStrictAuth(input)
+	parsed := ParseScrapedTextToIPv4Proxies(input)
 	if len(parsed) != 2 {
-		t.Fatalf("ParseTextToProxiesStrictAuth returned %d proxies, want 2", len(parsed))
+		t.Fatalf("ParseScrapedTextToIPv4Proxies returned %d proxies, want 2", len(parsed))
 	}
 
 	if parsed[0].HasAuth() {
@@ -73,11 +102,33 @@ func TestParseTextToProxiesStrictAuth(t *testing.T) {
 	}
 }
 
-func TestFindIP(t *testing.T) {
-	input := "Client address: 203.0.113.5 connected via [2001:db8::1]"
+func TestParseTextToProxiesWithStatsAcceptsIPv6(t *testing.T) {
+	parsed, stats := ParseTextToProxiesWithStats(strings.Join([]string{
+		"[2001:db8::1]:8080",
+		"[2001:db8::2]:bad",
+		"[not-an-ip]:8080",
+		"2001:db8::3:8080",
+	}, "\n"))
 
-	if got := FindIP(input); got != "203.0.113.5" {
-		t.Fatalf("FindIP returned %s, want 203.0.113.5", got)
+	if len(parsed) != 1 {
+		t.Fatalf("parsed proxy count = %d, want 1", len(parsed))
+	}
+	if stats.SubmittedCount != 4 || stats.ParsedCount != 1 {
+		t.Fatalf("submitted/parsed counts = %d/%d, want 4/1", stats.SubmittedCount, stats.ParsedCount)
+	}
+	if stats.InvalidIPv4Count != 0 {
+		t.Fatalf("invalid IPv4 count = %d, want 0 for manual IPv6 import", stats.InvalidIPv4Count)
+	}
+	if stats.InvalidPortCount != 1 || stats.InvalidIPCount != 2 {
+		t.Fatalf("invalid port/IP counts = %d/%d, want 1/2", stats.InvalidPortCount, stats.InvalidIPCount)
+	}
+}
+
+func TestFindIP(t *testing.T) {
+	input := "Client address: [2001:0db8::1] connected via 203.0.113.5"
+
+	if got := FindIP(input); got != "2001:db8::1" {
+		t.Fatalf("FindIP returned %s, want 2001:db8::1", got)
 	}
 }
 
@@ -110,5 +161,16 @@ func TestFormatProxies(t *testing.T) {
 
 	if got != expected {
 		t.Fatalf("FormatProxies returned %q, want %q", got, expected)
+	}
+}
+
+func TestFormatProxyBracketsIPv6AddressWithPort(t *testing.T) {
+	proxy := domain.Proxy{Port: 8080}
+	if err := proxy.SetIP("2001:db8::7"); err != nil {
+		t.Fatalf("SetIP returned error: %v", err)
+	}
+
+	if got := FormatProxy(proxy, "http://ip:port"); got != "http://[2001:db8::7]:8080" {
+		t.Fatalf("FormatProxy returned %q, want bracketed IPv6 URL", got)
 	}
 }

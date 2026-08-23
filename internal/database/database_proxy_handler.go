@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -1030,23 +1032,39 @@ func proxyPageSortExpressions(field string) []string {
 }
 
 func isLikelyProxyIPSearch(search string) bool {
-	if search == "" {
-		return false
-	}
-
-	for _, r := range search {
-		if (r >= '0' && r <= '9') || r == '.' {
-			continue
-		}
-		return false
-	}
-
-	return strings.Contains(search, ".")
+	_, _, _, ok := buildIPSearchNetwork(search)
+	return ok
 }
 
 func buildIPSearchNetwork(search string) (network string, fallbackPrefix string, exact bool, ok bool) {
+	search = strings.TrimSpace(search)
 	if search == "" {
 		return "", "", false, false
+	}
+
+	if host, _, err := net.SplitHostPort(search); err == nil {
+		search = host
+	} else if strings.HasPrefix(search, "[") && strings.HasSuffix(search, "]") {
+		search = strings.TrimSpace(search[1 : len(search)-1])
+	}
+
+	if prefix, err := netip.ParsePrefix(search); err == nil {
+		prefix = prefix.Masked()
+		address := prefix.Addr().Unmap()
+		if address.Is4() && prefix.Addr().Is6() {
+			return "", "", false, false
+		}
+		exact = prefix.Bits() == prefix.Addr().BitLen()
+		fallbackPrefix = address.String()
+		if !exact {
+			fallbackPrefix = strings.TrimSuffix(fallbackPrefix, "::")
+		}
+		return prefix.String(), fallbackPrefix, exact, true
+	}
+
+	if address, err := netip.ParseAddr(search); err == nil {
+		address = address.Unmap()
+		return netip.PrefixFrom(address, address.BitLen()).String(), address.String(), true, true
 	}
 
 	parts := strings.Split(search, ".")
@@ -1108,7 +1126,7 @@ func buildProxyIPSearchIDQuery(userId uint, filterQuery *gorm.DB, network, fallb
 	} else if exact {
 		query = query.Where("ufi.ip_address = ?", fallbackPrefix)
 	} else {
-		query = query.Where("ufi.ip_address LIKE ?", fallbackPrefix+".%")
+		query = query.Where("ufi.ip_address LIKE ?", fallbackPrefix+"%")
 	}
 
 	if filterQuery != nil {

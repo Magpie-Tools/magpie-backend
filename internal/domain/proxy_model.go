@@ -2,8 +2,10 @@ package domain
 
 import (
 	"errors"
-	"fmt"
 	"net"
+	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
 	"magpie/internal/security"
@@ -60,20 +62,16 @@ func (proxy *Proxy) GenerateHash() error {
 }
 
 func (proxy *Proxy) SetIP(ip string) error {
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
+	parsedIP, err := netip.ParseAddr(strings.TrimSpace(ip))
+	if err != nil {
 		return errors.New("invalid IP address")
 	}
-	ipv4 := parsedIP.To4()
-	if ipv4 == nil {
-		return errors.New("only IPv4 addresses are supported")
-	}
-	proxy.IP = ipv4.String()
+	proxy.IP = parsedIP.Unmap().String()
 	return nil
 }
 
 func (proxy *Proxy) GetFullProxy() string {
-	return fmt.Sprintf("%s:%d", proxy.GetIp(), proxy.Port)
+	return net.JoinHostPort(proxy.GetIp(), strconv.Itoa(int(proxy.Port)))
 }
 
 func (proxy *Proxy) GetIp() string {

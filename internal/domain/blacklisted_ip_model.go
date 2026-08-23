@@ -4,7 +4,7 @@ package domain
 type BlacklistedIP struct {
 	ID uint64 `gorm:"primaryKey;autoIncrement"`
 
-	// IP holds the IPv4 address string (normalized, e.g. 192.0.2.1).
+	// IP holds a normalized IPv4 or IPv6 address string.
 	IP string `gorm:"type:inet;uniqueIndex;not null"`
 
 	// Source records the last blacklist source that reported this IP.

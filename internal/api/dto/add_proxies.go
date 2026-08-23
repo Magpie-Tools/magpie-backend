@@ -1,14 +1,15 @@
 package dto
 
 type AddProxiesDetails struct {
-	SubmittedCount     int   `json:"submittedCount"`
-	ParsedCount        int   `json:"parsedCount"`
-	InvalidFormatCount int   `json:"invalidFormatCount"`
-	InvalidIPCount     int   `json:"invalidIpCount"`
-	InvalidIPv4Count   int   `json:"invalidIpv4Count"`
-	InvalidPortCount   int   `json:"invalidPortCount"`
-	BlacklistedCount   int   `json:"blacklistedCount"`
-	ProcessingMs       int64 `json:"processingMs"`
+	SubmittedCount     int `json:"submittedCount"`
+	ParsedCount        int `json:"parsedCount"`
+	InvalidFormatCount int `json:"invalidFormatCount"`
+	InvalidIPCount     int `json:"invalidIpCount"`
+	// InvalidIPv4Count is kept for response compatibility. Manual imports accept IPv6.
+	InvalidIPv4Count int   `json:"invalidIpv4Count"`
+	InvalidPortCount int   `json:"invalidPortCount"`
+	BlacklistedCount int   `json:"blacklistedCount"`
+	ProcessingMs     int64 `json:"processingMs"`
 }
 
 type AddProxiesResponse struct {
