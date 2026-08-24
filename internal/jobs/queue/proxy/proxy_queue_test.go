@@ -122,7 +122,7 @@ func TestMigrateDequeuedProxyMember_RekeysAndWritesCurrentPayload(t *testing.T) 
 	}
 }
 
-func TestNewQueuedProxy_DefaultStoresPlaintextCredentialsUserIDsAndHash(t *testing.T) {
+func TestNewQueuedProxy_DefaultStoresPlaintextCredentialsWorkspaceIDsAndHash(t *testing.T) {
 	configureProxyQueueEncryption(t)
 
 	proxy := domain.Proxy{
@@ -132,7 +132,7 @@ func TestNewQueuedProxy_DefaultStoresPlaintextCredentialsUserIDsAndHash(t *testi
 		Username: "u",
 		Password: "p",
 		Hash:     []byte("hash"),
-		Users: []domain.User{
+		Workspaces: []domain.Workspace{
 			{ID: 5, Timeout: 1000, Retries: 2},
 			{ID: 9, Timeout: 2500, Retries: 5},
 			{ID: 5, Timeout: 9999, Retries: 9},
@@ -143,8 +143,8 @@ func TestNewQueuedProxy_DefaultStoresPlaintextCredentialsUserIDsAndHash(t *testi
 	if err != nil {
 		t.Fatalf("new queued proxy: %v", err)
 	}
-	if len(queued.UserIDs) != 2 || queued.UserIDs[0] != 5 || queued.UserIDs[1] != 9 {
-		t.Fatalf("unexpected queued user IDs: %#v", queued.UserIDs)
+	if len(queued.WorkspaceIDs) != 2 || queued.WorkspaceIDs[0] != 5 || queued.WorkspaceIDs[1] != 9 {
+		t.Fatalf("unexpected queued workspace IDs: %#v", queued.WorkspaceIDs)
 	}
 	if len(queued.Users) != 0 {
 		t.Fatalf("expected no legacy user payload, got %#v", queued.Users)
@@ -161,8 +161,8 @@ func TestNewQueuedProxy_DefaultStoresPlaintextCredentialsUserIDsAndHash(t *testi
 		t.Fatalf("marshal queued proxy: %v", err)
 	}
 	payload := string(raw)
-	if !strings.Contains(payload, "\"UserIDs\":[5,9]") {
-		t.Fatalf("expected compact UserIDs payload, got %s", payload)
+	if !strings.Contains(payload, "\"WorkspaceIDs\":[5,9]") {
+		t.Fatalf("expected compact WorkspaceIDs payload, got %s", payload)
 	}
 	if strings.Contains(payload, "\"Users\"") {
 		t.Fatalf("expected Users field to be omitted in new payload, got %s", payload)
@@ -172,6 +172,46 @@ func TestNewQueuedProxy_DefaultStoresPlaintextCredentialsUserIDsAndHash(t *testi
 	}
 	if queued.UsernameEncrypted != "" || queued.PasswordEncrypted != "" {
 		t.Fatal("default queue payload unexpectedly encrypted credentials")
+	}
+}
+
+func TestAddToQueue_SkipsRouteWithoutActiveWorkspace(t *testing.T) {
+	configureProxyQueueEncryption(t)
+
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run failed: %v", err)
+	}
+	defer redisServer.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	defer client.Close()
+
+	queue := NewRedisProxyQueue(client)
+	pausedOnly := domain.Proxy{
+		ID:   31,
+		IP:   "192.0.2.31",
+		Port: 8031,
+		Hash: []byte("paused-only-route"),
+	}
+	active := domain.Proxy{
+		ID:         32,
+		IP:         "192.0.2.32",
+		Port:       8032,
+		Hash:       []byte("active-route"),
+		Workspaces: []domain.Workspace{{ID: 7}},
+	}
+
+	if err := queue.AddToQueue([]domain.Proxy{pausedOnly, active}); err != nil {
+		t.Fatalf("add routes to queue: %v", err)
+	}
+
+	ctx := context.Background()
+	if client.Exists(ctx, proxyKeyPrefix+string(pausedOnly.Hash)).Val() != 0 {
+		t.Fatal("paused-only route payload was written")
+	}
+	if client.Exists(ctx, proxyKeyPrefix+string(active.Hash)).Val() != 1 {
+		t.Fatal("active route payload was not written")
 	}
 }
 
@@ -209,14 +249,14 @@ func TestQueuedProxyToDomainProxy_CurrentPlaintextPayloadReusesHashWithoutEncryp
 	t.Cleanup(security.ResetProxyCipherForTests)
 
 	payload := queuedProxy{
-		Version:  queuedProxyVersion,
-		ID:       7,
-		IP:       "gateway.provider.example",
-		Port:     8080,
-		Username: "user",
-		Password: "pass",
-		Hash:     []byte("already-calculated-route-hash"),
-		UserIDs:  []uint{4},
+		Version:      queuedProxyVersion,
+		ID:           7,
+		IP:           "gateway.provider.example",
+		Port:         8080,
+		Username:     "user",
+		Password:     "pass",
+		Hash:         []byte("already-calculated-route-hash"),
+		WorkspaceIDs: []uint{4},
 	}
 	proxy, err := payload.toDomainProxy()
 	if err != nil {
@@ -249,12 +289,12 @@ func TestGetNextProxy_RewritesEncryptedV1PayloadOnceWithoutRekeying(t *testing.T
 	defer client.Close()
 
 	proxy := domain.Proxy{
-		ID:       27,
-		IP:       "203.0.113.27",
-		Port:     1080,
-		Username: "legacy-user",
-		Password: "legacy-pass",
-		Users:    []domain.User{{ID: 3}},
+		ID:         27,
+		IP:         "203.0.113.27",
+		Port:       1080,
+		Username:   "legacy-user",
+		Password:   "legacy-pass",
+		Workspaces: []domain.Workspace{{ID: 3}},
 	}
 	if err := proxy.GenerateHash(); err != nil {
 		t.Fatalf("generate route hash: %v", err)
@@ -345,13 +385,13 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 	queue := NewRedisProxyQueue(client)
 	ctx := context.Background()
 	proxy := domain.Proxy{
-		ID:       42,
-		IP:       "198.51.100.42",
-		Port:     8080,
-		Username: "queue-user",
-		Password: "queue-pass",
-		Hash:     []byte("precomputed-route-hash"),
-		Users:    []domain.User{{ID: 7}},
+		ID:         42,
+		IP:         "198.51.100.42",
+		Port:       8080,
+		Username:   "queue-user",
+		Password:   "queue-pass",
+		Hash:       []byte("precomputed-route-hash"),
+		Workspaces: []domain.Workspace{{ID: 7}},
 	}
 	proxyKey := proxyKeyPrefix + string(proxy.Hash)
 	const originalPayload = `{"sentinel":"must remain unchanged"}`
@@ -376,7 +416,7 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 		t.Fatalf("schedule-only requeue did not update sorted set: %v", err)
 	}
 
-	proxy.Users = append(proxy.Users, domain.User{ID: 9})
+	proxy.Workspaces = append(proxy.Workspaces, domain.Workspace{ID: 9})
 	if err := queue.RequeueProxyWithPayload(proxy, time.Now()); err != nil {
 		t.Fatalf("payload-persisting requeue: %v", err)
 	}
@@ -388,7 +428,7 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 	if err := json.Unmarshal(rewrittenJSON, &rewritten); err != nil {
 		t.Fatalf("decode persisted payload: %v", err)
 	}
-	if rewritten.Version != queuedProxyVersion || len(rewritten.UserIDs) != 2 {
+	if rewritten.Version != queuedProxyVersion || len(rewritten.WorkspaceIDs) != 2 {
 		t.Fatalf("unexpected persisted payload: %#v", rewritten)
 	}
 }
@@ -407,11 +447,11 @@ func TestQueuedProxyToDomainProxy_HandlesLegacyUsersAndUserIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode UserIDs payload: %v", err)
 	}
-	if len(got.Users) != 2 || got.Users[0].ID != 8 || got.Users[1].ID != 4 {
-		t.Fatalf("unexpected users from UserIDs payload: %#v", got.Users)
+	if len(got.Workspaces) != 2 || got.Workspaces[0].ID != 8 || got.Workspaces[1].ID != 4 {
+		t.Fatalf("unexpected workspaces from UserIDs payload: %#v", got.Workspaces)
 	}
-	if got.Users[0].Timeout != 0 || got.Users[1].Retries != 0 {
-		t.Fatalf("expected compact payload to not include checker settings, got %#v", got.Users)
+	if got.Workspaces[0].Timeout != 0 || got.Workspaces[1].Retries != 0 {
+		t.Fatalf("expected compact payload to not include checker settings, got %#v", got.Workspaces)
 	}
 
 	fromLegacy := queuedProxy{
@@ -428,8 +468,8 @@ func TestQueuedProxyToDomainProxy_HandlesLegacyUsersAndUserIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode legacy payload: %v", err)
 	}
-	if len(gotLegacy.Users) != 2 || gotLegacy.Users[0].ID != 11 || gotLegacy.Users[1].ID != 7 {
-		t.Fatalf("unexpected users from legacy payload: %#v", gotLegacy.Users)
+	if len(gotLegacy.Workspaces) != 2 || gotLegacy.Workspaces[0].ID != 11 || gotLegacy.Workspaces[1].ID != 7 {
+		t.Fatalf("unexpected workspaces from legacy payload: %#v", gotLegacy.Workspaces)
 	}
 }
 

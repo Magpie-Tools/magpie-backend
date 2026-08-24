@@ -22,6 +22,10 @@ type ProxyStatistic struct {
 	JudgeID uint  `gorm:"not null;index"`
 	Judge   Judge `gorm:"foreignKey:JudgeID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
+	// WorkspaceIDs travels with the asynchronous statistics payload so usage
+	// can be attributed without querying ownership in the checker hot path.
+	WorkspaceIDs []uint `gorm:"-" json:"WorkspaceIDs,omitempty"`
+
 	CreatedAt time.Time `gorm:"autoCreateTime;index:idx_proxy_statistics_proxy_created_id,sort:desc,priority:2"`
 }
 type AnonymityLevel struct {

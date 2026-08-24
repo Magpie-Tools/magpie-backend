@@ -2,12 +2,14 @@ package domain
 
 import "time"
 
-type UserScrapeSite struct {
-	UserID       uint      `gorm:"primaryKey"`
+type WorkspaceScrapeSite struct {
+	WorkspaceID  uint      `gorm:"column:workspace_id;primaryKey"`
 	ScrapeSiteID uint64    `gorm:"primaryKey"`
 	CreatedAt    time.Time `gorm:"autoCreateTime"`
 }
 
-func (UserScrapeSite) TableName() string {
+func (WorkspaceScrapeSite) TableName() string {
 	return "user_scrape_site"
 }
+
+type UserScrapeSite = WorkspaceScrapeSite

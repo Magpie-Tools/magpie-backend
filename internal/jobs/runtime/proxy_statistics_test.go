@@ -95,6 +95,30 @@ func TestAddProxyStatistic_EnqueuesWhenCapacityAvailable(t *testing.T) {
 	}
 }
 
+func TestAddProxyStatisticForUsersCarriesWorkspaceAttribution(t *testing.T) {
+	originalQueue := proxyStatisticQueue
+	originalReady := proxyStatisticStreamReady.Load()
+	originalCfg := proxyStatisticStreamCfg
+	originalClient := proxyStatisticStreamClient
+	t.Cleanup(func() {
+		proxyStatisticQueue = originalQueue
+		proxyStatisticStreamReady.Store(originalReady)
+		proxyStatisticStreamCfg = originalCfg
+		proxyStatisticStreamClient = originalClient
+	})
+
+	proxyStatisticStreamReady.Store(false)
+	proxyStatisticStreamCfg = proxyStatisticStreamConfig{}
+	proxyStatisticStreamClient = nil
+	proxyStatisticQueue = make(chan domain.ProxyStatistic, 1)
+
+	AddProxyStatisticForUsers(domain.ProxyStatistic{ProxyID: 77}, []uint{4, 9})
+	queued := <-proxyStatisticQueue
+	if len(queued.WorkspaceIDs) != 2 || queued.WorkspaceIDs[0] != 4 || queued.WorkspaceIDs[1] != 9 {
+		t.Fatalf("workspace attribution = %#v, want [4 9]", queued.WorkspaceIDs)
+	}
+}
+
 func TestAddProxyStatistic_EnqueuesWhenQueueFreedBeforeTimeout(t *testing.T) {
 	originalQueue := proxyStatisticQueue
 	originalLastLog := proxyStatisticLastBackpressureLog.Load()

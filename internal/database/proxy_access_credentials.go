@@ -28,17 +28,17 @@ func hydrateProxyCredentials(tx *gorm.DB, proxies []domain.Proxy, userID uint) e
 
 	query := tx.Session(&gorm.Session{NewDB: true}).
 		Where("proxy_id IN ?", proxyIDs).
-		Order("proxy_id ASC, user_id ASC")
+		Order("proxy_id ASC, workspace_id ASC")
 	if userID != 0 {
-		query = query.Where("user_id = ?", userID)
+		query = query.Where("workspace_id = ?", userID)
 	}
 
-	var accesses []domain.UserProxy
+	var accesses []domain.ManagedProxy
 	if err := query.Find(&accesses).Error; err != nil {
 		return err
 	}
 
-	credentials := make(map[uint64]domain.UserProxy, len(accesses))
+	credentials := make(map[uint64]domain.ManagedProxy, len(accesses))
 	for _, access := range accesses {
 		if _, exists := credentials[access.ProxyID]; !exists {
 			credentials[access.ProxyID] = access

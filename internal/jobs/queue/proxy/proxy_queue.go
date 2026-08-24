@@ -24,7 +24,7 @@ import (
 
 const (
 	proxyKeyPrefix             = "proxy:"
-	queuedProxyVersion         = 2
+	queuedProxyVersion         = 3
 	envEncryptQueueCredentials = "PROXY_QUEUE_ENCRYPT_CREDENTIALS"
 
 	legacyQueueKey          = "proxy_queue"
@@ -74,8 +74,9 @@ type queuedProxy struct {
 	Username          string            `json:"Username,omitempty"`
 	Password          string            `json:"Password,omitempty"`
 	Hash              []byte            `json:"Hash,omitempty"`
-	UserIDs           []uint            `json:"UserIDs,omitempty"`
-	Users             []queuedProxyUser `json:"Users,omitempty"` // Legacy payload compatibility
+	WorkspaceIDs      []uint            `json:"WorkspaceIDs,omitempty"`
+	UserIDs           []uint            `json:"UserIDs,omitempty"` // Version 2 compatibility
+	Users             []queuedProxyUser `json:"Users,omitempty"`   // Legacy payload compatibility
 }
 
 var PublicProxyQueue RedisProxyQueue
@@ -253,6 +254,16 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 		return nil
 	}
 
+	queueable := make([]domain.Proxy, 0, len(proxies))
+	for _, proxy := range proxies {
+		if hasQueuedWorkspace(proxy.Workspaces) {
+			queueable = append(queueable, proxy)
+		}
+	}
+	if len(queueable) == 0 {
+		return nil
+	}
+
 	client, err := rpq.clientOrErr()
 	if err != nil {
 		return err
@@ -262,10 +273,10 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 	pipe := client.Pipeline()
 	interval := config.GetTimeBetweenChecks()
 	now := time.Now()
-	proxyLenDuration := time.Duration(len(proxies))
+	proxyLenDuration := time.Duration(len(queueable))
 	batchSize := 500 // Adjust based on your Redis server capabilities
 
-	for i, proxy := range proxies {
+	for i, proxy := range queueable {
 		offset := (interval * time.Duration(i)) / proxyLenDuration
 		nextCheck := now.Add(offset)
 		hashKey := string(proxy.Hash)
@@ -310,6 +321,15 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 	}
 
 	return nil
+}
+
+func hasQueuedWorkspace(workspaces []domain.Workspace) bool {
+	for _, workspace := range workspaces {
+		if workspace.ID != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (rpq *RedisProxyQueue) RemoveFromQueue(proxies []domain.Proxy) error {
@@ -469,7 +489,7 @@ func (rpq *RedisProxyQueue) migrateDequeuedProxyMember(
 			var existingPayload queuedProxy
 			if decodeErr := json.Unmarshal([]byte(existingJSON), &existingPayload); decodeErr == nil {
 				if existingProxy, domainErr := existingPayload.toDomainProxy(); domainErr == nil {
-					proxy.Users = mergeQueuedProxyUsers(proxy.Users, existingProxy.Users)
+					proxy.Workspaces = mergeQueuedProxyWorkspaces(proxy.Workspaces, existingProxy.Workspaces)
 				}
 			}
 		} else if !errors.Is(err, redis.Nil) {
@@ -530,8 +550,8 @@ func uniqueQueueKeys(keys ...string) []string {
 	return result
 }
 
-func mergeQueuedProxyUsers(primary, additional []domain.User) []domain.User {
-	result := append([]domain.User(nil), primary...)
+func mergeQueuedProxyWorkspaces(primary, additional []domain.Workspace) []domain.Workspace {
+	result := append([]domain.Workspace(nil), primary...)
 	seen := make(map[uint]struct{}, len(primary)+len(additional))
 	for _, user := range primary {
 		if user.ID != 0 {
@@ -726,12 +746,12 @@ func marshalQueuedProxy(proxy domain.Proxy) ([]byte, error) {
 
 func newQueuedProxy(proxy domain.Proxy) (queuedProxy, error) {
 	queued := queuedProxy{
-		Version: queuedProxyVersion,
-		ID:      proxy.ID,
-		IP:      proxy.GetIp(),
-		Port:    proxy.Port,
-		Hash:    append([]byte(nil), proxy.Hash...),
-		UserIDs: collectQueuedUserIDs(proxy.Users),
+		Version:      queuedProxyVersion,
+		ID:           proxy.ID,
+		IP:           proxy.GetIp(),
+		Port:         proxy.Port,
+		Hash:         append([]byte(nil), proxy.Hash...),
+		WorkspaceIDs: collectQueuedWorkspaceIDs(proxy.Workspaces),
 	}
 
 	if !encryptProxyQueueCredentials() {
@@ -771,28 +791,31 @@ func (qp queuedProxy) needsRewrite() bool {
 }
 
 func (qp queuedProxy) toDomainProxy() (domain.Proxy, error) {
-	userIDs := qp.UserIDs
-	if len(userIDs) == 0 && len(qp.Users) > 0 {
-		userIDs = make([]uint, 0, len(qp.Users))
+	workspaceIDs := qp.WorkspaceIDs
+	if len(workspaceIDs) == 0 {
+		workspaceIDs = qp.UserIDs
+	}
+	if len(workspaceIDs) == 0 && len(qp.Users) > 0 {
+		workspaceIDs = make([]uint, 0, len(qp.Users))
 		for _, user := range qp.Users {
 			if user.ID == 0 {
 				continue
 			}
-			userIDs = append(userIDs, user.ID)
+			workspaceIDs = append(workspaceIDs, user.ID)
 		}
 	}
 
-	users := make([]domain.User, 0, len(userIDs))
-	seen := make(map[uint]struct{}, len(userIDs))
-	for _, userID := range userIDs {
-		if userID == 0 {
+	workspaces := make([]domain.Workspace, 0, len(workspaceIDs))
+	seen := make(map[uint]struct{}, len(workspaceIDs))
+	for _, workspaceID := range workspaceIDs {
+		if workspaceID == 0 {
 			continue
 		}
-		if _, ok := seen[userID]; ok {
+		if _, ok := seen[workspaceID]; ok {
 			continue
 		}
-		seen[userID] = struct{}{}
-		users = append(users, domain.User{ID: userID})
+		seen[workspaceID] = struct{}{}
+		workspaces = append(workspaces, domain.Workspace{ID: workspaceID})
 	}
 
 	username := qp.Username
@@ -813,12 +836,12 @@ func (qp queuedProxy) toDomainProxy() (domain.Proxy, error) {
 	}
 
 	proxy := domain.Proxy{
-		ID:       qp.ID,
-		IP:       qp.IP,
-		Port:     qp.Port,
-		Username: username,
-		Password: password,
-		Users:    users,
+		ID:         qp.ID,
+		IP:         qp.IP,
+		Port:       qp.Port,
+		Username:   username,
+		Password:   password,
+		Workspaces: workspaces,
 	}
 	if qp.Version >= queuedProxyVersion && len(qp.Hash) > 0 {
 		proxy.Hash = append([]byte(nil), qp.Hash...)
@@ -830,7 +853,7 @@ func (qp queuedProxy) toDomainProxy() (domain.Proxy, error) {
 	return proxy, nil
 }
 
-func collectQueuedUserIDs(users []domain.User) []uint {
+func collectQueuedWorkspaceIDs(users []domain.Workspace) []uint {
 	if len(users) == 0 {
 		return nil
 	}

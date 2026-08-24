@@ -81,6 +81,22 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 	if DB == nil {
 		return nil, fmt.Errorf("database: connection was not configured")
 	}
+	if err := configureWorkspaceJoinTables(DB); err != nil {
+		return nil, fmt.Errorf("database: configure workspace join tables: %w", err)
+	}
+
+	if cfg.AutoMigrate {
+		if err := prepareWorkspaceOwnershipMigration(DB); err != nil {
+			return nil, fmt.Errorf("database: prepare workspace ownership migration: %w", err)
+		}
+		// Create the complete join-table shape without traversing Proxy and
+		// Workspace relationships. GORM can otherwise create user_proxies as a
+		// two-column many-to-many table before it sees ManagedProxy, and SQLite
+		// may rebuild referenced tables from that incomplete dependency graph.
+		if err := DB.AutoMigrate(&managedProxyMigrationRow{}); err != nil {
+			return nil, fmt.Errorf("database: migrate managed proxy ownership: %w", err)
+		}
+	}
 
 	migrations := cfg.Migrations
 	if cfg.AutoMigrate && shouldSkipProxyStatisticsAutoMigrate(DB) {
@@ -174,14 +190,21 @@ func silentLogger() logger.Interface {
 func defaultMigrations() []any {
 	return []any{
 		domain.User{},
+		domain.Workspace{},
+		domain.WorkspaceMembership{},
+		domain.WorkspaceMemberPreference{},
+		domain.WorkspaceSubscription{},
+		domain.WorkspaceUsagePeriod{},
 		domain.PasswordResetToken{},
 		domain.EmailOutbox{},
+		// Register the full managed-proxy join schema before Proxy/Workspace
+		// relationships can ask GORM to create a two-column join table.
+		domain.ManagedProxy{},
 		domain.Proxy{},
 		domain.BlacklistedIP{},
 		domain.BlacklistedRange{},
 		domain.AbuseIPDBCheck{},
 		domain.ProxyReputation{},
-		domain.UserProxy{},
 		domain.ProxyTag{},
 		domain.ProxyTagAssignment{},
 		domain.UserProxyFilterIndex{},
@@ -301,6 +324,7 @@ type schemaEnsureStep struct {
 func ensurePostMigrateSchemas(db *gorm.DB) error {
 	steps := []schemaEnsureStep{
 		{name: "user auth schema", run: ensureUserAuthSchema},
+		{name: "workspace schema", run: ensureWorkspaceSchema},
 		{name: "proxy access storage schema", run: ensureProxyAccessStorageSchema},
 		{name: "proxy reputation schema", run: ensureProxyReputationSchema},
 		{name: "proxy statistics retention schema", run: ensureProxyStatisticsRetentionSchema},
@@ -497,13 +521,13 @@ func ensureProxyTimelineRetentionSchema(db *gorm.DB) error {
 	if db.Migrator().HasTable(&domain.ProxySnapshot{}) {
 		stmts = append(stmts,
 			`CREATE INDEX IF NOT EXISTS idx_proxy_snapshots_created_at_id ON proxy_snapshots (created_at, id)`,
-			`CREATE INDEX IF NOT EXISTS idx_proxy_snapshots_user_metric_created_id ON proxy_snapshots (user_id, metric, created_at DESC, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proxy_snapshots_workspace_metric_created_id ON proxy_snapshots (workspace_id, metric, created_at DESC, id DESC)`,
 		)
 	}
 	if db.Migrator().HasTable(&domain.ProxyHistory{}) {
 		stmts = append(stmts,
 			`CREATE INDEX IF NOT EXISTS idx_proxy_histories_created_at_id ON proxy_histories (created_at, id)`,
-			`CREATE INDEX IF NOT EXISTS idx_proxy_histories_user_created_id ON proxy_histories (user_id, created_at DESC, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proxy_histories_workspace_created_id ON proxy_histories (workspace_id, created_at DESC, id DESC)`,
 		)
 	}
 

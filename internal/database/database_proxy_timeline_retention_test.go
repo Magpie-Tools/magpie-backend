@@ -23,19 +23,20 @@ func TestDeleteOldProxySnapshots_DeletesOnlyRowsOlderThanCutoff(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	now := time.Now().UTC()
 	oldSnapshot := domain.ProxySnapshot{
-		UserID:    user.ID,
-		Metric:    domain.ProxySnapshotMetricAlive,
-		Count:     12,
-		CreatedAt: now.Add(-40 * 24 * time.Hour),
+		WorkspaceID: user.ID,
+		Metric:      domain.ProxySnapshotMetricAlive,
+		Count:       12,
+		CreatedAt:   now.Add(-40 * 24 * time.Hour),
 	}
 	recentSnapshot := domain.ProxySnapshot{
-		UserID:    user.ID,
-		Metric:    domain.ProxySnapshotMetricAlive,
-		Count:     18,
-		CreatedAt: now.Add(-2 * 24 * time.Hour),
+		WorkspaceID: user.ID,
+		Metric:      domain.ProxySnapshotMetricAlive,
+		Count:       18,
+		CreatedAt:   now.Add(-2 * 24 * time.Hour),
 	}
 	if err := db.Create(&oldSnapshot).Error; err != nil {
 		t.Fatalf("create old snapshot: %v", err)
@@ -69,17 +70,18 @@ func TestDeleteOldProxyHistory_DeletesOnlyRowsOlderThanCutoff(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	now := time.Now().UTC()
 	oldHistory := domain.ProxyHistory{
-		UserID:     user.ID,
-		ProxyCount: 100,
-		CreatedAt:  now.Add(-120 * 24 * time.Hour),
+		WorkspaceID: user.ID,
+		ProxyCount:  100,
+		CreatedAt:   now.Add(-120 * 24 * time.Hour),
 	}
 	recentHistory := domain.ProxyHistory{
-		UserID:     user.ID,
-		ProxyCount: 110,
-		CreatedAt:  now.Add(-5 * 24 * time.Hour),
+		WorkspaceID: user.ID,
+		ProxyCount:  110,
+		CreatedAt:   now.Add(-5 * 24 * time.Hour),
 	}
 	if err := db.Create(&oldHistory).Error; err != nil {
 		t.Fatalf("create old history: %v", err)

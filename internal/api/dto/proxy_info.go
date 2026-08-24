@@ -15,6 +15,8 @@ type ProxyInfo struct {
 	LatestCheck    time.Time               `json:"latest_check"`
 	Reputation     *ProxyReputationSummary `json:"reputation,omitempty"`
 	Tags           []ProxyTag              `json:"tags"`
+	State          string                  `json:"state"`
+	PauseReason    string                  `json:"pause_reason,omitempty"`
 }
 
 type ProxyHealthSummary struct {

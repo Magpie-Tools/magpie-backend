@@ -33,8 +33,11 @@ func TestGetProxySnapshotCountSummaryUsesLatestAndSinceBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&domain.User{}, &domain.ProxySnapshot{}); err != nil {
+	if err := db.AutoMigrate(&domain.Workspace{}, &domain.ProxySnapshot{}); err != nil {
 		t.Fatalf("migrate snapshot schema: %v", err)
+	}
+	if err := db.Create(&domain.Workspace{ID: 1, Name: "snapshot workspace"}).Error; err != nil {
+		t.Fatalf("create snapshot workspace: %v", err)
 	}
 
 	previousDB := DB
@@ -45,9 +48,9 @@ func TestGetProxySnapshotCountSummaryUsesLatestAndSinceBaseline(t *testing.T) {
 
 	now := time.Date(2026, time.June, 6, 12, 0, 0, 0, time.UTC)
 	snapshots := []domain.ProxySnapshot{
-		{UserID: 1, Metric: domain.ProxySnapshotMetricScraped, Count: 100, CreatedAt: now.Add(-8 * 24 * time.Hour)},
-		{UserID: 1, Metric: domain.ProxySnapshotMetricScraped, Count: 120, CreatedAt: now.Add(-6 * 24 * time.Hour)},
-		{UserID: 1, Metric: domain.ProxySnapshotMetricScraped, Count: 150, CreatedAt: now},
+		{WorkspaceID: 1, Metric: domain.ProxySnapshotMetricScraped, Count: 100, CreatedAt: now.Add(-8 * 24 * time.Hour)},
+		{WorkspaceID: 1, Metric: domain.ProxySnapshotMetricScraped, Count: 120, CreatedAt: now.Add(-6 * 24 * time.Hour)},
+		{WorkspaceID: 1, Metric: domain.ProxySnapshotMetricScraped, Count: 150, CreatedAt: now},
 	}
 	if err := db.Create(&snapshots).Error; err != nil {
 		t.Fatalf("seed snapshots: %v", err)

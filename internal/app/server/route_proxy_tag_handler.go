@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 
@@ -15,7 +14,7 @@ import (
 )
 
 func listProxyTags(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -31,7 +30,7 @@ func listProxyTags(w http.ResponseWriter, r *http.Request) {
 }
 
 func createProxyTag(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -51,7 +50,7 @@ func createProxyTag(w http.ResponseWriter, r *http.Request) {
 }
 
 func updateProxyTag(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -76,7 +75,7 @@ func updateProxyTag(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteProxyTag(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -95,7 +94,7 @@ func deleteProxyTag(w http.ResponseWriter, r *http.Request) {
 }
 
 func replaceProxyTags(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return

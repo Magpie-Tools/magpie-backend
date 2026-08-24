@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -25,7 +24,7 @@ import (
 )
 
 func getScrapeSourcesCount(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -37,7 +36,7 @@ func getScrapeSourcesCount(w http.ResponseWriter, r *http.Request) {
 }
 
 func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -75,7 +74,7 @@ func normalizeCountOperator(operator string) string {
 }
 
 func exportScrapeSources(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -113,7 +112,7 @@ func exportScrapeSources(w http.ResponseWriter, r *http.Request) {
 }
 
 func getScrapeSourceProxies(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -189,7 +188,7 @@ func getScrapeSourceProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func getScrapeSourceDetail(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -223,7 +222,7 @@ func requeueScrapeSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -272,7 +271,7 @@ func requeueScrapeSource(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -352,7 +351,7 @@ func writeScrapeSourceDeleteResponse(w http.ResponseWriter, deleted int64, orpha
 }
 
 func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -450,7 +449,7 @@ func checkScrapeSourceRobots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := auth.GetUserIDFromRequest(r); err != nil {
+	if _, err := workspaceIDFromRequest(r); err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -519,7 +518,7 @@ func getRobotsRespectSetting(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := auth.GetUserIDFromRequest(r); err != nil {
+	if _, err := workspaceIDFromRequest(r); err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}

@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/jobs/runtime"
@@ -21,7 +20,7 @@ import (
 )
 
 func listRotatingProxies(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -64,7 +63,7 @@ func formatRotatingProxyListenAddress(host string, port uint16) string {
 }
 
 func createRotatingProxy(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -138,7 +137,7 @@ func listRotatingProxyInstances(w http.ResponseWriter, _ *http.Request) {
 }
 
 func deleteRotatingProxy(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -167,7 +166,7 @@ func deleteRotatingProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func getNextRotatingProxy(w http.ResponseWriter, r *http.Request) {
-	userID, err := auth.GetUserIDFromRequest(r)
+	userID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return

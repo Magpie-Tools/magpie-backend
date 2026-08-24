@@ -96,6 +96,11 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 		return err
 	}
 
+	if err := recordWorkspaceCheckUsage(tx, statistics); err != nil {
+		tx.Rollback()
+		return err
+	}
+
 	if err := updateProxyStatusCaches(tx, statistics); err != nil {
 		tx.Rollback()
 		return err

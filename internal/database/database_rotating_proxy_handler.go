@@ -22,7 +22,7 @@ var (
 	ErrRotatingProxyNameTooLong        = errors.New("rotating proxy name is too long")
 	ErrRotatingProxyNameConflict       = errors.New("rotating proxy name already exists")
 	ErrRotatingProxyProtocolMissing    = errors.New("rotating proxy protocol is required")
-	ErrRotatingProxyProtocolDenied     = errors.New("protocol is not enabled for this user")
+	ErrRotatingProxyProtocolDenied     = errors.New("protocol is not enabled for this workspace")
 	ErrRotatingProxyNoAliveProxies     = errors.New("no alive proxies are available for the selected protocol")
 	ErrRotatingProxyAuthUsernameNeeded = errors.New("authentication username is required when authentication is enabled")
 	ErrRotatingProxyAuthPasswordNeeded = errors.New("authentication password is required when authentication is enabled")
@@ -49,7 +49,7 @@ const (
 	defaultInstanceRegion      = "Unknown"
 )
 
-func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*dto.RotatingProxy, error) {
+func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateRequest) (*dto.RotatingProxy, error) {
 	if DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
@@ -105,10 +105,10 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 	var result *dto.RotatingProxy
 
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		var user domain.User
-		if err := tx.First(&user, userID).Error; err != nil {
+		var workspace domain.Workspace
+		if err := tx.First(&workspace, workspaceID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("rotating proxy: user %d not found", userID)
+				return fmt.Errorf("rotating proxy: workspace %d not found", workspaceID)
 			}
 			return err
 		}
@@ -120,7 +120,7 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 			}
 			return err
 		}
-		if !isProtocolEnabledForUser(user, protocolName) {
+		if !isProtocolEnabledForWorkspace(workspace, protocolName) {
 			return ErrRotatingProxyProtocolDenied
 		}
 
@@ -134,7 +134,7 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 		filters := sanitizeRotatorReputationLabels(payload.ReputationLabels)
 
 		entity := domain.RotatingProxy{
-			UserID:                  userID,
+			WorkspaceID:             workspaceID,
 			Name:                    name,
 			InstanceID:              instanceID,
 			InstanceName:            instanceName,
@@ -164,7 +164,7 @@ func CreateRotatingProxy(userID uint, payload dto.RotatingProxyCreateRequest) (*
 			return err
 		}
 
-		aliveProxies, err := aliveProxiesForProtocol(tx, userID, proxyProtocol.ID, filters, uptimeFilterType, uptimePercentage)
+		aliveProxies, err := aliveProxiesForProtocol(tx, workspaceID, proxyProtocol.ID, filters, uptimeFilterType, uptimePercentage)
 		if err != nil {
 			return err
 		}
@@ -211,7 +211,7 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 	if err := DB.
 		Preload("Protocol").
 		Preload("ListenProtocol").
-		Where("user_id = ?", userID).
+		Where("workspace_id = ?", userID).
 		Order("created_at DESC").
 		Find(&rows).Error; err != nil {
 		return nil, err
@@ -293,7 +293,7 @@ func DeleteRotatingProxy(userID uint, rotatingProxyID uint64) error {
 		return fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
-	res := DB.Where("user_id = ? AND id = ?", userID, rotatingProxyID).Delete(&domain.RotatingProxy{})
+	res := DB.Where("workspace_id = ? AND id = ?", userID, rotatingProxyID).Delete(&domain.RotatingProxy{})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -315,7 +315,7 @@ func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingPro
 		if err := tx.
 			Preload("Protocol").
 			Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("user_id = ? AND id = ?", userID, rotatingProxyID).
+			Where("workspace_id = ? AND id = ?", userID, rotatingProxyID).
 			First(&entity).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrRotatingProxyNotFound
@@ -422,7 +422,7 @@ func buildAliveProxyQuery(tx *gorm.DB, userID uint, protocolID int, labels []str
 	query := tx.
 		Model(&domain.Proxy{}).
 		Select("proxies.*").
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userID).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", userID, domain.ManagedProxyStateActive).
 		Joins("JOIN proxy_latest_statistics pls ON pls.proxy_id = proxies.id AND pls.protocol_id = ? AND pls.alive = ?", protocolID, true)
 
 	query = applyReputationFilter(query, filterLabels)
@@ -511,7 +511,7 @@ func fetchUserProxyByID(tx *gorm.DB, userID uint, proxyID uint64) (*domain.Proxy
 	err := tx.
 		Model(&domain.Proxy{}).
 		Where("proxies.id = ?", proxyID).
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userID).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", userID, domain.ManagedProxyStateActive).
 		First(&proxy).Error
 	if err != nil {
 		return nil, err
@@ -531,16 +531,16 @@ func fetchProtocolByName(tx *gorm.DB, name string) (domain.Protocol, error) {
 	return protocol, err
 }
 
-func isProtocolEnabledForUser(user domain.User, protocolName string) bool {
+func isProtocolEnabledForWorkspace(workspace domain.Workspace, protocolName string) bool {
 	switch protocolName {
 	case "http":
-		return user.HTTPProtocol
+		return workspace.HTTPProtocol
 	case "https":
-		return user.HTTPSProtocol
+		return workspace.HTTPSProtocol
 	case "socks4":
-		return user.SOCKS4Protocol
+		return workspace.SOCKS4Protocol
 	case "socks5":
-		return user.SOCKS5Protocol
+		return workspace.SOCKS5Protocol
 	default:
 		return false
 	}

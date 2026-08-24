@@ -13,3 +13,14 @@ func GetUserIdsFromList(users []domain.User) []uint {
 
 	return userIds
 }
+
+func GetWorkspaceIDsFromList(workspaces []domain.Workspace) []uint {
+	workspaceIDs := make([]uint, 0, len(workspaces))
+	for _, workspace := range workspaces {
+		if workspace.ID == 0 {
+			continue
+		}
+		workspaceIDs = append(workspaceIDs, workspace.ID)
+	}
+	return workspaceIDs
+}

@@ -12,8 +12,8 @@ import (
 
 type RotatingProxy struct {
 	ID                      uint64     `gorm:"primaryKey;autoIncrement"`
-	UserID                  uint       `gorm:"not null;index:idx_rotating_user_name,priority:1"`
-	Name                    string     `gorm:"not null;size:120;index:idx_rotating_user_name,priority:2"`
+	WorkspaceID             uint       `gorm:"column:workspace_id;not null;index:idx_rotating_workspace_name,priority:1"`
+	Name                    string     `gorm:"not null;size:120;index:idx_rotating_workspace_name,priority:2"`
 	InstanceID              string     `gorm:"size:191;index:idx_rotating_instance_port,priority:1"`
 	InstanceName            string     `gorm:"size:120;default:''"`
 	InstanceRegion          string     `gorm:"size:120;default:''"`

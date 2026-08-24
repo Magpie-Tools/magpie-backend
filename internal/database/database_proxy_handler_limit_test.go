@@ -23,7 +23,7 @@ func TestNormalizeUserIDs(t *testing.T) {
 	}
 }
 
-func TestCleanupProxyLimitViolationsWithConfig_RemovesNewestOverflow(t *testing.T) {
+func TestCleanupProxyLimitViolationsWithConfig_PausesNewestOverflow(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
 
 	user := domain.User{
@@ -33,6 +33,7 @@ func TestCleanupProxyLimitViolationsWithConfig_RemovesNewestOverflow(t *testing.
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	base := time.Now().Add(-10 * time.Minute)
 	proxyIDs := make([]uint64, 0, 5)
@@ -48,9 +49,9 @@ func TestCleanupProxyLimitViolationsWithConfig_RemovesNewestOverflow(t *testing.
 			t.Fatalf("create proxy %d: %v", i, err)
 		}
 		link := domain.UserProxy{
-			UserID:    user.ID,
-			ProxyID:   proxy.ID,
-			CreatedAt: base.Add(time.Duration(i) * time.Minute),
+			WorkspaceID: user.ID,
+			ProxyID:     proxy.ID,
+			CreatedAt:   base.Add(time.Duration(i) * time.Minute),
 		}
 		if err := db.Create(&link).Error; err != nil {
 			t.Fatalf("create user proxy %d: %v", i, err)
@@ -58,7 +59,7 @@ func TestCleanupProxyLimitViolationsWithConfig_RemovesNewestOverflow(t *testing.
 		proxyIDs = append(proxyIDs, proxy.ID)
 	}
 
-	removed, orphaned, err := cleanupProxyLimitViolationsWithConfig(context.Background(), config.ProxyLimitConfig{
+	paused, inactive, refresh, err := cleanupProxyLimitViolationsWithConfig(context.Background(), config.ProxyLimitConfig{
 		Enabled:       true,
 		MaxPerUser:    3,
 		ExcludeAdmins: false,
@@ -66,28 +67,36 @@ func TestCleanupProxyLimitViolationsWithConfig_RemovesNewestOverflow(t *testing.
 	if err != nil {
 		t.Fatalf("cleanup limit violations: %v", err)
 	}
-	if removed != 2 {
-		t.Fatalf("removed rows = %d, want 2", removed)
+	if paused != 2 {
+		t.Fatalf("paused rows = %d, want 2", paused)
 	}
-	if len(orphaned) != 2 {
-		t.Fatalf("orphaned proxies = %d, want 2", len(orphaned))
+	if len(inactive) != 2 {
+		t.Fatalf("inactive proxies = %d, want 2", len(inactive))
+	}
+	if len(refresh) != 0 {
+		t.Fatalf("refresh proxies = %d, want 0", len(refresh))
 	}
 
 	var links []domain.UserProxy
-	if err := db.Where("user_id = ?", user.ID).Find(&links).Error; err != nil {
-		t.Fatalf("load user proxies: %v", err)
+	if err := db.Where("workspace_id = ?", user.ID).Find(&links).Error; err != nil {
+		t.Fatalf("load workspace managed proxies: %v", err)
 	}
-	if len(links) != 3 {
-		t.Fatalf("remaining user proxies = %d, want 3", len(links))
+	if len(links) != 5 {
+		t.Fatalf("stored managed proxies = %d, want 5", len(links))
 	}
 
-	remaining := make(map[uint64]struct{}, len(links))
+	stateByProxy := make(map[uint64]string, len(links))
 	for _, link := range links {
-		remaining[link.ProxyID] = struct{}{}
+		stateByProxy[link.ProxyID] = link.State
 	}
 	for _, expectedID := range proxyIDs[:3] {
-		if _, ok := remaining[expectedID]; !ok {
-			t.Fatalf("expected proxy %d to remain after cleanup", expectedID)
+		if stateByProxy[expectedID] != domain.ManagedProxyStateActive {
+			t.Fatalf("expected older proxy %d to remain active", expectedID)
+		}
+	}
+	for _, expectedID := range proxyIDs[3:] {
+		if stateByProxy[expectedID] != domain.ManagedProxyStatePaused {
+			t.Fatalf("expected newer proxy %d to be paused", expectedID)
 		}
 	}
 }
@@ -103,6 +112,7 @@ func TestCleanupProxyLimitViolationsWithConfig_ExcludesAdmins(t *testing.T) {
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatalf("create admin: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, admin)
 
 	for i := 0; i < 4; i++ {
 		proxy := domain.Proxy{
@@ -115,14 +125,14 @@ func TestCleanupProxyLimitViolationsWithConfig_ExcludesAdmins(t *testing.T) {
 			t.Fatalf("create proxy %d: %v", i, err)
 		}
 		if err := db.Create(&domain.UserProxy{
-			UserID:  admin.ID,
-			ProxyID: proxy.ID,
+			WorkspaceID: admin.ID,
+			ProxyID:     proxy.ID,
 		}).Error; err != nil {
 			t.Fatalf("create admin user proxy %d: %v", i, err)
 		}
 	}
 
-	removed, orphaned, err := cleanupProxyLimitViolationsWithConfig(context.Background(), config.ProxyLimitConfig{
+	paused, inactive, refresh, err := cleanupProxyLimitViolationsWithConfig(context.Background(), config.ProxyLimitConfig{
 		Enabled:       true,
 		MaxPerUser:    2,
 		ExcludeAdmins: true,
@@ -130,16 +140,19 @@ func TestCleanupProxyLimitViolationsWithConfig_ExcludesAdmins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cleanup limit violations: %v", err)
 	}
-	if removed != 0 {
-		t.Fatalf("removed rows = %d, want 0 for excluded admin", removed)
+	if paused != 0 {
+		t.Fatalf("paused rows = %d, want 0 for excluded admin", paused)
 	}
-	if len(orphaned) != 0 {
-		t.Fatalf("orphaned proxies = %d, want 0", len(orphaned))
+	if len(inactive) != 0 {
+		t.Fatalf("inactive proxies = %d, want 0", len(inactive))
+	}
+	if len(refresh) != 0 {
+		t.Fatalf("refresh proxies = %d, want 0", len(refresh))
 	}
 
 	var remaining int64
 	if err := db.Model(&domain.UserProxy{}).
-		Where("user_id = ?", admin.ID).
+		Where("workspace_id = ?", admin.ID).
 		Count(&remaining).Error; err != nil {
 		t.Fatalf("count admin proxies: %v", err)
 	}

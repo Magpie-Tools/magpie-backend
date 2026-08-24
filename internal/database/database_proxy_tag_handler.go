@@ -25,7 +25,7 @@ func GetProxyTags(userID uint) ([]dto.ProxyTag, error) {
 
 	var tags []domain.ProxyTag
 	if err := DB.
-		Where("user_id = ?", userID).
+		Where("workspace_id = ?", userID).
 		Order("name_key ASC, id ASC").
 		Find(&tags).Error; err != nil {
 		return nil, err
@@ -46,14 +46,14 @@ func CreateProxyTag(userID uint, name, color string) (dto.ProxyTag, error) {
 		return dto.ProxyTag{}, fmt.Errorf("database connection was not initialised")
 	}
 
-	tag := domain.ProxyTag{UserID: userID, Name: name, Color: color}
+	tag := domain.ProxyTag{WorkspaceID: userID, Name: name, Color: color}
 	if err := tag.Normalize(); err != nil {
 		return dto.ProxyTag{}, err
 	}
 
 	var existing int64
 	if err := DB.Model(&domain.ProxyTag{}).
-		Where("user_id = ? AND name_key = ?", userID, tag.NameKey).
+		Where("workspace_id = ? AND name_key = ?", userID, tag.NameKey).
 		Count(&existing).Error; err != nil {
 		return dto.ProxyTag{}, err
 	}
@@ -81,7 +81,7 @@ func UpdateProxyTag(userID uint, tagID uint64, name, color string) (dto.ProxyTag
 
 	var updated domain.ProxyTag
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id = ? AND user_id = ?", tagID, userID).First(&updated).Error; err != nil {
+		if err := tx.Where("id = ? AND workspace_id = ?", tagID, userID).First(&updated).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrProxyTagNotFound
 			}
@@ -96,7 +96,7 @@ func UpdateProxyTag(userID uint, tagID uint64, name, color string) (dto.ProxyTag
 
 		var conflict int64
 		if err := tx.Model(&domain.ProxyTag{}).
-			Where("user_id = ? AND name_key = ? AND id <> ?", userID, updated.NameKey, tagID).
+			Where("workspace_id = ? AND name_key = ? AND id <> ?", userID, updated.NameKey, tagID).
 			Count(&conflict).Error; err != nil {
 			return err
 		}
@@ -127,7 +127,7 @@ func DeleteProxyTag(userID uint, tagID uint64) error {
 		return ErrProxyTagNotFound
 	}
 
-	result := DB.Where("id = ? AND user_id = ?", tagID, userID).Delete(&domain.ProxyTag{})
+	result := DB.Where("id = ? AND workspace_id = ?", tagID, userID).Delete(&domain.ProxyTag{})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -154,7 +154,7 @@ func ReplaceProxyTags(userID uint, proxyID uint64, tagIDs []uint64) ([]dto.Proxy
 			return err
 		}
 
-		if err := tx.Where("user_id = ? AND proxy_id = ?", userID, proxyID).
+		if err := tx.Where("workspace_id = ? AND proxy_id = ?", userID, proxyID).
 			Delete(&domain.ProxyTagAssignment{}).Error; err != nil {
 			return err
 		}
@@ -242,8 +242,8 @@ func loadProxyTagsByProxyID(userID uint, proxyIDs []uint64) (map[uint64][]dto.Pr
 	}
 	err := DB.Table("proxy_tag_assignments pta").
 		Select("pta.proxy_id, pt.id, pt.name, pt.color").
-		Joins("JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.user_id = pta.user_id").
-		Where("pta.user_id = ? AND pta.proxy_id IN ?", userID, proxyIDs).
+		Joins("JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.workspace_id = pta.workspace_id").
+		Where("pta.workspace_id = ? AND pta.proxy_id IN ?", userID, proxyIDs).
 		Order("pta.proxy_id ASC, pt.name_key ASC, pt.id ASC").
 		Scan(&rows).Error
 	if err != nil {
@@ -264,8 +264,8 @@ func requireProxyAccess(tx *gorm.DB, userID uint, proxyIDs []uint64) error {
 	}
 
 	var count int64
-	if err := tx.Model(&domain.UserProxy{}).
-		Where("user_id = ? AND proxy_id IN ?", userID, proxyIDs).
+	if err := tx.Model(&domain.ManagedProxy{}).
+		Where("workspace_id = ? AND proxy_id IN ?", userID, proxyIDs).
 		Count(&count).Error; err != nil {
 		return err
 	}
@@ -282,7 +282,7 @@ func requireProxyTags(tx *gorm.DB, userID uint, tagIDs []uint64) error {
 
 	var count int64
 	if err := tx.Model(&domain.ProxyTag{}).
-		Where("user_id = ? AND id IN ?", userID, tagIDs).
+		Where("workspace_id = ? AND id IN ?", userID, tagIDs).
 		Count(&count).Error; err != nil {
 		return err
 	}
@@ -301,7 +301,7 @@ func createProxyTagAssignments(tx *gorm.DB, userID uint, proxyIDs, tagIDs []uint
 	for _, proxyID := range proxyIDs {
 		for _, tagID := range tagIDs {
 			assignments = append(assignments, domain.ProxyTagAssignment{
-				UserID: userID, ProxyID: proxyID, ProxyTagID: tagID,
+				WorkspaceID: userID, ProxyID: proxyID, ProxyTagID: tagID,
 			})
 		}
 	}

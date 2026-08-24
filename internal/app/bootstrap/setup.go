@@ -67,34 +67,46 @@ func Setup(ctx context.Context) error {
 
 	judgeSetup()
 
-	cleanedRelations, orphanedProxies, cleanupErr := database.CleanupAutoRemovalViolations(ctx)
+	pausedForFailure, inactiveProxies, refreshProxies, cleanupErr := database.CleanupAutoRemovalViolations(ctx)
 	if cleanupErr != nil {
-		log.Error("auto-remove cleanup failed", "error", cleanupErr)
-	} else if cleanedRelations > 0 {
+		log.Error("auto-pause cleanup failed", "error", cleanupErr)
+	} else if pausedForFailure > 0 {
 		log.Info(
-			"Auto-remove cleanup completed",
-			"relations_removed", cleanedRelations,
-			"orphaned_proxies", len(orphanedProxies),
+			"Auto-pause cleanup completed",
+			"managed_proxies_paused", pausedForFailure,
+			"inactive_routes", len(inactiveProxies),
+			"refreshed_routes", len(refreshProxies),
 		)
-		if len(orphanedProxies) > 0 {
-			if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(orphanedProxies); err != nil {
-				log.Warn("failed to purge orphaned proxies from queue", "error", err)
+		if len(refreshProxies) > 0 {
+			if err := proxyqueue.PublicProxyQueue.AddToQueue(refreshProxies); err != nil {
+				log.Warn("failed to refresh auto-paused route payloads", "error", err)
+			}
+		}
+		if len(inactiveProxies) > 0 {
+			if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(inactiveProxies); err != nil {
+				log.Warn("failed to remove inactive routes from queue", "error", err)
 			}
 		}
 	}
 
-	limitCleanedRelations, limitOrphanedProxies, limitCleanupErr := database.CleanupProxyLimitViolations(ctx)
+	capacityPaused, capacityInactiveProxies, capacityRefreshProxies, limitCleanupErr := database.CleanupProxyLimitViolations(ctx)
 	if limitCleanupErr != nil {
-		log.Error("proxy-limit cleanup failed", "error", limitCleanupErr)
-	} else if limitCleanedRelations > 0 {
+		log.Error("workspace capacity cleanup failed", "error", limitCleanupErr)
+	} else if capacityPaused > 0 {
 		log.Info(
-			"Proxy-limit cleanup completed",
-			"relations_removed", limitCleanedRelations,
-			"orphaned_proxies", len(limitOrphanedProxies),
+			"Workspace capacity cleanup completed",
+			"managed_proxies_paused", capacityPaused,
+			"inactive_routes", len(capacityInactiveProxies),
+			"refreshed_routes", len(capacityRefreshProxies),
 		)
-		if len(limitOrphanedProxies) > 0 {
-			if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(limitOrphanedProxies); err != nil {
-				log.Warn("failed to purge proxy-limit orphans from queue", "error", err)
+		if len(capacityRefreshProxies) > 0 {
+			if err := proxyqueue.PublicProxyQueue.AddToQueue(capacityRefreshProxies); err != nil {
+				log.Warn("failed to refresh capacity-paused route payloads", "error", err)
+			}
+		}
+		if len(capacityInactiveProxies) > 0 {
+			if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(capacityInactiveProxies); err != nil {
+				log.Warn("failed to remove capacity-paused routes from queue", "error", err)
 			}
 		}
 	}
@@ -171,6 +183,7 @@ func Setup(ctx context.Context) error {
 	go database.StartReadModelRefreshRoutine(ctx)
 	go jobruntime.StartDashboardCacheRoutine(ctx)
 	go jobruntime.StartProxyStatisticsRoutine(ctx)
+	go jobruntime.StartWorkspaceUsageRoutine(ctx)
 	go jobruntime.StartProxyStatisticsRetentionRoutine(ctx)
 	go jobruntime.StartProxyTimelineRetentionRoutine(ctx)
 	go jobruntime.StartProxyHistoryRoutine(ctx)

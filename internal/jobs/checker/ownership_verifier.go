@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magpie/internal/database"
+	"magpie/internal/domain"
 
 	"github.com/charmbracelet/log"
 )
@@ -174,7 +175,7 @@ func fetchProxyOwnership(proxyIDs []uint64) (map[uint64]bool, error) {
 	if err := database.DB.WithContext(ctx).
 		Table("user_proxies").
 		Distinct("proxy_id").
-		Where("proxy_id IN ?", proxyIDs).
+		Where("proxy_id IN ? AND state = ?", proxyIDs, domain.ManagedProxyStateActive).
 		Pluck("proxy_id", &rows).Error; err != nil {
 		return nil, err
 	}

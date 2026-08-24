@@ -28,7 +28,10 @@ func setupCheckerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("set busy timeout: %v", err)
 	}
 
-	if err := db.AutoMigrate(&domain.User{}, &domain.Proxy{}, &domain.UserProxy{}); err != nil {
+	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
+		t.Fatalf("auto migrate managed proxy: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.User{}, &domain.Workspace{}, &domain.Proxy{}); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}
 
@@ -38,4 +41,25 @@ func setupCheckerTestDB(t *testing.T) *gorm.DB {
 	})
 
 	return db
+}
+
+func createCheckerWorkspace(t *testing.T, db *gorm.DB, user domain.User) {
+	t.Helper()
+	workspace := domain.Workspace{
+		ID:                         user.ID,
+		Name:                       user.Email + " workspace",
+		HTTPProtocol:               user.HTTPProtocol,
+		HTTPSProtocol:              user.HTTPSProtocol,
+		SOCKS4Protocol:             user.SOCKS4Protocol,
+		SOCKS5Protocol:             user.SOCKS5Protocol,
+		Timeout:                    user.Timeout,
+		Retries:                    user.Retries,
+		UseHttpsForSocks:           user.UseHttpsForSocks,
+		TransportProtocol:          user.TransportProtocol,
+		AutoRemoveFailingProxies:   user.AutoRemoveFailingProxies,
+		AutoRemoveFailureThreshold: user.AutoRemoveFailureThreshold,
+	}
+	if err := db.Create(&workspace).Error; err != nil {
+		t.Fatalf("create checker workspace: %v", err)
+	}
 }

@@ -30,7 +30,7 @@ type Proxy struct {
 	ScrapeSites []ScrapeSite      `gorm:"many2many:proxy_scrape_site;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	Reputations []ProxyReputation `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 
-	Users []User `gorm:"many2many:user_proxies;"`
+	Workspaces []Workspace `gorm:"many2many:user_proxies;joinForeignKey:ProxyID;joinReferences:WorkspaceID;"`
 
 	Hash      []byte    `gorm:"type:bytea;uniqueIndex;size:32"` // Keyed fingerprint of exact Host|Port|Username|Password
 	CreatedAt time.Time `gorm:"autoCreateTime"`

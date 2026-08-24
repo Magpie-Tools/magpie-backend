@@ -872,7 +872,13 @@ func setupUserRegistrationTestDB(t *testing.T) {
 	if _, err := database.SetupDB(func(cfg *database.Config) {
 		cfg.ExistingDB = db
 		cfg.AutoMigrate = true
-		cfg.Migrations = []any{domain.User{}}
+		cfg.Migrations = []any{
+			domain.User{},
+			domain.Workspace{},
+			domain.WorkspaceMembership{},
+			domain.WorkspaceMemberPreference{},
+			domain.WorkspaceSubscription{},
+		}
 		cfg.SeedDefaults = false
 	}); err != nil {
 		t.Fatalf("setup db: %v", err)

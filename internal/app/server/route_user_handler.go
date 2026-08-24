@@ -124,15 +124,20 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	workspaceAccess, err := database.ResolveWorkspaceAccess(user.ID, 0)
+	if err != nil {
+		writeError(w, "Failed to resolve personal workspace", http.StatusInternalServerError)
+		return
+	}
 
 	go bootstrap.AddDefaultJudgesToUsers()
 	registrationWarning := ""
-	sites, err := database.SaveScrapingSourcesOfUsers(user.ID, cfg.Scraper.ScrapeSites) // default scrape sites
+	sites, err := database.SaveScrapingSourcesOfUsers(workspaceAccess.WorkspaceID, cfg.Scraper.ScrapeSites)
 	if err != nil {
 		log.Warn("Could not add default Scraping Sources to user", "err", err)
 	} else {
-		if err := enqueueScrapeSitesOrRollback(user.ID, sites); err != nil {
-			log.Error("Could not queue default scraping sources for user", "user_id", user.ID, "error", err)
+		if err := enqueueScrapeSitesOrRollback(workspaceAccess.WorkspaceID, sites); err != nil {
+			log.Error("Could not queue default scraping sources for workspace", "workspace_id", workspaceAccess.WorkspaceID, "error", err)
 			registrationWarning = "Default scrape sources could not be queued and were rolled back. Add sources again later."
 		}
 	}
@@ -394,17 +399,32 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := database.GetUserFromId(userID)
-	judges := database.GetUserJudges(userID)
-	scrapingSources := database.GetScrapingSourcesOfUsers(userID)
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
+		writeWorkspaceAccessError(w, workspaceErr)
+		return
+	}
+	workspace := database.GetWorkspaceByID(workspaceID)
+	if workspace.ID == 0 {
+		writeError(w, "Workspace not found", http.StatusNotFound)
+		return
+	}
+	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
+	workspaceJudges := database.GetWorkspaceJudges(workspaceID)
+	scrapingSources := database.GetScrapingSourcesOfUsers(workspaceID)
 
-	json.NewEncoder(w).Encode(user.ToUserSettings(judges, scrapingSources))
+	json.NewEncoder(w).Encode(workspace.ToUserSettings(workspaceJudges, scrapingSources, preference))
 }
 
 func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := auth.GetUserIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
+		writeWorkspaceAccessError(w, workspaceErr)
 		return
 	}
 
@@ -428,18 +448,17 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := database.UpdateUserSettings(userID, userSettings); err != nil {
-		log.Error("failed to update user settings", "user_id", userID, "error", err)
+	if err := database.UpdateWorkspaceSettings(workspaceID, userID, userSettings); err != nil {
+		log.Error("failed to update workspace settings", "workspace_id", workspaceID, "user_id", userID, "error", err)
 		writeError(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	jwrList, err := database.GetUserJudgesWithRegex(userID)
+	jwrList, err := database.GetWorkspaceJudgesWithRegex(workspaceID)
 	if err != nil {
-		log.Warn("failed to refresh user judge cache after settings update", "user_id", userID, "error", err)
+		log.Warn("failed to refresh workspace judge cache after settings update", "workspace_id", workspaceID, "error", err)
 	} else {
-		// atomically replace this user's judges in the global map
-		judges.SetUserJudges(userID, jwrList)
+		judges.SetUserJudges(workspaceID, jwrList)
 	}
 
 	json.NewEncoder(w).Encode(map[string]string{"message": "Settings saved successfully"})
@@ -553,28 +572,49 @@ func deleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := database.ValidateUserAccountDeletion(r.Context(), userID); err != nil {
+		if errors.Is(err, database.ErrWorkspaceOwnershipTransferRequired) {
+			writeError(w, "Transfer ownership of your shared workspaces before deleting this account", http.StatusConflict)
+			return
+		}
+		log.Error("failed to validate user account deletion", "error", err)
+		writeError(w, "Failed to validate account deletion", http.StatusInternalServerError)
+		return
+	}
+
 	if err := auth.RevokeAllUserJWTs(userID); err != nil {
 		writeError(w, "Failed to revoke active sessions", http.StatusInternalServerError)
 		return
 	}
 
-	orphanedProxies, orphanedScrapeSites, err := database.DeleteUserAccount(context.Background(), userID)
+	result, err := database.DeleteUserAccountWithResult(context.Background(), userID)
 	if err != nil {
+		if errors.Is(err, database.ErrWorkspaceOwnershipTransferRequired) {
+			writeError(w, "Transfer ownership of your shared workspaces before deleting this account", http.StatusConflict)
+			return
+		}
 		log.Error("failed to delete user account", "error", err)
 		writeError(w, "Failed to delete account", http.StatusInternalServerError)
 		return
 	}
 
-	judges.SetUserJudges(userID, nil)
+	for _, workspaceID := range result.DeletedWorkspaceIDs {
+		judges.SetUserJudges(workspaceID, nil)
+	}
 
-	if len(orphanedProxies) > 0 {
-		if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(orphanedProxies); err != nil {
-			log.Error("failed to remove orphaned proxies from queue", "error", err)
+	if len(result.InactiveProxies) > 0 {
+		if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(result.InactiveProxies); err != nil {
+			log.Error("failed to remove inactive proxies from queue", "error", err)
+		}
+	}
+	if len(result.RefreshProxies) > 0 {
+		if err := proxyqueue.PublicProxyQueue.AddToQueue(result.RefreshProxies); err != nil {
+			log.Error("failed to refresh proxy workspace ownership in queue", "error", err)
 		}
 	}
 
-	if len(orphanedScrapeSites) > 0 {
-		if err := sitequeue.PublicScrapeSiteQueue.RemoveFromQueue(orphanedScrapeSites); err != nil {
+	if len(result.OrphanedScrapeSites) > 0 {
+		if err := sitequeue.PublicScrapeSiteQueue.RemoveFromQueue(result.OrphanedScrapeSites); err != nil {
 			log.Error("failed to remove orphaned scrape sites from queue", "error", err)
 		}
 	}
@@ -617,6 +657,9 @@ func createUserWithFirstAdminRole(user *domain.User, policy userRegistrationPoli
 				return errEmailAlreadyInUse
 			}
 			return err
+		}
+		if _, err := database.CreatePersonalWorkspaceForUser(tx, *user); err != nil {
+			return fmt.Errorf("create personal workspace: %w", err)
 		}
 
 		return nil

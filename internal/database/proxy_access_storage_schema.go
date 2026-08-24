@@ -35,9 +35,9 @@ func ensureProxyAccessStorageSchema(db *gorm.DB) error {
 	if !db.Migrator().HasColumn(&domain.Proxy{}, "host") || !db.Migrator().HasColumn(&domain.Proxy{}, "ip_address") {
 		return fmt.Errorf("proxy access storage: host columns were not created")
 	}
-	if !db.Migrator().HasTable(&domain.UserProxy{}) ||
-		!db.Migrator().HasColumn(&domain.UserProxy{}, "username") ||
-		!db.Migrator().HasColumn(&domain.UserProxy{}, "password") {
+	if !db.Migrator().HasTable(&domain.ManagedProxy{}) ||
+		!db.Migrator().HasColumn(&domain.ManagedProxy{}, "username") ||
+		!db.Migrator().HasColumn(&domain.ManagedProxy{}, "password") {
 		return fmt.Errorf("proxy access storage: credential columns were not created")
 	}
 

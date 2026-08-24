@@ -245,8 +245,8 @@ func TestLoadUpstreamTimeout_DefaultAndClamp(t *testing.T) {
 func TestHandleConnect_ProxiesDataThroughUpstream(t *testing.T) {
 	handler := &proxyHandler{
 		rotator: domain.RotatingProxy{
-			ID:     42,
-			UserID: 7,
+			ID:          42,
+			WorkspaceID: 7,
 		},
 	}
 
@@ -333,8 +333,8 @@ func TestHandleConnect_ProxiesDataThroughUpstream(t *testing.T) {
 func TestHandleHTTP_RejectsOversizedRequestBody(t *testing.T) {
 	handler := &proxyHandler{
 		rotator: domain.RotatingProxy{
-			ID:     42,
-			UserID: 7,
+			ID:          42,
+			WorkspaceID: 7,
 		},
 	}
 
@@ -379,8 +379,8 @@ func TestHandleHTTP_RejectsOversizedRequestBody(t *testing.T) {
 func TestHandleHTTP_RejectsOversizedUnknownLengthBodyWithoutDialing(t *testing.T) {
 	handler := &proxyHandler{
 		rotator: domain.RotatingProxy{
-			ID:     42,
-			UserID: 7,
+			ID:          42,
+			WorkspaceID: 7,
 		},
 	}
 
@@ -425,8 +425,8 @@ func TestHandleHTTP_RejectsOversizedUnknownLengthBodyWithoutDialing(t *testing.T
 func TestHandleHTTP_ForwardsBodyWithinLimit(t *testing.T) {
 	handler := &proxyHandler{
 		rotator: domain.RotatingProxy{
-			ID:     42,
-			UserID: 7,
+			ID:          42,
+			WorkspaceID: 7,
 		},
 	}
 
@@ -454,6 +454,17 @@ func TestHandleHTTP_ForwardsBodyWithinLimit(t *testing.T) {
 	originalLimit := maxRequestBodyBytes
 	maxRequestBodyBytes = 16
 	t.Cleanup(func() { maxRequestBodyBytes = originalLimit })
+
+	originalRecordTraffic := recordManagedTrafficFunc
+	var meteredRequests, meteredBytes uint64
+	recordManagedTrafficFunc = func(workspaceID uint, requests, bytes uint64) {
+		if workspaceID != 7 {
+			t.Errorf("metered workspace = %d, want 7", workspaceID)
+		}
+		meteredRequests += requests
+		meteredBytes += bytes
+	}
+	t.Cleanup(func() { recordManagedTrafficFunc = originalRecordTraffic })
 
 	upstreamDone := make(chan struct{})
 	go func() {
@@ -492,6 +503,9 @@ func TestHandleHTTP_ForwardsBodyWithinLimit(t *testing.T) {
 	if recorder.Body.String() != "ok" {
 		t.Fatalf("response body = %q, want ok", recorder.Body.String())
 	}
+	if meteredRequests != 1 || meteredBytes != 6 {
+		t.Fatalf("metered traffic = %d requests/%d bytes, want 1/6", meteredRequests, meteredBytes)
+	}
 
 	select {
 	case <-upstreamDone:
@@ -503,8 +517,8 @@ func TestHandleHTTP_ForwardsBodyWithinLimit(t *testing.T) {
 func TestHandleHTTP_ReturnsGatewayTimeoutWhenUpstreamHangs(t *testing.T) {
 	handler := &proxyHandler{
 		rotator: domain.RotatingProxy{
-			ID:     42,
-			UserID: 7,
+			ID:          42,
+			WorkspaceID: 7,
 		},
 	}
 
@@ -556,8 +570,8 @@ func TestHandleHTTP_ReturnsGatewayTimeoutWhenUpstreamHangs(t *testing.T) {
 func TestHandleHTTP_ReturnsGatewayTimeoutWhenSocksDialBlocks(t *testing.T) {
 	handler := &proxyHandler{
 		rotator: domain.RotatingProxy{
-			ID:     42,
-			UserID: 7,
+			ID:          42,
+			WorkspaceID: 7,
 		},
 	}
 
@@ -628,7 +642,7 @@ func TestRequestBodyLimitReader(t *testing.T) {
 func TestSocks5Handler_WithAuthenticationAndPiping(t *testing.T) {
 	handler := newSocksProxyHandler(domain.RotatingProxy{
 		ID:           10,
-		UserID:       5,
+		WorkspaceID:  5,
 		AuthRequired: true,
 		AuthUsername: "rot-user",
 		AuthPassword: "rot-pass",
@@ -750,7 +764,7 @@ func TestSocks5Handler_WithAuthenticationAndPiping(t *testing.T) {
 func TestSocks4Handler_WithUserIDAuth(t *testing.T) {
 	handler := newSocksProxyHandler(domain.RotatingProxy{
 		ID:           22,
-		UserID:       9,
+		WorkspaceID:  9,
 		AuthRequired: true,
 		AuthUsername: "rot-user",
 		AuthPassword: "rot-pass",

@@ -22,6 +22,7 @@ func TestFailureTrackerIncrementAndAutoRemove(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createCheckerWorkspace(t, db, user)
 
 	proxy := domain.Proxy{
 		IP:            "10.0.0.41",
@@ -33,7 +34,7 @@ func TestFailureTrackerIncrementAndAutoRemove(t *testing.T) {
 		t.Fatalf("create proxy: %v", err)
 	}
 
-	link := domain.UserProxy{UserID: user.ID, ProxyID: proxy.ID}
+	link := domain.UserProxy{WorkspaceID: user.ID, ProxyID: proxy.ID}
 	if err := db.Create(&link).Error; err != nil {
 		t.Fatalf("link proxy: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestFailureTrackerIncrementAndAutoRemove(t *testing.T) {
 	defer cancel()
 
 	event := failureEvent{
-		UserID:            user.ID,
+		WorkspaceID:       user.ID,
 		Success:           false,
 		AutoRemove:        true,
 		FailureThreshold:  user.AutoRemoveFailureThreshold,
@@ -54,7 +55,7 @@ func TestFailureTrackerIncrementAndAutoRemove(t *testing.T) {
 	}
 
 	var state domain.UserProxy
-	if err := db.First(&state, "user_id = ? AND proxy_id = ?", user.ID, proxy.ID).Error; err != nil {
+	if err := db.First(&state, "workspace_id = ? AND proxy_id = ?", user.ID, proxy.ID).Error; err != nil {
 		t.Fatalf("load user proxy state: %v", err)
 	}
 	if state.ConsecutiveFailures != 1 {
@@ -82,13 +83,20 @@ func TestFailureTrackerIncrementAndAutoRemove(t *testing.T) {
 	}
 
 	var remaining int64
-	if err := db.Model(&domain.UserProxy{}).
-		Where("user_id = ? AND proxy_id = ?", user.ID, proxy.ID).
+	if err := db.Model(&domain.ManagedProxy{}).
+		Where("workspace_id = ? AND proxy_id = ?", user.ID, proxy.ID).
 		Count(&remaining).Error; err != nil {
-		t.Fatalf("count user proxy: %v", err)
+		t.Fatalf("count managed proxy: %v", err)
 	}
-	if remaining != 0 {
-		t.Fatalf("user proxy rows remaining = %d, want 0", remaining)
+	if remaining != 1 {
+		t.Fatalf("managed proxy rows remaining = %d, want 1", remaining)
+	}
+	var managed domain.ManagedProxy
+	if err := db.First(&managed, "workspace_id = ? AND proxy_id = ?", user.ID, proxy.ID).Error; err != nil {
+		t.Fatalf("load paused managed proxy: %v", err)
+	}
+	if managed.State != domain.ManagedProxyStatePaused || managed.PauseReason != domain.ManagedProxyPauseReasonFailure {
+		t.Fatalf("managed proxy lifecycle = %q/%q, want paused/failure", managed.State, managed.PauseReason)
 	}
 }
 
@@ -106,6 +114,7 @@ func TestFailureTrackerResetsOnSuccess(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createCheckerWorkspace(t, db, user)
 
 	proxy := domain.Proxy{
 		IP:            "10.0.0.42",
@@ -118,7 +127,7 @@ func TestFailureTrackerResetsOnSuccess(t *testing.T) {
 	}
 
 	link := domain.UserProxy{
-		UserID:              user.ID,
+		WorkspaceID:         user.ID,
 		ProxyID:             proxy.ID,
 		ConsecutiveFailures: 3,
 	}
@@ -130,7 +139,7 @@ func TestFailureTrackerResetsOnSuccess(t *testing.T) {
 	defer cancel()
 
 	event := failureEvent{
-		UserID:            user.ID,
+		WorkspaceID:       user.ID,
 		Success:           true,
 		AutoRemove:        true,
 		FailureThreshold:  user.AutoRemoveFailureThreshold,
@@ -142,7 +151,7 @@ func TestFailureTrackerResetsOnSuccess(t *testing.T) {
 	}
 
 	var state domain.UserProxy
-	if err := db.First(&state, "user_id = ? AND proxy_id = ?", user.ID, proxy.ID).Error; err != nil {
+	if err := db.First(&state, "workspace_id = ? AND proxy_id = ?", user.ID, proxy.ID).Error; err != nil {
 		t.Fatalf("reload user proxy: %v", err)
 	}
 	if state.ConsecutiveFailures != 0 {

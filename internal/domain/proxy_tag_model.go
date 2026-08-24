@@ -23,13 +23,13 @@ var (
 )
 
 type ProxyTag struct {
-	ID      uint64 `gorm:"primaryKey;autoIncrement"`
-	UserID  uint   `gorm:"not null;index;uniqueIndex:idx_proxy_tags_user_name,priority:1" json:"-"`
-	Name    string `gorm:"size:40;not null"`
-	NameKey string `gorm:"size:40;not null;uniqueIndex:idx_proxy_tags_user_name,priority:2" json:"-"`
-	Color   string `gorm:"size:7;not null;default:'#64748B'"`
+	ID          uint64 `gorm:"primaryKey;autoIncrement"`
+	WorkspaceID uint   `gorm:"column:workspace_id;not null;index;uniqueIndex:idx_proxy_tags_workspace_name,priority:1" json:"-"`
+	Name        string `gorm:"size:40;not null"`
+	NameKey     string `gorm:"size:40;not null;uniqueIndex:idx_proxy_tags_workspace_name,priority:2" json:"-"`
+	Color       string `gorm:"size:7;not null;default:'#64748B'"`
 
-	User        User                 `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	Workspace   Workspace            `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 	Assignments []ProxyTagAssignment `gorm:"foreignKey:ProxyTagID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
@@ -64,9 +64,9 @@ func (tag *ProxyTag) Normalize() error {
 }
 
 type ProxyTagAssignment struct {
-	UserID     uint   `gorm:"primaryKey;index:idx_proxy_tag_assignments_user_tag,priority:1"`
-	ProxyID    uint64 `gorm:"primaryKey"`
-	ProxyTagID uint64 `gorm:"primaryKey;index:idx_proxy_tag_assignments_user_tag,priority:2"`
+	WorkspaceID uint   `gorm:"column:workspace_id;primaryKey;index:idx_proxy_tag_assignments_workspace_tag,priority:1"`
+	ProxyID     uint64 `gorm:"primaryKey"`
+	ProxyTagID  uint64 `gorm:"primaryKey;index:idx_proxy_tag_assignments_workspace_tag,priority:2"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }

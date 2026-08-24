@@ -67,10 +67,10 @@ func GetUsersByIDsForChecker(ids []uint) (map[uint]domain.User, error) {
 	return result, nil
 }
 
-func GetUsersThatDontHaveJudges() []domain.User {
-	var users []domain.User
-	DB.Where("id NOT IN (SELECT DISTINCT user_id FROM user_judges)").Find(&users)
-	return users
+func GetWorkspacesThatDontHaveJudges() []domain.Workspace {
+	var workspaces []domain.Workspace
+	DB.Where("id NOT IN (SELECT DISTINCT workspace_id FROM user_judges)").Find(&workspaces)
+	return workspaces
 }
 
 func normalizeDashboardCountry(country string) string {
@@ -87,26 +87,24 @@ func normalizeDashboardCountry(country string) string {
 	}
 }
 
-// AddUserJudgesRelation cannot normally fail because of to many parameters because
-// users start with the default judges anyway
-func AddUserJudgesRelation(users []domain.User, judges []*domain.JudgeWithRegex) error {
-	var userJudges []domain.UserJudge
+func AddWorkspaceJudgesRelation(workspaces []domain.Workspace, judges []*domain.JudgeWithRegex) error {
+	var workspaceJudges []domain.WorkspaceJudge
 
-	for _, user := range users {
+	for _, workspace := range workspaces {
 		for _, judge := range judges {
-			userJudges = append(userJudges, domain.UserJudge{
-				UserID:  user.ID,
-				JudgeID: judge.Judge.ID,
-				Regex:   judge.Regex,
+			workspaceJudges = append(workspaceJudges, domain.WorkspaceJudge{
+				WorkspaceID: workspace.ID,
+				JudgeID:     judge.Judge.ID,
+				Regex:       judge.Regex,
 			})
 		}
 	}
 
-	if len(userJudges) > 0 {
+	if len(workspaceJudges) > 0 {
 		if err := DB.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "user_id"}, {Name: "judge_id"}},
+			Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "judge_id"}},
 			DoNothing: true,
-		}).Create(&userJudges).Error; err != nil {
+		}).Create(&workspaceJudges).Error; err != nil {
 			return err
 		}
 	}
@@ -114,9 +112,9 @@ func AddUserJudgesRelation(users []domain.User, judges []*domain.JudgeWithRegex)
 	return nil
 }
 
-func GetAllUserJudgeRelations() ([]domain.UserJudge, []domain.JudgeWithRegex) {
-	var userJudges []domain.UserJudge
-	if err := DB.Find(&userJudges).Error; err != nil {
+func GetAllWorkspaceJudgeRelations() ([]domain.WorkspaceJudge, []domain.JudgeWithRegex) {
+	var workspaceJudges []domain.WorkspaceJudge
+	if err := DB.Find(&workspaceJudges).Error; err != nil {
 		return nil, nil
 	}
 
@@ -148,16 +146,17 @@ func GetAllUserJudgeRelations() ([]domain.UserJudge, []domain.JudgeWithRegex) {
 		})
 	}
 
-	return userJudges, judgesWithRegex
+	return workspaceJudges, judgesWithRegex
 }
 
-func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
+func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings) error {
 	// Wrap everything in a single transaction so either all changes
 	// happen or none do.
 	return DB.Transaction(func(tx *gorm.DB) error {
 		transportProtocol := support.NormalizeTransportProtocol(settings.TransportProtocol)
 
-		/* ─── 1.  Update primitive columns on the User row ─────────────────────── */
+		// Operational settings belong to the workspace. Table preferences remain
+		// personal to this membership.
 		updates := map[string]interface{}{
 			"HTTPProtocol":               settings.HTTPProtocol,
 			"HTTPSProtocol":              settings.HTTPSProtocol,
@@ -169,13 +168,22 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 			"TransportProtocol":          transportProtocol,
 			"AutoRemoveFailingProxies":   settings.AutoRemoveFailingProxies,
 			"AutoRemoveFailureThreshold": settings.AutoRemoveFailureThreshold,
-			"ProxyListColumns":           domain.StringList(domain.NormalizeProxyListColumns(settings.ProxyListColumns)),
-			"ScrapeSourceProxyColumns":   domain.StringList(domain.NormalizeScrapeSourceProxyColumns(settings.ScrapeSourceProxyColumns)),
-			"ScrapeSourceListColumns":    domain.StringList(domain.NormalizeScrapeSourceListColumns(settings.ScrapeSourceListColumns)),
 		}
-		if err := tx.Model(&domain.User{}).
-			Where("id = ?", userID).
+		if err := tx.Model(&domain.Workspace{}).
+			Where("id = ?", workspaceID).
 			Updates(updates).Error; err != nil {
+			return err
+		}
+
+		preference := domain.WorkspaceMemberPreference{WorkspaceID: workspaceID, UserID: userID}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "workspace_id"}, {Name: "user_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"proxy_list_columns":          domain.StringList(domain.NormalizeProxyListColumns(settings.ProxyListColumns)),
+				"scrape_source_proxy_columns": domain.StringList(domain.NormalizeScrapeSourceProxyColumns(settings.ScrapeSourceProxyColumns)),
+				"scrape_source_list_columns":  domain.StringList(domain.NormalizeScrapeSourceListColumns(settings.ScrapeSourceListColumns)),
+			}),
+		}).Create(&preference).Error; err != nil {
 			return err
 		}
 
@@ -187,7 +195,7 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 				continue
 			}
 			if config.IsWebsiteBlocked(url) {
-				log.Info("Skipped blocked judge for user", "user_id", userID, "url", s.Url)
+				log.Info("Skipped blocked judge for workspace", "workspace_id", workspaceID, "url", s.Url)
 				continue
 			}
 			if _, exists := desiredByURL[url]; !exists {
@@ -198,7 +206,7 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 		}
 
 		if len(orderedURLs) == 0 {
-			if err := tx.Where("user_id = ?", userID).Delete(&domain.UserJudge{}).Error; err != nil {
+			if err := tx.Where("workspace_id = ?", workspaceID).Delete(&domain.WorkspaceJudge{}).Error; err != nil {
 				return err
 			}
 			return nil
@@ -247,39 +255,39 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 		}
 
 		keepIDs := make([]uint, 0, len(orderedURLs))
-		userJudges := make([]domain.UserJudge, 0, len(orderedURLs))
+		workspaceJudges := make([]domain.WorkspaceJudge, 0, len(orderedURLs))
 		for _, url := range orderedURLs {
 			judgeID, ok := judgeIDsByURL[url]
 			if !ok || judgeID == 0 {
 				continue
 			}
 			keepIDs = append(keepIDs, judgeID)
-			userJudges = append(userJudges, domain.UserJudge{
-				UserID:  userID,
-				JudgeID: judgeID,
-				Regex:   desiredByURL[url],
+			workspaceJudges = append(workspaceJudges, domain.WorkspaceJudge{
+				WorkspaceID: workspaceID,
+				JudgeID:     judgeID,
+				Regex:       desiredByURL[url],
 			})
 		}
 
-		if len(userJudges) > 0 {
+		if len(workspaceJudges) > 0 {
 			if err := tx.
 				Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "user_id"}, {Name: "judge_id"}},
+					Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "judge_id"}},
 					DoUpdates: clause.AssignmentColumns([]string{"regex"}),
 				}).
-				CreateInBatches(&userJudges, 200).Error; err != nil {
+				CreateInBatches(&workspaceJudges, 200).Error; err != nil {
 				return err
 			}
 		}
 
 		if len(keepIDs) == 0 {
-			if err := tx.Where("user_id = ?", userID).Delete(&domain.UserJudge{}).Error; err != nil {
+			if err := tx.Where("workspace_id = ?", workspaceID).Delete(&domain.WorkspaceJudge{}).Error; err != nil {
 				return err
 			}
 		} else {
 			if err := tx.
-				Where("user_id = ? AND judge_id NOT IN ?", userID, keepIDs).
-				Delete(&domain.UserJudge{}).Error; err != nil {
+				Where("workspace_id = ? AND judge_id NOT IN ?", workspaceID, keepIDs).
+				Delete(&domain.WorkspaceJudge{}).Error; err != nil {
 				return err
 			}
 		}
@@ -288,13 +296,23 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 	})
 }
 
-func GetUserJudges(userid uint) []dto.SimpleUserJudge {
+// UpdateUserSettings preserves the old Go API by updating the user's default
+// workspace. HTTP handlers use UpdateWorkspaceSettings directly.
+func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
+	access, err := ResolveWorkspaceAccess(userID, 0)
+	if err != nil {
+		return err
+	}
+	return UpdateWorkspaceSettings(access.WorkspaceID, userID, settings)
+}
+
+func GetWorkspaceJudges(workspaceID uint) []dto.SimpleUserJudge {
 	var results []dto.SimpleUserJudge
 
 	if err := DB.Table("user_judges").
 		Select("judges.full_string AS Url, user_judges.regex AS Regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
-		Where("user_judges.user_id = ?", userid).
+		Where("user_judges.workspace_id = ?", workspaceID).
 		Scan(&results).Error; err != nil {
 		return nil
 	}
@@ -302,7 +320,9 @@ func GetUserJudges(userid uint) []dto.SimpleUserJudge {
 	return results
 }
 
-func GetUserJudgesWithRegex(userid uint) ([]domain.JudgeWithRegex, error) {
+func GetUserJudges(workspaceID uint) []dto.SimpleUserJudge { return GetWorkspaceJudges(workspaceID) }
+
+func GetWorkspaceJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
 	var rows []struct {
 		ID         uint      `gorm:"column:id"`
 		FullString string    `gorm:"column:full_string"`
@@ -313,7 +333,7 @@ func GetUserJudgesWithRegex(userid uint) ([]domain.JudgeWithRegex, error) {
 	if err := DB.Table("user_judges").
 		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
-		Where("user_judges.user_id = ?", userid).
+		Where("user_judges.workspace_id = ?", workspaceID).
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -334,6 +354,10 @@ func GetUserJudgesWithRegex(userid uint) ([]domain.JudgeWithRegex, error) {
 	}
 
 	return result, nil
+}
+
+func GetUserJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
+	return GetWorkspaceJudgesWithRegex(workspaceID)
 }
 
 func GetDashboardInfo(userid uint) dto.DashboardInfo {
@@ -360,19 +384,19 @@ func RefreshDashboardCaches(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	var userIDs []uint
-	if err := DB.WithContext(ctx).Model(&domain.User{}).Order("id").Pluck("id", &userIDs).Error; err != nil {
-		return fmt.Errorf("dashboard cache: load user ids: %w", err)
+	var workspaceIDs []uint
+	if err := DB.WithContext(ctx).Model(&domain.Workspace{}).Order("id").Pluck("id", &workspaceIDs).Error; err != nil {
+		return fmt.Errorf("dashboard cache: load workspace ids: %w", err)
 	}
 
-	for _, userID := range userIDs {
+	for _, workspaceID := range workspaceIDs {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			RefreshDashboardInfoCache(userID)
-			RefreshRecentProxyChecksCache(userID, defaultRecentProxyChecksLimit)
-			RefreshFastestAliveProxiesCache(userID, dashboardFastestAliveLimit)
+			RefreshDashboardInfoCache(workspaceID)
+			RefreshRecentProxyChecksCache(workspaceID, defaultRecentProxyChecksLimit)
+			RefreshFastestAliveProxiesCache(workspaceID, dashboardFastestAliveLimit)
 		}
 	}
 	return nil
@@ -442,7 +466,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		const countryExpr = "CASE WHEN ufi.country_key IN ('n/a', 'unknown', 'unk') THEN 'Unknown' ELSE ufi.country END"
 		DB.Table("user_proxy_filter_indexes ufi").
 			Select(countryExpr+" AS country, COUNT(*) AS count").
-			Where("ufi.user_id = ?", userid).
+			Where("ufi.workspace_id = ? AND ufi.state = ?", userid, domain.ManagedProxyStateActive).
 			Group(countryExpr).
 			Order("count DESC, country ASC").
 			Scan(&countries)
@@ -457,8 +481,8 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 					"SUM(CASE WHEN al.name = 'anonymous' THEN 1 ELSE 0 END)   AS anonymous_proxies, "+
 					"SUM(CASE WHEN al.name = 'transparent' THEN 1 ELSE 0 END) AS transparent_proxies",
 			).
-			Joins("JOIN user_proxies up ON up.proxy_id = pls.proxy_id AND up.user_id = ?", userid).
-			Joins("JOIN user_judges uj ON uj.judge_id = pls.judge_id AND uj.user_id = ?", userid).
+			Joins("JOIN user_proxies up ON up.proxy_id = pls.proxy_id AND up.workspace_id = ? AND up.state = ?", userid, domain.ManagedProxyStateActive).
+			Joins("JOIN user_judges uj ON uj.judge_id = pls.judge_id AND uj.workspace_id = ?", userid).
 			Joins("JOIN judges j ON j.id = pls.judge_id").
 			Joins("JOIN anonymity_levels al ON al.id = pls.level_id").
 			Where("pls.alive = TRUE").
@@ -470,7 +494,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		defer wg.Done()
 		DB.Table("user_proxy_filter_indexes ufi").
 			Select("ufi.reputation_label AS label, COUNT(*) AS count").
-			Where("ufi.user_id = ?", userid).
+			Where("ufi.workspace_id = ? AND ufi.state = ?", userid, domain.ManagedProxyStateActive).
 			Group("label").
 			Scan(&repCounts)
 	}()
@@ -479,7 +503,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		defer wg.Done()
 		result := DB.Table("user_proxy_filter_indexes ufi").
 			Select("ufi.proxy_id, ufi.reputation_score AS score, ufi.reputation_label AS label, ufi.host AS ip, ufi.port").
-			Where("ufi.user_id = ? AND ufi.reputation_score IS NOT NULL", userid).
+			Where("ufi.workspace_id = ? AND ufi.state = ? AND ufi.reputation_score IS NOT NULL", userid, domain.ManagedProxyStateActive).
 			Order("ufi.reputation_score DESC, ufi.proxy_id ASC").
 			Limit(1).
 			Scan(&topRow)

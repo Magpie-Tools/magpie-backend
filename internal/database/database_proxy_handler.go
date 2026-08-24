@@ -40,13 +40,14 @@ const (
 	dashboardFastestAliveLimit    = 100
 )
 
-const proxyTagSearchExistsSQL = "EXISTS (SELECT 1 FROM proxy_tag_assignments pta JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.user_id = pta.user_id WHERE pta.user_id = ufi.user_id AND pta.proxy_id = ufi.proxy_id AND pt.name_key LIKE ?)"
+const proxyTagSearchExistsSQL = "EXISTS (SELECT 1 FROM proxy_tag_assignments pta JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.workspace_id = pta.workspace_id WHERE pta.workspace_id = ufi.workspace_id AND pta.proxy_id = ufi.proxy_id AND pt.name_key LIKE ?)"
 
 var ErrNoProxiesSelected = errors.New("no proxies selected for deletion")
+var ErrWorkspaceCapacityReached = errors.New("workspace active route capacity reached")
 
 type dashboardProxyListCacheKey struct {
-	UserID uint
-	Limit  int
+	WorkspaceID uint
+	Limit       int
 }
 
 var dashboardRecentChecksCache sync.Map
@@ -60,26 +61,40 @@ type ProxyPageQueryOptions struct {
 }
 
 func InsertAndGetProxiesWithUser(proxies []domain.Proxy, userIDs ...uint) ([]domain.Proxy, error) {
-	inserted, err := insertAndAssociateProxies(proxies, userIDs)
+	workspaceIDs := make([]uint, 0, len(userIDs))
+	for _, userID := range userIDs {
+		if access, err := ResolveWorkspaceAccess(userID, 0); err == nil {
+			workspaceIDs = append(workspaceIDs, access.WorkspaceID)
+		} else {
+			// Source compatibility for callers that already passed a tenant ID
+			// before the function was renamed.
+			workspaceIDs = append(workspaceIDs, userID)
+		}
+	}
+	return InsertAndGetProxiesWithWorkspace(proxies, workspaceIDs...)
+}
+
+func InsertAndGetProxiesWithWorkspace(proxies []domain.Proxy, workspaceIDs ...uint) ([]domain.Proxy, error) {
+	inserted, err := insertAndAssociateProxies(proxies, workspaceIDs)
 	if err != nil || len(inserted) == 0 {
 		return inserted, err
 	}
 
-	proxiesWithUsers, err := fetchProxiesWithUsers(DB, inserted)
+	proxiesWithWorkspaces, err := fetchProxiesWithWorkspaces(DB, inserted)
 	if err != nil {
 		return nil, err
 	}
 
-	return proxiesWithUsers, nil
+	return proxiesWithWorkspaces, nil
 }
 
-func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain.Proxy, error) {
-	if len(proxies) == 0 || len(userIDs) == 0 {
+func insertAndAssociateProxies(proxies []domain.Proxy, workspaceIDs []uint) ([]domain.Proxy, error) {
+	if len(proxies) == 0 || len(workspaceIDs) == 0 {
 		return nil, nil
 	}
 
-	userIDs = normalizeUserIDs(userIDs)
-	if len(userIDs) == 0 {
+	workspaceIDs = normalizeUserIDs(workspaceIDs)
+	if len(workspaceIDs) == 0 {
 		return nil, nil
 	}
 
@@ -92,43 +107,21 @@ func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain
 	}
 
 	batchSize := calculateBatchSize(len(uniqueProxies))
-	limitCfg := config.GetConfig().ProxyLimits
-
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
 	defer transactionRollbackHandler(tx)
 
-	perUserHashes := make(map[uint][]string, len(userIDs))
-	allowedHashes := make(map[string]struct{})
-
-	for _, userID := range userIDs {
-		if err := lockUserForProxyLimit(tx, userID, limitCfg); err != nil {
-			tx.Rollback()
-			return nil, err
-		}
-
-		hashes, err := filterHashesForUser(tx, uniqueProxies, userID, batchSize, limitCfg)
+	associationPlans := make(map[uint]map[string]managedProxyStatePlan, len(workspaceIDs))
+	for _, workspaceID := range workspaceIDs {
+		plan, err := planWorkspaceManagedProxyStates(tx, workspaceID, uniqueProxies)
 		if err != nil {
 			tx.Rollback()
 			return nil, err
 		}
-		if len(hashes) == 0 {
-			continue
-		}
-		perUserHashes[userID] = hashes
-		for _, hash := range hashes {
-			allowedHashes[hash] = struct{}{}
-		}
+		associationPlans[workspaceID] = plan
 	}
-
-	if len(allowedHashes) == 0 {
-		tx.Rollback()
-		return nil, nil
-	}
-
-	uniqueProxies = filterProxiesByHash(uniqueProxies, allowedHashes)
 
 	if err := insertProxies(tx, uniqueProxies, batchSize); err != nil {
 		tx.Rollback()
@@ -148,25 +141,21 @@ func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain
 		hashToProxy[key] = uniqueProxies[i]
 	}
 
-	for _, userID := range userIDs {
-		hashes := perUserHashes[userID]
-		if len(hashes) == 0 {
-			continue
-		}
-
-		userProxies := make([]domain.Proxy, 0, len(hashes))
-		for _, hash := range hashes {
+	for _, workspaceID := range workspaceIDs {
+		plan := associationPlans[workspaceID]
+		workspaceProxies := make([]domain.Proxy, 0, len(plan))
+		for hash := range plan {
 			if id, ok := hashToID[hash]; ok {
 				proxy := hashToProxy[hash]
 				proxy.ID = id
-				userProxies = append(userProxies, proxy)
+				workspaceProxies = append(workspaceProxies, proxy)
 			}
 		}
-		if len(userProxies) == 0 {
+		if len(workspaceProxies) == 0 {
 			continue
 		}
 
-		if err := createUserAssociations(tx, userProxies, userID, batchSize); err != nil {
+		if err := createWorkspaceAssociations(tx, workspaceProxies, workspaceID, plan, batchSize); err != nil {
 			tx.Rollback()
 			return nil, err
 		}
@@ -177,6 +166,11 @@ func insertAndAssociateProxies(proxies []domain.Proxy, userIDs []uint) ([]domain
 	}
 
 	return uniqueProxies, nil
+}
+
+type managedProxyStatePlan struct {
+	State       string
+	PauseReason string
 }
 
 // Helper functions
@@ -205,29 +199,74 @@ func normalizeUserIDs(userIDs []uint) []uint {
 	return out
 }
 
-func lockUserForProxyLimit(tx *gorm.DB, userID uint, limitCfg config.ProxyLimitConfig) error {
-	if tx == nil || !limitCfg.Enabled {
-		return nil
-	}
-	// PostgreSQL needs explicit row locks to serialize count-and-insert across
-	// concurrent transactions for the same user. Other dialects are left as-is.
-	if tx.Dialector.Name() != "postgres" {
-		return nil
+func planWorkspaceManagedProxyStates(tx *gorm.DB, workspaceID uint, proxies []domain.Proxy) (map[string]managedProxyStatePlan, error) {
+	if tx == nil || workspaceID == 0 {
+		return nil, errors.New("workspace is required")
 	}
 
-	var userIDRow uint
-	if err := tx.Model(&domain.User{}).
-		Select("id").
-		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id = ?", userID).
-		Take(&userIDRow).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("proxy limit lock: user %d not found", userID)
+	var subscription domain.WorkspaceSubscription
+	subscriptionErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("workspace_id = ?", workspaceID).First(&subscription).Error
+	if subscriptionErr != nil && !errors.Is(subscriptionErr, gorm.ErrRecordNotFound) {
+		return nil, subscriptionErr
+	}
+	if errors.Is(subscriptionErr, gorm.ErrRecordNotFound) {
+		subscription = domain.WorkspaceSubscription{WorkspaceID: workspaceID, OverageMode: domain.WorkspaceOverageUnlimited}
+	}
+
+	type existingRow struct {
+		Hash        []byte
+		State       string
+		PauseReason string
+	}
+	hashes := make([][]byte, 0, len(proxies))
+	for _, proxy := range proxies {
+		hashes = append(hashes, proxy.Hash)
+	}
+	var existingRows []existingRow
+	if err := tx.Table("user_proxies up").
+		Select("p.hash, up.state, up.pause_reason").
+		Joins("JOIN proxies p ON p.id = up.proxy_id").
+		Where("up.workspace_id = ? AND p.hash IN ?", workspaceID, hashes).
+		Scan(&existingRows).Error; err != nil {
+		return nil, err
+	}
+	existing := make(map[string]managedProxyStatePlan, len(existingRows))
+	for _, row := range existingRows {
+		existing[string(row.Hash)] = managedProxyStatePlan{State: row.State, PauseReason: row.PauseReason}
+	}
+
+	limit, unlimited := subscription.ActivationLimit()
+	var available uint64
+	if !unlimited {
+		var activeCount int64
+		if err := tx.Model(&domain.ManagedProxy{}).
+			Where("workspace_id = ? AND state = ?", workspaceID, domain.ManagedProxyStateActive).
+			Count(&activeCount).Error; err != nil {
+			return nil, err
 		}
-		return err
+		if activeCount < int64(limit) {
+			available = limit - uint64(activeCount)
+		}
 	}
 
-	return nil
+	plan := make(map[string]managedProxyStatePlan, len(proxies))
+	for _, proxy := range proxies {
+		key := string(proxy.Hash)
+		if current, ok := existing[key]; ok {
+			plan[key] = current
+			continue
+		}
+		if unlimited || available > 0 {
+			plan[key] = managedProxyStatePlan{State: domain.ManagedProxyStateActive}
+			if !unlimited {
+				available--
+			}
+			continue
+		}
+		plan[key] = managedProxyStatePlan{State: domain.ManagedProxyStatePaused, PauseReason: domain.ManagedProxyPauseReasonCapacity}
+	}
+	return plan, nil
 }
 
 func deduplicateProxies(proxies []domain.Proxy) ([]domain.Proxy, error) {
@@ -286,19 +325,6 @@ func filterHashesForUser(tx *gorm.DB, proxies []domain.Proxy, userID uint, chunk
 		return collectHashes(proxies), nil
 	}
 
-	if limitCfg.ExcludeAdmins {
-		var role string
-		if err := tx.Model(&domain.User{}).
-			Select("role").
-			Where("id = ?", userID).
-			Scan(&role).Error; err != nil {
-			return nil, err
-		}
-		if role == "admin" {
-			return collectHashes(proxies), nil
-		}
-	}
-
 	existingSet, err := getExistingHashesForUser(tx, userID, proxies, chunkSize)
 	if err != nil {
 		return nil, err
@@ -306,7 +332,7 @@ func filterHashesForUser(tx *gorm.DB, proxies []domain.Proxy, userID uint, chunk
 
 	var currentCount int64
 	if err := tx.Table("user_proxies").
-		Where("user_id = ?", userID).
+		Where("workspace_id = ?", userID).
 		Count(&currentCount).Error; err != nil {
 		return nil, err
 	}
@@ -375,7 +401,7 @@ func getExistingHashesForUser(tx *gorm.DB, userID uint, proxies []domain.Proxy, 
 		var rows [][]byte
 		err := tx.Table("user_proxies up").
 			Joins("JOIN proxies p ON up.proxy_id = p.id").
-			Where("up.user_id = ? AND p.hash IN ?", userID, hashes[i:end]).
+			Where("up.workspace_id = ? AND p.hash IN ?", userID, hashes[i:end]).
 			Pluck("p.hash", &rows).Error
 		if err != nil {
 			return nil, err
@@ -443,36 +469,51 @@ func ensureProxyIDs(tx *gorm.DB, proxies []domain.Proxy) error {
 	return nil
 }
 
-func createUserAssociations(tx *gorm.DB, proxies []domain.Proxy, userID uint, batchSize int) error {
+func createWorkspaceAssociations(tx *gorm.DB, proxies []domain.Proxy, workspaceID uint, plans map[string]managedProxyStatePlan, batchSize int) error {
 	if len(proxies) == 0 {
 		return nil
 	}
 
-	associations := make([]domain.UserProxy, len(proxies))
+	associations := make([]domain.ManagedProxy, len(proxies))
 	proxyIDs := make([]uint64, len(proxies))
 	for i, proxy := range proxies {
 		proxyIDs[i] = proxy.ID
-		associations[i] = domain.UserProxy{
-			UserID:   userID,
-			ProxyID:  proxy.ID,
-			Username: proxy.Username,
-			Password: proxy.Password,
+		statePlan := plans[string(proxy.Hash)]
+		now := time.Now().UTC()
+		var activatedAt, pausedAt *time.Time
+		if statePlan.State == domain.ManagedProxyStateActive {
+			activatedAt = &now
+		} else if statePlan.State == domain.ManagedProxyStatePaused {
+			pausedAt = &now
+		}
+		associations[i] = domain.ManagedProxy{
+			WorkspaceID: workspaceID,
+			ProxyID:     proxy.ID,
+			Username:    proxy.Username,
+			Password:    proxy.Password,
+			State:       statePlan.State,
+			PauseReason: statePlan.PauseReason,
+			ActivatedAt: activatedAt,
+			PausedAt:    pausedAt,
 		}
 	}
 
 	if err := tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "user_id"}, {Name: "proxy_id"}},
+		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "proxy_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"username", "password"}),
 	}).CreateInBatches(associations, batchSize).Error; err != nil {
 		return err
 	}
-	if err := refreshUserProxyFilterIndexesForUserProxyIDs(tx, userID, proxyIDs); err != nil {
+	if err := refreshUserProxyFilterIndexesForUserProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
-	return refreshUserScrapeSourceStatsForUserProxyIDs(tx, userID, proxyIDs)
+	if err := refreshUserScrapeSourceStatsForUserProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+		return err
+	}
+	return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
 }
 
-func fetchProxiesWithUsers(tx *gorm.DB, proxies []domain.Proxy) ([]domain.Proxy, error) {
+func fetchProxiesWithWorkspaces(tx *gorm.DB, proxies []domain.Proxy) ([]domain.Proxy, error) {
 	ids := make([]uint64, len(proxies))
 	for i, p := range proxies {
 		ids[i] = p.ID
@@ -491,10 +532,12 @@ func fetchProxiesWithUsers(tx *gorm.DB, proxies []domain.Proxy) ([]domain.Proxy,
 
 		var batch []domain.Proxy
 		err := tx.
-			Preload("Users", preloadCheckerUsers).
 			Where("id IN ?", ids[i:end]).
 			Find(&batch).Error
 		if err != nil {
+			return nil, err
+		}
+		if err := hydrateActiveProxyWorkspaces(tx, batch); err != nil {
 			return nil, err
 		}
 		for idx := range batch {
@@ -526,7 +569,7 @@ func getNumDatabaseFields(model interface{}, db *gorm.DB) (int, error) {
 func GetAllProxyCountOfUser(userId uint) int64 {
 	var count int64
 	DB.Model(&domain.Proxy{}).
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userId).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ?", userId).
 		Count(&count)
 	return count
 }
@@ -543,12 +586,14 @@ func ForEachProxyBatch(batchSize int, fn func([]domain.Proxy) error) error {
 	result := DB.
 		Model(&domain.Proxy{}).
 		Distinct("proxies.*").
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
-		Preload("Users", preloadCheckerUsers).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.state = ?", domain.ManagedProxyStateActive).
 		Order("proxies.id").
 		FindInBatches(&batchProxies, batchSize, func(tx *gorm.DB, _ int) error {
 			if len(batchProxies) == 0 {
 				return nil
+			}
+			if err := hydrateActiveProxyWorkspaces(tx, batchProxies); err != nil {
+				return err
 			}
 			if err := hydrateProxyCredentials(tx, batchProxies, 0); err != nil {
 				return err
@@ -574,7 +619,7 @@ func GetRecentProxyChecks(userID uint, limit int) []dto.ProxyRecentCheck {
 		limit = maxRecentProxyChecksLimit
 	}
 
-	key := dashboardProxyListCacheKey{UserID: userID, Limit: limit}
+	key := dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit}
 	if cached, ok := dashboardRecentChecksCache.Load(key); ok {
 		return cached.([]dto.ProxyRecentCheck)
 	}
@@ -610,7 +655,7 @@ WITH candidates AS (
 	FROM user_proxies up
 	JOIN proxies p ON p.id = up.proxy_id
 	LEFT JOIN proxy_overall_statuses pos ON pos.proxy_id = p.id
-	WHERE up.user_id = ?
+	WHERE up.workspace_id = ? AND up.state = 'active'
 	ORDER BY
 		COALESCE(pos.overall_alive, FALSE) DESC,
 		pos.last_checked_at DESC NULLS LAST,
@@ -656,7 +701,7 @@ ORDER BY c.alive DESC, latest_check DESC, c.id ASC
 	}
 
 	dashboardRecentChecksCache.Store(
-		dashboardProxyListCacheKey{UserID: userID, Limit: limit},
+		dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit},
 		result,
 	)
 	return result
@@ -667,7 +712,7 @@ func GetFastestAliveProxies(userID uint, limit int) []dto.ProxyFastestAlive {
 		return []dto.ProxyFastestAlive{}
 	}
 
-	key := dashboardProxyListCacheKey{UserID: userID, Limit: limit}
+	key := dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit}
 	if cached, ok := dashboardFastestAliveCache.Load(key); ok {
 		return cached.([]dto.ProxyFastestAlive)
 	}
@@ -708,7 +753,7 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 				"COALESCE(pr.score, 0) AS reputation_score, "+
 				"latest.checked_at AS latest_check",
 		).
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.user_id = ?", userID).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", userID, domain.ManagedProxyStateActive).
 		Joins("JOIN (?) AS latest ON latest.proxy_id = proxies.id", latestAliveStats).
 		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = proxies.id AND pr.kind = ?", domain.ProxyReputationKindOverall).
 		Order("latest.response_time ASC, latest.checked_at DESC, proxies.id ASC").
@@ -737,7 +782,7 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 	}
 
 	dashboardFastestAliveCache.Store(
-		dashboardProxyListCacheKey{UserID: userID, Limit: limit},
+		dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit},
 		result,
 	)
 	return result
@@ -754,7 +799,7 @@ func buildProxyHealthSubQuery(userId uint) *gorm.DB {
 				"MAX(CASE WHEN LOWER(proto.name) = 'socks5' THEN CASE WHEN pls.alive THEN 100.0 ELSE 0.0 END END) AS health_socks5",
 		).
 		Joins("JOIN protocols proto ON proto.id = pls.protocol_id").
-		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = pls.proxy_id AND up.user_id = ?)", userId).
+		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = pls.proxy_id AND up.workspace_id = ?)", userId).
 		Group("pls.proxy_id")
 }
 
@@ -795,6 +840,8 @@ func GetProxyInfoPageWithFiltersAndOptions(
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select(
 			"ufi.proxy_id AS id, "+
+				"ufi.state AS state, "+
+				"ufi.pause_reason AS pause_reason, "+
 				"ufi.host AS ip_address, "+
 				"ufi.port AS port, "+
 				"ufi.estimated_type AS estimated_type, "+
@@ -809,7 +856,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 				"ufi.health_socks5 AS health_socks5, "+
 				"ufi.latest_check AS latest_check",
 		).
-		Where("ufi.user_id = ?", userId)
+		Where("ufi.workspace_id = ?", userId)
 
 	query = applyProxyPageSort(query, options)
 
@@ -909,7 +956,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 
 func attachProxyTagsForResponse(userID uint, proxies []dto.ProxyInfo) {
 	if err := AttachProxyTagsToInfos(userID, proxies); err != nil {
-		log.Error("failed to attach proxy tags", "error", err, "user_id", userID)
+		log.Error("failed to attach proxy tags", "error", err, "workspace_id", userID)
 	}
 }
 
@@ -1118,7 +1165,7 @@ func buildIPSearchNetwork(search string) (network string, fallbackPrefix string,
 func buildProxySearchIDQuery(userId uint, filterQuery *gorm.DB, lowerSearch string) *gorm.DB {
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id AS id").
-		Where("ufi.user_id = ?", userId)
+		Where("ufi.workspace_id = ?", userId)
 
 	if filterQuery != nil {
 		query = query.Where("ufi.proxy_id IN (?)", filterQuery)
@@ -1131,7 +1178,7 @@ func buildProxySearchIDQuery(userId uint, filterQuery *gorm.DB, lowerSearch stri
 func buildProxyIPSearchIDQuery(userId uint, filterQuery *gorm.DB, network, fallbackPrefix, lowerSearch string, exact bool) *gorm.DB {
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id AS id").
-		Where("ufi.user_id = ?", userId)
+		Where("ufi.workspace_id = ?", userId)
 	tagPattern := "%" + strings.ToLower(strings.TrimSpace(lowerSearch)) + "%"
 	if isPostgresDialect(DB) {
 		query = query.Where("(ufi.ip_address <<= ?::cidr OR "+proxyTagSearchExistsSQL+")", network, tagPattern)
@@ -1208,7 +1255,7 @@ func buildProxyListFilterQuery(userId uint, filters dto.ProxyListFilters) *gorm.
 
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id").
-		Where("ufi.user_id = ?", userId)
+		Where("ufi.workspace_id = ?", userId)
 
 	if filters.Status == "alive" || filters.Status == "dead" {
 		if filters.Status == "alive" {
@@ -1281,7 +1328,7 @@ func buildProxyListFilterQuery(userId uint, filters dto.ProxyListFilters) *gorm.
 
 	if len(filters.TagIDs) > 0 {
 		query = query.Where(
-			"EXISTS (SELECT 1 FROM proxy_tag_assignments pta JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.user_id = pta.user_id WHERE pta.user_id = ufi.user_id AND pta.proxy_id = ufi.proxy_id AND pta.proxy_tag_id IN ?)",
+			"EXISTS (SELECT 1 FROM proxy_tag_assignments pta JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.workspace_id = pta.workspace_id WHERE pta.workspace_id = ufi.workspace_id AND pta.proxy_id = ufi.proxy_id AND pta.proxy_tag_id IN ?)",
 			filters.TagIDs,
 		)
 	}
@@ -1376,7 +1423,7 @@ func loadDistinctProxyInfoValue(userId uint, column string) ([]string, error) {
 	var rows []proxyFilterValueRow
 	if err := DB.Table("user_proxy_filter_indexes ufi").
 		Select("DISTINCT COALESCE(NULLIF("+column+", ''), 'N/A') AS value").
-		Where("ufi.user_id = ?", userId).
+		Where("ufi.workspace_id = ?", userId).
 		Order("value").
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -1389,7 +1436,7 @@ func loadDistinctAnonymityLevels(userId uint) ([]string, error) {
 	var rows []proxyFilterValueRow
 	if err := DB.Table("user_proxy_filter_indexes ufi").
 		Select("DISTINCT COALESCE(NULLIF(ufi.anonymity_level, ''), 'N/A') AS value").
-		Where("ufi.user_id = ?", userId).
+		Where("ufi.workspace_id = ?", userId).
 		Order("value").
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -1414,6 +1461,8 @@ func proxyInfoRowsToDTO(rows []dto.ProxyInfoRow) []dto.ProxyInfo {
 	for _, row := range rows {
 		results = append(results, dto.ProxyInfo{
 			Id:             row.Id,
+			State:          row.State,
+			PauseReason:    row.PauseReason,
 			IP:             row.IPAddress,
 			Port:           row.Port,
 			EstimatedType:  row.EstimatedType,
@@ -1717,7 +1766,7 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 		}).
 		Preload("Reputations").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
-		Where("up.user_id = ? AND proxies.id = ?", userId, proxyId).
+		Where("up.workspace_id = ? AND proxies.id = ?", userId, proxyId).
 		First(&proxy).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -1751,6 +1800,13 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 	}
 
 	detail.Reputation = mapReputationsToBreakdown(proxy.Reputations)
+	var managed domain.ManagedProxy
+	if managedErr := DB.Select("state", "pause_reason").
+		Where("workspace_id = ? AND proxy_id = ?", userId, proxyId).
+		First(&managed).Error; managedErr == nil {
+		detail.State = managed.State
+		detail.PauseReason = managed.PauseReason
+	}
 	detail.Tags, err = getProxyTagsForProxy(userId, proxyId)
 	if err != nil {
 		return nil, err
@@ -1766,9 +1822,8 @@ func GetQueuedProxyForUser(userId uint, proxyId uint64) (*domain.Proxy, error) {
 
 	var proxy domain.Proxy
 	err := DB.
-		Preload("Users", preloadCheckerUsers).
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
-		Where("up.user_id = ? AND proxies.id = ?", userId, proxyId).
+		Where("up.workspace_id = ? AND up.state = ? AND proxies.id = ?", userId, domain.ManagedProxyStateActive, proxyId).
 		First(&proxy).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -1776,11 +1831,38 @@ func GetQueuedProxyForUser(userId uint, proxyId uint64) (*domain.Proxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	items := []domain.Proxy{proxy}
+	if err := hydrateActiveProxyWorkspaces(DB, items); err != nil {
+		return nil, err
+	}
+	proxy = items[0]
 	if err := hydrateProxyCredential(DB, &proxy, userId); err != nil {
 		return nil, err
 	}
 
 	return &proxy, nil
+}
+
+func GetProxyQueueState(proxyID uint64) (*domain.Proxy, bool, error) {
+	if proxyID == 0 {
+		return nil, false, nil
+	}
+	var proxy domain.Proxy
+	if err := DB.First(&proxy, proxyID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	items := []domain.Proxy{proxy}
+	if err := hydrateActiveProxyWorkspaces(DB, items); err != nil {
+		return nil, false, err
+	}
+	proxy = items[0]
+	if err := hydrateProxyCredential(DB, &proxy, 0); err != nil {
+		return nil, false, err
+	}
+	return &proxy, len(proxy.Workspaces) > 0, nil
 }
 
 func GetProxyStatistics(userId uint, proxyId uint64, limit int) ([]dto.ProxyStatistic, error) {
@@ -1797,7 +1879,7 @@ func GetProxyStatistics(userId uint, proxyId uint64, limit int) ([]dto.ProxyStat
 		Preload("Level").
 		Preload("Judge").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
-		Where("proxy_statistics.proxy_id = ? AND up.user_id = ?", proxyId, userId).
+		Where("proxy_statistics.proxy_id = ? AND up.workspace_id = ?", proxyId, userId).
 		Order("proxy_statistics.created_at DESC").
 		Limit(limit)
 
@@ -1828,8 +1910,8 @@ func GetProxyStatisticResponseBody(userId uint, proxyId uint64, statisticId uint
 	err := DB.Table("proxy_statistics").
 		Select("proxy_statistics.response_body", "user_judges.regex").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
-		Joins("LEFT JOIN user_judges ON user_judges.judge_id = proxy_statistics.judge_id AND user_judges.user_id = up.user_id").
-		Where("proxy_statistics.id = ? AND proxy_statistics.proxy_id = ? AND up.user_id = ?", statisticId, proxyId, userId).
+		Joins("LEFT JOIN user_judges ON user_judges.judge_id = proxy_statistics.judge_id AND user_judges.workspace_id = up.workspace_id").
+		Where("proxy_statistics.id = ? AND proxy_statistics.proxy_id = ? AND up.workspace_id = ?", statisticId, proxyId, userId).
 		First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1903,9 +1985,9 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 
 		chunk := proxies[start:end]
 		result := DB.
-			Where("user_id = ?", userId).
+			Where("workspace_id = ?", userId).
 			Where("proxy_id IN ?", chunk).
-			Delete(&domain.UserProxy{})
+			Delete(&domain.ManagedProxy{})
 
 		if result.Error != nil {
 			return totalDeleted, nil, result.Error
@@ -1918,11 +2000,11 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 			}
 		}
 		if len(proxyIDs) > 0 {
-			if DB.Migrator().HasTable(&domain.UserProxyFilterIndex{}) {
+			if DB.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
 				if err := DB.
-					Where("user_id = ?", userId).
+					Where("workspace_id = ?", userId).
 					Where("proxy_id IN ?", proxyIDs).
-					Delete(&domain.UserProxyFilterIndex{}).Error; err != nil {
+					Delete(&domain.WorkspaceProxyFilterIndex{}).Error; err != nil {
 					return totalDeleted, nil, err
 				}
 			}
@@ -1945,6 +2027,9 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 			orphanSet[id] = struct{}{}
 		}
 	}
+	if err := refreshWorkspaceUsageActiveRoutes(DB, userId); err != nil {
+		return totalDeleted, nil, err
+	}
 
 	if len(orphanSet) == 0 {
 		return totalDeleted, nil, nil
@@ -1963,9 +2048,9 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 	return totalDeleted, orphans, nil
 }
 
-func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, error) {
+func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, []domain.Proxy, error) {
 	if DB == nil {
-		return 0, nil, fmt.Errorf("database not initialised")
+		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
 
 	db := DB
@@ -1974,20 +2059,21 @@ func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, e
 	}
 
 	type target struct {
-		UserID  uint
-		ProxyID uint64
+		WorkspaceID uint
+		ProxyID     uint64
 	}
 
 	var (
-		batch     []target
-		total     int64
-		orphaned  = make(map[uint64]domain.Proxy)
-		queryBase = db.Table("user_proxies up").
-				Select("up.user_id, up.proxy_id").
-				Joins("JOIN users u ON u.id = up.user_id").
-				Where("u.auto_remove_failing_proxies = ?", true).
-				Where("u.auto_remove_failure_threshold > 0").
-				Where("up.consecutive_failures >= u.auto_remove_failure_threshold")
+		batch          []target
+		total          int64
+		pausedProxyIDs = make(map[uint64]struct{})
+		queryBase      = db.Table("user_proxies up").
+				Select("up.workspace_id, up.proxy_id").
+				Joins("JOIN workspaces w ON w.id = up.workspace_id").
+				Where("w.auto_remove_failing_proxies = ?", true).
+				Where("w.auto_remove_failure_threshold > 0").
+				Where("up.state = ?", domain.ManagedProxyStateActive).
+				Where("up.consecutive_failures >= w.auto_remove_failure_threshold")
 	)
 
 	result := queryBase.FindInBatches(&batch, autoRemoveCleanupBatchSize, func(tx *gorm.DB, _ int) error {
@@ -1995,48 +2081,81 @@ func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, e
 			return nil
 		}
 
-		perUser := make(map[uint][]int)
+		perWorkspace := make(map[uint][]uint64)
 		for _, item := range batch {
-			perUser[item.UserID] = append(perUser[item.UserID], int(item.ProxyID))
+			perWorkspace[item.WorkspaceID] = append(perWorkspace[item.WorkspaceID], item.ProxyID)
 		}
 
-		for userID, proxyIDs := range perUser {
-			removed, orphanList, err := DeleteProxyRelation(userID, proxyIDs)
-			if err != nil {
+		now := time.Now().UTC()
+		for workspaceID, proxyIDs := range perWorkspace {
+			result := tx.Model(&domain.ManagedProxy{}).
+				Where("workspace_id = ? AND proxy_id IN ? AND state = ?", workspaceID, proxyIDs, domain.ManagedProxyStateActive).
+				Updates(map[string]any{
+					"state":        domain.ManagedProxyStatePaused,
+					"pause_reason": domain.ManagedProxyPauseReasonFailure,
+					"paused_at":    now,
+				})
+			if result.Error != nil {
+				return result.Error
+			}
+			if err := refreshManagedProxyLifecycleReadModels(tx, workspaceID, proxyIDs); err != nil {
 				return err
 			}
-			total += removed
-			for _, proxy := range orphanList {
-				orphaned[proxy.ID] = proxy
+			total += result.RowsAffected
+			for _, proxyID := range proxyIDs {
+				pausedProxyIDs[proxyID] = struct{}{}
 			}
 		}
 
 		return nil
 	})
 	if result.Error != nil {
-		return 0, nil, result.Error
+		return 0, nil, nil, result.Error
 	}
 
-	orphanList := make([]domain.Proxy, 0, len(orphaned))
-	for _, proxy := range orphaned {
-		orphanList = append(orphanList, proxy)
+	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(pausedProxyIDs))
+	return total, inactive, refresh, err
+}
+
+func CleanupProxyLimitViolations(ctx context.Context) (int64, []domain.Proxy, []domain.Proxy, error) {
+	if DB == nil {
+		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
-
-	return total, orphanList, nil
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+	var subscriptions []domain.WorkspaceSubscription
+	if err := db.Find(&subscriptions).Error; err != nil {
+		return 0, nil, nil, err
+	}
+	var total int64
+	allPaused := make(map[uint64]struct{})
+	for _, subscription := range subscriptions {
+		limit, unlimited := subscription.ActivationLimit()
+		if unlimited {
+			continue
+		}
+		paused, proxyIDs, err := pauseWorkspaceCapacityOverflow(db, subscription.WorkspaceID, limit)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		total += paused
+		for _, proxyID := range proxyIDs {
+			allPaused[proxyID] = struct{}{}
+		}
+	}
+	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(allPaused))
+	return total, inactive, refresh, err
 }
 
-func CleanupProxyLimitViolations(ctx context.Context) (int64, []domain.Proxy, error) {
-	limitCfg := config.GetConfig().ProxyLimits
-	return cleanupProxyLimitViolationsWithConfig(ctx, limitCfg)
-}
-
-func cleanupProxyLimitViolationsWithConfig(ctx context.Context, limitCfg config.ProxyLimitConfig) (int64, []domain.Proxy, error) {
+func cleanupProxyLimitViolationsWithConfig(ctx context.Context, limitCfg config.ProxyLimitConfig) (int64, []domain.Proxy, []domain.Proxy, error) {
 	if !limitCfg.Enabled {
-		return 0, nil, nil
+		return 0, nil, nil, nil
 	}
 
 	if DB == nil {
-		return 0, nil, fmt.Errorf("database not initialised")
+		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
 
 	db := DB
@@ -2044,76 +2163,216 @@ func cleanupProxyLimitViolationsWithConfig(ctx context.Context, limitCfg config.
 		db = db.WithContext(ctx)
 	}
 
-	maxPerUser := int64(limitCfg.MaxPerUser)
+	maxPerUser := uint64(limitCfg.MaxPerUser)
 
 	query := db.Table("user_proxies up").
-		Select("up.user_id").
-		Group("up.user_id").
+		Select("up.workspace_id").
+		Group("up.workspace_id").
+		Where("up.state = ?", domain.ManagedProxyStateActive).
 		Having("COUNT(*) > ?", maxPerUser)
 	if limitCfg.ExcludeAdmins {
-		query = query.Joins("JOIN users u ON u.id = up.user_id").
-			Where("u.role <> ?", "admin")
+		query = query.Joins("LEFT JOIN workspace_memberships wm ON wm.workspace_id = up.workspace_id AND wm.role = 'owner'").
+			Joins("LEFT JOIN users u ON u.id = wm.user_id").
+			Where("COALESCE(u.role, 'user') <> ?", "admin")
 	}
 
 	var userIDs []uint
-	if err := query.Pluck("up.user_id", &userIDs).Error; err != nil {
-		return 0, nil, err
+	if err := query.Pluck("up.workspace_id", &userIDs).Error; err != nil {
+		return 0, nil, nil, err
 	}
 	userIDs = normalizeUserIDs(userIDs)
 	if len(userIDs) == 0 {
-		return 0, nil, nil
+		return 0, nil, nil, nil
 	}
 
-	totalRemoved := int64(0)
-	orphaned := make(map[uint64]domain.Proxy)
+	totalPaused := int64(0)
+	pausedIDs := make(map[uint64]struct{})
 
-	for _, userID := range userIDs {
-		var currentCount int64
-		if err := db.Table("user_proxies").
-			Where("user_id = ?", userID).
-			Count(&currentCount).Error; err != nil {
-			return 0, nil, err
-		}
-
-		overflow := currentCount - maxPerUser
-		if overflow <= 0 {
-			continue
-		}
-
-		var toRemove []uint64
-		if err := db.Table("user_proxies").
-			Select("proxy_id").
-			Where("user_id = ?", userID).
-			Order("created_at DESC, proxy_id DESC").
-			Limit(int(overflow)).
-			Pluck("proxy_id", &toRemove).Error; err != nil {
-			return 0, nil, err
-		}
-		if len(toRemove) == 0 {
-			continue
-		}
-
-		proxyIDs := make([]int, 0, len(toRemove))
-		for _, proxyID := range toRemove {
-			proxyIDs = append(proxyIDs, int(proxyID))
-		}
-
-		removed, orphanList, err := DeleteProxyRelation(userID, proxyIDs)
+	for _, workspaceID := range userIDs {
+		paused, proxyIDs, err := pauseWorkspaceCapacityOverflow(db, workspaceID, maxPerUser)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
-		totalRemoved += removed
-		for _, proxy := range orphanList {
-			orphaned[proxy.ID] = proxy
+		totalPaused += paused
+		for _, proxyID := range proxyIDs {
+			pausedIDs[proxyID] = struct{}{}
 		}
 	}
+	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(pausedIDs))
+	return totalPaused, inactive, refresh, err
+}
 
-	orphanList := make([]domain.Proxy, 0, len(orphaned))
-	for _, proxy := range orphaned {
-		orphanList = append(orphanList, proxy)
+func pauseWorkspaceCapacityOverflow(db *gorm.DB, workspaceID uint, limit uint64) (int64, []uint64, error) {
+	var paused int64
+	var proxyIDs []uint64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var activeCount int64
+		if err := tx.Model(&domain.ManagedProxy{}).
+			Where("workspace_id = ? AND state = ?", workspaceID, domain.ManagedProxyStateActive).
+			Count(&activeCount).Error; err != nil {
+			return err
+		}
+		overflow := activeCount - int64(limit)
+		if overflow <= 0 {
+			return nil
+		}
+		if err := tx.Model(&domain.ManagedProxy{}).
+			Select("proxy_id").
+			Where("workspace_id = ? AND state = ?", workspaceID, domain.ManagedProxyStateActive).
+			Order("COALESCE(activated_at, created_at) DESC, proxy_id DESC").
+			Limit(int(overflow)).
+			Pluck("proxy_id", &proxyIDs).Error; err != nil {
+			return err
+		}
+		if len(proxyIDs) == 0 {
+			return nil
+		}
+		now := time.Now().UTC()
+		result := tx.Model(&domain.ManagedProxy{}).
+			Where("workspace_id = ? AND proxy_id IN ? AND state = ?", workspaceID, proxyIDs, domain.ManagedProxyStateActive).
+			Updates(map[string]any{
+				"state":        domain.ManagedProxyStatePaused,
+				"pause_reason": domain.ManagedProxyPauseReasonCapacity,
+				"paused_at":    now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		paused = result.RowsAffected
+		if err := refreshManagedProxyLifecycleReadModels(tx, workspaceID, proxyIDs); err != nil {
+			return err
+		}
+		return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	return paused, proxyIDs, nil
+}
+
+func proxiesWithoutActiveManagement(db *gorm.DB, proxyIDs []uint64) ([]domain.Proxy, error) {
+	if len(proxyIDs) == 0 {
+		return nil, nil
+	}
+	var proxies []domain.Proxy
+	err := db.Model(&domain.Proxy{}).
+		Where("id IN ?", proxyIDs).
+		Where("NOT EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id AND up.state = ?)", domain.ManagedProxyStateActive).
+		Find(&proxies).Error
+	return proxies, err
+}
+
+func PauseManagedProxy(workspaceID uint, proxyID uint64, reason string) (bool, []domain.Proxy, error) {
+	if DB == nil {
+		return false, nil, fmt.Errorf("database not initialised")
+	}
+	paused := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		result := tx.Model(&domain.ManagedProxy{}).
+			Where("workspace_id = ? AND proxy_id = ? AND state = ?", workspaceID, proxyID, domain.ManagedProxyStateActive).
+			Updates(map[string]any{
+				"state":        domain.ManagedProxyStatePaused,
+				"pause_reason": reason,
+				"paused_at":    now,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		paused = true
+		if err := refreshManagedProxyLifecycleReadModels(tx, workspaceID, []uint64{proxyID}); err != nil {
+			return err
+		}
+		return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
+	})
+	if err != nil || !paused {
+		return false, nil, err
+	}
+	inactive, err := proxiesWithoutActiveManagement(DB, []uint64{proxyID})
+	return true, inactive, err
+}
+
+func SetManagedProxyState(workspaceID uint, proxyID uint64, state string) error {
+	state = strings.ToLower(strings.TrimSpace(state))
+	switch state {
+	case domain.ManagedProxyStateActive, domain.ManagedProxyStatePaused, domain.ManagedProxyStateArchived:
+	default:
+		return domain.ErrInvalidManagedProxyState
 	}
 
-	return totalRemoved, orphanList, nil
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var managed domain.ManagedProxy
+		if err := tx.Where("workspace_id = ? AND proxy_id = ?", workspaceID, proxyID).First(&managed).Error; err != nil {
+			return err
+		}
+		if managed.State == state {
+			return nil
+		}
+
+		now := time.Now().UTC()
+		updates := map[string]any{"state": state}
+		switch state {
+		case domain.ManagedProxyStateActive:
+			if err := ensureWorkspaceActivationAvailable(tx, workspaceID); err != nil {
+				return err
+			}
+			updates["pause_reason"] = ""
+			updates["activated_at"] = now
+			updates["paused_at"] = nil
+			updates["archived_at"] = nil
+		case domain.ManagedProxyStatePaused:
+			updates["pause_reason"] = domain.ManagedProxyPauseReasonManual
+			updates["paused_at"] = now
+			updates["archived_at"] = nil
+		case domain.ManagedProxyStateArchived:
+			updates["pause_reason"] = ""
+			updates["archived_at"] = now
+		}
+		if err := tx.Model(&managed).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := refreshManagedProxyLifecycleReadModels(tx, workspaceID, []uint64{proxyID}); err != nil {
+			return err
+		}
+		return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
+	})
+}
+
+func ensureWorkspaceActivationAvailable(tx *gorm.DB, workspaceID uint) error {
+	var subscription domain.WorkspaceSubscription
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("workspace_id = ?", workspaceID).
+		First(&subscription).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	limit, unlimited := subscription.ActivationLimit()
+	if unlimited {
+		return nil
+	}
+	var activeCount int64
+	if err := tx.Model(&domain.ManagedProxy{}).
+		Where("workspace_id = ? AND state = ?", workspaceID, domain.ManagedProxyStateActive).
+		Count(&activeCount).Error; err != nil {
+		return err
+	}
+	if uint64(activeCount) >= limit {
+		return ErrWorkspaceCapacityReached
+	}
+	return nil
+}
+
+func refreshManagedProxyLifecycleReadModels(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
+	if err := refreshUserProxyFilterIndexesForUserProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+		return err
+	}
+	return refreshUserScrapeSourceStatsForUserProxyIDs(tx, workspaceID, proxyIDs)
 }
 
 func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
@@ -2122,7 +2381,7 @@ func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
 	}
 
 	var stillInUse []int
-	if err := DB.Model(&domain.UserProxy{}).
+	if err := DB.Model(&domain.ManagedProxy{}).
 		Where("proxy_id IN ?", candidateIDs).
 		Distinct("proxy_id").
 		Pluck("proxy_id", &stillInUse).Error; err != nil {
@@ -2258,7 +2517,7 @@ func StreamProxiesForExport(userID uint, settings dto.ExportSettings, batchSize 
 	idQuery := tx.Model(&domain.Proxy{}).
 		Select("DISTINCT proxies.id").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
-		Where("user_proxies.user_id = ?", userID)
+		Where("user_proxies.workspace_id = ?", userID)
 
 	if len(settings.Proxies) > 0 {
 		idQuery = idQuery.Where("proxies.id IN ?", settings.Proxies)

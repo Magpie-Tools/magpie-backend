@@ -9,7 +9,7 @@ func collectProxyIDsForDeletion(userID uint, settings dto.DeleteSettings) ([]uin
 	query := DB.Model(&domain.Proxy{}).
 		Select("DISTINCT proxies.id").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
-		Where("user_proxies.user_id = ?", userID)
+		Where("user_proxies.workspace_id = ?", userID)
 
 	if settings.Scope == "selected" && len(settings.Proxies) > 0 {
 		query = query.Where("proxies.id IN ?", settings.Proxies)

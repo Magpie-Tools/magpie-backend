@@ -9,13 +9,15 @@ import (
 	gql "github.com/graphql-go/graphql"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 )
 
 type viewerData struct {
-	user domain.User
+	user       domain.User
+	workspace  domain.Workspace
+	preference domain.WorkspaceMemberPreference
+	role       string
 }
 
 const (
@@ -99,6 +101,8 @@ func NewSchema() (gql.Schema, error) {
 		Name: "Proxy",
 		Fields: gql.Fields{
 			"id":             &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"state":          &gql.Field{Type: gql.NewNonNull(gql.String)},
+			"pauseReason":    &gql.Field{Type: gql.String},
 			"ip":             &gql.Field{Type: gql.NewNonNull(gql.String)},
 			"port":           &gql.Field{Type: gql.NewNonNull(gql.Int)},
 			"estimatedType":  &gql.Field{Type: gql.NewNonNull(gql.String)},
@@ -264,13 +268,40 @@ func NewSchema() (gql.Schema, error) {
 					return nil, nil
 				},
 			},
+			"workspaceId": &gql.Field{
+				Type: gql.NewNonNull(gql.ID),
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					if data, ok := p.Source.(*viewerData); ok {
+						return fmt.Sprintf("%d", data.workspace.ID), nil
+					}
+					return nil, nil
+				},
+			},
+			"workspaceName": &gql.Field{
+				Type: gql.NewNonNull(gql.String),
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					if data, ok := p.Source.(*viewerData); ok {
+						return data.workspace.Name, nil
+					}
+					return nil, nil
+				},
+			},
+			"workspaceRole": &gql.Field{
+				Type: gql.NewNonNull(gql.String),
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					if data, ok := p.Source.(*viewerData); ok {
+						return data.role, nil
+					}
+					return nil, nil
+				},
+			},
 			"settings": &gql.Field{
 				Type: gql.NewNonNull(userSettingsType),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						judges := database.GetUserJudges(data.user.ID)
-						sources := database.GetScrapingSourcesOfUsers(data.user.ID)
-						return buildUserSettings(data.user, judges, sources), nil
+						judges := database.GetUserJudges(data.workspace.ID)
+						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
+						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
 					return nil, nil
 				},
@@ -279,7 +310,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String))),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						return database.GetScrapingSourcesOfUsers(data.user.ID), nil
+						return database.GetScrapingSourcesOfUsers(data.workspace.ID), nil
 					}
 					return []string{}, nil
 				},
@@ -288,7 +319,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(dashboardType),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						info := database.GetDashboardInfo(data.user.ID)
+						info := database.GetDashboardInfo(data.workspace.ID)
 						return buildDashboard(info), nil
 					}
 					return nil, nil
@@ -298,7 +329,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(gql.Int),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						return int(database.GetAllProxyCountOfUser(data.user.ID)), nil
+						return int(database.GetAllProxyCountOfUser(data.workspace.ID)), nil
 					}
 					return 0, nil
 				},
@@ -306,15 +337,12 @@ func NewSchema() (gql.Schema, error) {
 			"proxyLimit": &gql.Field{
 				Type: gql.Int,
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
-					limitCfg := config.GetConfig().ProxyLimits
-					if !limitCfg.Enabled {
-						return nil, nil
-					}
 					if data, ok := p.Source.(*viewerData); ok {
-						if limitCfg.ExcludeAdmins && data.user.Role == "admin" {
+						limit, unlimited := data.workspace.Subscription.ActivationLimit()
+						if unlimited {
 							return nil, nil
 						}
-						return int(limitCfg.MaxPerUser), nil
+						return int(limit), nil
 					}
 					return nil, nil
 				},
@@ -330,7 +358,7 @@ func NewSchema() (gql.Schema, error) {
 						page = raw
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						return buildProxyPage(data.user.ID, page), nil
+						return buildProxyPage(data.workspace.ID, page), nil
 					}
 					return nil, nil
 				},
@@ -339,7 +367,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(gql.Int),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						return int(database.GetAllScrapeSiteCountOfUser(data.user.ID)), nil
+						return int(database.GetAllScrapeSiteCountOfUser(data.workspace.ID)), nil
 					}
 					return 0, nil
 				},
@@ -355,7 +383,7 @@ func NewSchema() (gql.Schema, error) {
 						limit = clampPositiveLimit(raw, maxViewerProxyHistoryLimit)
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						return buildProxyHistory(data.user.ID, limit), nil
+						return buildProxyHistory(data.workspace.ID, limit), nil
 					}
 					return []map[string]interface{}{}, nil
 				},
@@ -371,7 +399,7 @@ func NewSchema() (gql.Schema, error) {
 						limit = clampPositiveLimit(raw, maxRecentProxyChecksLimit)
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						return buildRecentProxyChecks(data.user.ID, limit), nil
+						return buildRecentProxyChecks(data.workspace.ID, limit), nil
 					}
 					return []map[string]interface{}{}, nil
 				},
@@ -387,7 +415,7 @@ func NewSchema() (gql.Schema, error) {
 						limit = clampPositiveLimit(raw, maxFastestAliveProxyLimit)
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						return buildFastestAliveProxies(data.user.ID, limit), nil
+						return buildFastestAliveProxies(data.workspace.ID, limit), nil
 					}
 					return []map[string]interface{}{}, nil
 				},
@@ -403,10 +431,10 @@ func NewSchema() (gql.Schema, error) {
 						limit = clampPositiveLimit(raw, maxViewerProxySnapshotLimit)
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						alive := database.GetProxySnapshotEntries(data.user.ID, domain.ProxySnapshotMetricAlive, limit)
-						alive = ensureLatestAliveSnapshot(alive, database.GetCurrentAliveProxyCount(data.user.ID))
+						alive := database.GetProxySnapshotEntries(data.workspace.ID, domain.ProxySnapshotMetricAlive, limit)
+						alive = ensureLatestAliveSnapshot(alive, database.GetCurrentAliveProxyCount(data.workspace.ID))
 
-						scraped := database.GetProxySnapshotEntries(data.user.ID, domain.ProxySnapshotMetricScraped, limit)
+						scraped := database.GetProxySnapshotEntries(data.workspace.ID, domain.ProxySnapshotMetricScraped, limit)
 						return map[string]interface{}{
 							"alive":   buildProxySnapshots(alive),
 							"scraped": buildProxySnapshots(scraped),
@@ -429,7 +457,7 @@ func NewSchema() (gql.Schema, error) {
 						page = raw
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						return buildScrapeSitePage(data.user.ID, page), nil
+						return buildScrapeSitePage(data.workspace.ID, page), nil
 					}
 					return nil, nil
 				},
@@ -505,9 +533,9 @@ func NewSchema() (gql.Schema, error) {
 						return nil, err
 					}
 					if data, ok := viewer.(*viewerData); ok {
-						judges := database.GetUserJudges(data.user.ID)
-						sources := database.GetScrapingSourcesOfUsers(data.user.ID)
-						return buildUserSettings(data.user, judges, sources), nil
+						judges := database.GetUserJudges(data.workspace.ID)
+						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
+						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
 					return nil, nil
 				},
@@ -532,13 +560,28 @@ func fetchViewer(ctx context.Context) (interface{}, error) {
 		return nil, fmt.Errorf("user %d not found", userID)
 	}
 
+	workspaceID, role, err := WorkspaceAccessFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	workspace := database.GetWorkspaceByID(workspaceID)
+	if workspace.ID == 0 {
+		return nil, fmt.Errorf("workspace %d not found", workspaceID)
+	}
+	var subscription domain.WorkspaceSubscription
+	if database.DB.Where("workspace_id = ?", workspaceID).First(&subscription).Error == nil {
+		workspace.Subscription = subscription
+	}
 	return &viewerData{
-		user: user,
+		user:       user,
+		workspace:  workspace,
+		preference: database.GetWorkspaceMemberPreference(workspaceID, userID),
+		role:       role,
 	}, nil
 }
 
-func buildUserSettings(user domain.User, judges []dto.SimpleUserJudge, sources []string) map[string]interface{} {
-	dtoSettings := user.ToUserSettings(judges, sources)
+func buildUserSettings(workspace domain.Workspace, preference domain.WorkspaceMemberPreference, judges []dto.SimpleUserJudge, sources []string) map[string]interface{} {
+	dtoSettings := workspace.ToUserSettings(judges, sources, preference)
 
 	judgeList := make([]map[string]interface{}, 0, len(dtoSettings.SimpleUserJudges))
 	for _, judge := range dtoSettings.SimpleUserJudges {
@@ -678,12 +721,15 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 		}
 		items = append(items, map[string]interface{}{
 			"id":             proxy.Id,
+			"state":          proxy.State,
+			"pauseReason":    proxy.PauseReason,
 			"ip":             proxy.IP,
 			"port":           int(proxy.Port),
 			"estimatedType":  proxy.EstimatedType,
 			"responseTime":   int(proxy.ResponseTime),
 			"country":        proxy.Country,
 			"anonymityLevel": proxy.AnonymityLevel,
+			"protocol":       "",
 			"alive":          proxy.Alive,
 			"latestCheck":    proxy.LatestCheck,
 			"reputation":     buildGraphQLReputationSummary(proxy.Reputation),
@@ -819,16 +865,21 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	if err != nil {
 		return err
 	}
-
-	user := database.GetUserFromId(userID)
-	if user.ID == 0 {
-		return fmt.Errorf("user %d not found", userID)
+	workspaceID, role, err := WorkspaceAccessFromContext(ctx)
+	if err != nil {
+		return err
 	}
-
-	currentJudges := database.GetUserJudges(userID)
-	currentSources := database.GetScrapingSourcesOfUsers(userID)
-
-	settings := user.ToUserSettings(currentJudges, currentSources)
+	if domain.WorkspaceRoleRank(role) < domain.WorkspaceRoleRank(domain.WorkspaceRoleOperator) {
+		return fmt.Errorf("workspace role does not permit settings changes")
+	}
+	workspace := database.GetWorkspaceByID(workspaceID)
+	if workspace.ID == 0 {
+		return fmt.Errorf("workspace %d not found", workspaceID)
+	}
+	currentJudges := database.GetWorkspaceJudges(workspaceID)
+	currentSources := database.GetScrapingSourcesOfUsers(workspaceID)
+	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
+	settings := workspace.ToUserSettings(currentJudges, currentSources, preference)
 
 	if v, ok := input["httpProtocol"].(bool); ok {
 		settings.HTTPProtocol = v
@@ -915,7 +966,7 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 		settings.ScrapeSourceListColumns = columns
 	}
 
-	if err := database.UpdateUserSettings(userID, settings); err != nil {
+	if err := database.UpdateWorkspaceSettings(workspaceID, userID, settings); err != nil {
 		return err
 	}
 

@@ -20,7 +20,19 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := db.AutoMigrate(&domain.User{}, &domain.Proxy{}, &domain.UserProxy{}); err != nil {
+	if err := configureWorkspaceJoinTables(db); err != nil {
+		t.Fatalf("configure workspace join tables: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
+		t.Fatalf("migrate managed proxy schema: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&domain.User{},
+		&domain.Workspace{},
+		&domain.WorkspaceMembership{},
+		&domain.WorkspaceSubscription{},
+		&domain.Proxy{},
+	); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
 
@@ -34,6 +46,9 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 	}
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatalf("create users: %v", err)
+	}
+	for _, user := range users {
+		createTestWorkspaceForUser(t, db, user)
 	}
 
 	first := domain.Proxy{Port: 8080, Username: "CaseUser", Password: "CaseSecret", Country: "N/A", EstimatedType: "N/A"}
@@ -88,7 +103,19 @@ func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := db.AutoMigrate(&domain.User{}, &domain.Proxy{}, &domain.UserProxy{}); err != nil {
+	if err := configureWorkspaceJoinTables(db); err != nil {
+		t.Fatalf("configure workspace join tables: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
+		t.Fatalf("migrate managed proxy schema: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&domain.User{},
+		&domain.Workspace{},
+		&domain.WorkspaceMembership{},
+		&domain.WorkspaceSubscription{},
+		&domain.Proxy{},
+	); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
 
@@ -100,6 +127,7 @@ func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	proxy := domain.Proxy{Port: 8080, Country: "N/A", EstimatedType: "N/A"}
 	if err := proxy.SetIP("2001:0db8::42"); err != nil {
@@ -129,7 +157,19 @@ func TestProxyAccessStoragePersistsProviderHostname(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := db.AutoMigrate(&domain.User{}, &domain.Proxy{}, &domain.UserProxy{}); err != nil {
+	if err := configureWorkspaceJoinTables(db); err != nil {
+		t.Fatalf("configure workspace join tables: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
+		t.Fatalf("migrate managed proxy schema: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&domain.User{},
+		&domain.Workspace{},
+		&domain.WorkspaceMembership{},
+		&domain.WorkspaceSubscription{},
+		&domain.Proxy{},
+	); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
 
@@ -141,6 +181,7 @@ func TestProxyAccessStoragePersistsProviderHostname(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	proxy := domain.Proxy{Port: 3128, Country: "N/A", EstimatedType: "N/A"}
 	if err := proxy.SetHost("Gateway.Provider.Example."); err != nil {
@@ -176,7 +217,7 @@ func assertStoredProxyAccess(t *testing.T, db *gorm.DB, userID uint, proxyID uin
 	t.Helper()
 
 	var access domain.UserProxy
-	if err := db.Where("user_id = ? AND proxy_id = ?", userID, proxyID).First(&access).Error; err != nil {
+	if err := db.Where("workspace_id = ? AND proxy_id = ?", userID, proxyID).First(&access).Error; err != nil {
 		t.Fatalf("load proxy access: %v", err)
 	}
 	if access.Username != username || access.Password != password {

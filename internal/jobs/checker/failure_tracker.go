@@ -23,7 +23,7 @@ const (
 )
 
 type failureEvent struct {
-	UserID            uint
+	WorkspaceID       uint
 	Success           bool
 	AutoRemove        bool
 	FailureThreshold  uint8
@@ -182,12 +182,12 @@ func (ft *failureTracker) processBatch(batch []*failureRequest) {
 				continue
 			}
 			if user.Success {
-				resetCandidates[user.UserID] = append(resetCandidates[user.UserID], req.proxyID)
+				resetCandidates[user.WorkspaceID] = append(resetCandidates[user.WorkspaceID], req.proxyID)
 				continue
 			}
 			increments = append(increments, failureIncrementEntry{
 				request:    req,
-				userID:     user.UserID,
+				userID:     user.WorkspaceID,
 				proxyID:    req.proxyID,
 				autoRemove: user.AutoRemove,
 				threshold:  user.FailureThreshold,
@@ -228,17 +228,20 @@ func (ft *failureTracker) processBatch(batch []*failureRequest) {
 		if count == 0 || count < uint16(entry.threshold) {
 			continue
 		}
-		_, orphaned, removeErr := database.DeleteProxyRelation(entry.userID, []int{int(entry.proxyID)})
-		if removeErr != nil {
-			log.Error("auto-remove proxy", "proxy_id", entry.proxyID, "user_id", entry.userID, "error", removeErr)
-			ft.failBatch(active, removeErr)
+		paused, inactive, pauseErr := database.PauseManagedProxy(entry.userID, entry.proxyID, domain.ManagedProxyPauseReasonFailure)
+		if pauseErr != nil {
+			log.Error("auto-pause managed proxy", "proxy_id", entry.proxyID, "workspace_id", entry.userID, "error", pauseErr)
+			ft.failBatch(active, pauseErr)
 			return
 		}
-		log.Info("auto-removing proxy after repeated failures", "proxy_id", entry.proxyID, "user_id", entry.userID, "failures", count)
+		if !paused {
+			continue
+		}
+		log.Info("auto-pausing managed proxy after repeated failures", "proxy_id", entry.proxyID, "workspace_id", entry.userID, "failures", count)
 		resp := responses[entry.request]
 		resp.markRemoved(entry.userID)
-		if len(orphaned) > 0 {
-			resp.orphaned = append(resp.orphaned, orphaned...)
+		if len(inactive) > 0 {
+			resp.orphaned = append(resp.orphaned, inactive...)
 		}
 	}
 
@@ -310,8 +313,8 @@ func execResetChunk(pairs []failurePair) error {
 
 	if !isPostgresDialect(db) {
 		for _, pair := range pairs {
-			if err := db.Model(&domain.UserProxy{}).
-				Where("user_id = ? AND proxy_id = ?", pair.userID, pair.proxyID).
+			if err := db.Model(&domain.ManagedProxy{}).
+				Where("workspace_id = ? AND proxy_id = ?", pair.userID, pair.proxyID).
 				Update("consecutive_failures", 0).Error; err != nil {
 				return err
 			}
@@ -324,7 +327,7 @@ func execResetChunk(pairs []failurePair) error {
 
 	var builder strings.Builder
 	args := make([]any, 0, len(pairs)*2)
-	builder.WriteString("WITH targets(user_id, proxy_id) AS (VALUES ")
+	builder.WriteString("WITH targets(workspace_id, proxy_id) AS (VALUES ")
 	argPos := 1
 	for i, p := range pairs {
 		if i > 0 {
@@ -334,7 +337,7 @@ func execResetChunk(pairs []failurePair) error {
 		args = append(args, p.userID, p.proxyID)
 		argPos += 2
 	}
-	builder.WriteString(")\nUPDATE user_proxies up SET consecutive_failures = 0 FROM targets WHERE up.user_id = targets.user_id AND up.proxy_id = targets.proxy_id")
+	builder.WriteString(")\nUPDATE user_proxies up SET consecutive_failures = 0 FROM targets WHERE up.workspace_id = targets.workspace_id AND up.proxy_id = targets.proxy_id")
 
 	return db.WithContext(ctx).Exec(builder.String(), args...).Error
 }
@@ -383,7 +386,7 @@ func execIncrementChunk(entries []failureIncrementEntry) (map[failureKey]uint16,
 
 	var builder strings.Builder
 	args := make([]any, 0, len(entries)*3)
-	builder.WriteString("WITH updates(user_id, proxy_id, inc) AS (VALUES ")
+	builder.WriteString("WITH updates(workspace_id, proxy_id, inc) AS (VALUES ")
 	argPos := 1
 	for i, entry := range entries {
 		if i > 0 {
@@ -393,10 +396,10 @@ func execIncrementChunk(entries []failureIncrementEntry) (map[failureKey]uint16,
 		args = append(args, entry.userID, entry.proxyID, 1)
 		argPos += 3
 	}
-	builder.WriteString(")\nUPDATE user_proxies up SET consecutive_failures = LEAST(up.consecutive_failures + updates.inc, 65535) FROM updates WHERE up.user_id = updates.user_id AND up.proxy_id = updates.proxy_id RETURNING up.user_id, up.proxy_id, up.consecutive_failures")
+	builder.WriteString(")\nUPDATE user_proxies up SET consecutive_failures = LEAST(up.consecutive_failures + updates.inc, 65535) FROM updates WHERE up.workspace_id = updates.workspace_id AND up.proxy_id = updates.proxy_id RETURNING up.workspace_id, up.proxy_id, up.consecutive_failures")
 
 	var rows []struct {
-		UserID              uint
+		WorkspaceID         uint
 		ProxyID             uint64
 		ConsecutiveFailures uint16 `gorm:"column:consecutive_failures"`
 	}
@@ -407,7 +410,7 @@ func execIncrementChunk(entries []failureIncrementEntry) (map[failureKey]uint16,
 
 	result := make(map[failureKey]uint16, len(rows))
 	for _, row := range rows {
-		result[failureKey{userID: row.UserID, proxyID: row.ProxyID}] = row.ConsecutiveFailures
+		result[failureKey{userID: row.WorkspaceID, proxyID: row.ProxyID}] = row.ConsecutiveFailures
 	}
 	return result, nil
 }
@@ -415,10 +418,10 @@ func execIncrementChunk(entries []failureIncrementEntry) (map[failureKey]uint16,
 func execIncrementChunkFallback(db *gorm.DB, entries []failureIncrementEntry) (map[failureKey]uint16, error) {
 	result := make(map[failureKey]uint16, len(entries))
 	for _, entry := range entries {
-		var pair domain.UserProxy
+		var pair domain.ManagedProxy
 		err := db.
 			Select("consecutive_failures").
-			Where("user_id = ? AND proxy_id = ?", entry.userID, entry.proxyID).
+			Where("workspace_id = ? AND proxy_id = ?", entry.userID, entry.proxyID).
 			First(&pair).Error
 		if err != nil {
 			return nil, err
@@ -427,8 +430,8 @@ func execIncrementChunkFallback(db *gorm.DB, entries []failureIncrementEntry) (m
 		if newVal > 65535 {
 			newVal = 65535
 		}
-		if err := db.Model(&domain.UserProxy{}).
-			Where("user_id = ? AND proxy_id = ?", entry.userID, entry.proxyID).
+		if err := db.Model(&domain.ManagedProxy{}).
+			Where("workspace_id = ? AND proxy_id = ?", entry.userID, entry.proxyID).
 			Update("consecutive_failures", newVal).Error; err != nil {
 			return nil, err
 		}
@@ -491,7 +494,7 @@ func fetchFailureCounts(keys []failureKey) (map[failureKey]uint16, error) {
 
 	var builder strings.Builder
 	args := make([]any, 0, len(keys)*2)
-	builder.WriteString("SELECT user_id, proxy_id, consecutive_failures FROM user_proxies WHERE (user_id, proxy_id) IN (")
+	builder.WriteString("SELECT workspace_id, proxy_id, consecutive_failures FROM user_proxies WHERE (workspace_id, proxy_id) IN (")
 	for i, key := range keys {
 		if i > 0 {
 			builder.WriteString(",")
@@ -503,7 +506,7 @@ func fetchFailureCounts(keys []failureKey) (map[failureKey]uint16, error) {
 	builder.WriteString(")")
 
 	var rows []struct {
-		UserID              uint
+		WorkspaceID         uint
 		ProxyID             uint64
 		ConsecutiveFailures uint16 `gorm:"column:consecutive_failures"`
 	}
@@ -514,7 +517,7 @@ func fetchFailureCounts(keys []failureKey) (map[failureKey]uint16, error) {
 
 	result := make(map[failureKey]uint16, len(rows))
 	for _, row := range rows {
-		result[failureKey{userID: row.UserID, proxyID: row.ProxyID}] = row.ConsecutiveFailures
+		result[failureKey{userID: row.WorkspaceID, proxyID: row.ProxyID}] = row.ConsecutiveFailures
 	}
 
 	return result, nil
@@ -523,10 +526,10 @@ func fetchFailureCounts(keys []failureKey) (map[failureKey]uint16, error) {
 func fetchFailureCountsFallback(db *gorm.DB, keys []failureKey) (map[failureKey]uint16, error) {
 	result := make(map[failureKey]uint16, len(keys))
 	for _, key := range keys {
-		var pair domain.UserProxy
+		var pair domain.ManagedProxy
 		err := db.
 			Select("consecutive_failures").
-			Where("user_id = ? AND proxy_id = ?", key.userID, key.proxyID).
+			Where("workspace_id = ? AND proxy_id = ?", key.userID, key.proxyID).
 			First(&pair).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			continue

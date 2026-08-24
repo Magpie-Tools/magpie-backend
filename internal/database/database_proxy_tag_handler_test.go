@@ -25,10 +25,18 @@ func setupProxyTagTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open tag test database: %v", err)
 	}
+	if err := configureWorkspaceJoinTables(db); err != nil {
+		t.Fatalf("configure workspace join tables: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
+		t.Fatalf("migrate managed proxy schema: %v", err)
+	}
 	if err := db.AutoMigrate(
 		&domain.User{},
+		&domain.Workspace{},
+		&domain.WorkspaceMembership{},
+		&domain.WorkspaceSubscription{},
 		&domain.Proxy{},
-		&domain.UserProxy{},
 		&domain.ProxyTag{},
 		&domain.ProxyTagAssignment{},
 		&domain.UserProxyFilterIndex{},
@@ -48,6 +56,7 @@ func TestProxyTagFiltersUseAnyMatchAndSearchIncludesNumericNames(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	proxies := []domain.Proxy{
 		{Port: 8080, Country: "DE", EstimatedType: "residential"},
@@ -60,11 +69,11 @@ func TestProxyTagFiltersUseAnyMatchAndSearchIncludesNumericNames(t *testing.T) {
 		if err := db.Create(&proxies[index]).Error; err != nil {
 			t.Fatalf("create proxy %d: %v", index, err)
 		}
-		if err := db.Create(&domain.UserProxy{UserID: user.ID, ProxyID: proxies[index].ID}).Error; err != nil {
+		if err := db.Create(&domain.UserProxy{WorkspaceID: user.ID, ProxyID: proxies[index].ID}).Error; err != nil {
 			t.Fatalf("create proxy %d access: %v", index, err)
 		}
 		if err := db.Create(&domain.UserProxyFilterIndex{
-			UserID:          user.ID,
+			WorkspaceID:     user.ID,
 			ProxyID:         proxies[index].ID,
 			Host:            proxies[index].IP,
 			IPAddress:       proxies[index].IPAddress,
@@ -125,6 +134,9 @@ func TestProxyTagsAreUserOwnedAndManyToMany(t *testing.T) {
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatalf("create users: %v", err)
 	}
+	for _, user := range users {
+		createTestWorkspaceForUser(t, db, user)
+	}
 
 	proxy := domain.Proxy{Port: 8080, Country: "N/A", EstimatedType: "N/A"}
 	if err := proxy.SetIP("192.0.2.44"); err != nil {
@@ -134,7 +146,7 @@ func TestProxyTagsAreUserOwnedAndManyToMany(t *testing.T) {
 		t.Fatalf("create proxy: %v", err)
 	}
 	for _, user := range users {
-		if err := db.Create(&domain.UserProxy{UserID: user.ID, ProxyID: proxy.ID}).Error; err != nil {
+		if err := db.Create(&domain.UserProxy{WorkspaceID: user.ID, ProxyID: proxy.ID}).Error; err != nil {
 			t.Fatalf("create proxy access: %v", err)
 		}
 	}
@@ -197,13 +209,13 @@ func TestProxyTagsAreUserOwnedAndManyToMany(t *testing.T) {
 	}
 	assertProxyTagIDs(t, tags, residential.ID)
 
-	if err := db.Where("user_id = ? AND proxy_id = ?", users[0].ID, proxy.ID).
+	if err := db.Where("workspace_id = ? AND proxy_id = ?", users[0].ID, proxy.ID).
 		Delete(&domain.UserProxy{}).Error; err != nil {
 		t.Fatalf("delete first user's proxy access: %v", err)
 	}
 	var firstUserAssignments int64
 	if err := db.Model(&domain.ProxyTagAssignment{}).
-		Where("user_id = ? AND proxy_id = ?", users[0].ID, proxy.ID).
+		Where("workspace_id = ? AND proxy_id = ?", users[0].ID, proxy.ID).
 		Count(&firstUserAssignments).Error; err != nil {
 		t.Fatalf("count first user's assignments: %v", err)
 	}

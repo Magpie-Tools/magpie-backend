@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
 	"magpie/internal/blacklist"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -33,6 +32,7 @@ const (
 
 var errMissingProxyUploadContent = errors.New("missing proxy upload content")
 var getQueuedProxyForUser = database.GetQueuedProxyForUser
+var insertProxiesForWorkspace = database.InsertAndGetProxiesWithWorkspace
 var removeQueuedProxies = func(proxies []domain.Proxy) error {
 	return proxyqueue.PublicProxyQueue.RemoveFromQueue(proxies)
 }
@@ -41,7 +41,7 @@ var enqueueProxiesNow = func(proxies []domain.Proxy) error {
 }
 
 func addProxies(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -134,7 +134,7 @@ func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, 
 			return nil
 		}
 
-		inserted, err := database.InsertAndGetProxiesWithUser(filtered, userID)
+		inserted, err := insertProxiesForWorkspace(filtered, userID)
 		if err != nil {
 			return err
 		}
@@ -243,7 +243,7 @@ func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, 
 }
 
 func getProxyPage(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -315,7 +315,7 @@ func getProxyPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func getProxyFilters(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -392,7 +392,7 @@ func parseBoolQueryParam(value string, defaultValue bool) bool {
 }
 
 func getProxyCount(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -402,7 +402,7 @@ func getProxyCount(w http.ResponseWriter, r *http.Request) {
 }
 
 func getProxyDetail(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -430,13 +430,59 @@ func getProxyDetail(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(detail)
 }
 
+func updateManagedProxyLifecycle(w http.ResponseWriter, r *http.Request) {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
+		writeWorkspaceAccessError(w, workspaceErr)
+		return
+	}
+	proxyID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil || proxyID == 0 {
+		writeError(w, "Invalid proxy id", http.StatusBadRequest)
+		return
+	}
+	var payload dto.ManagedProxyLifecycleRequest
+	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
+		return
+	}
+	if err := database.SetManagedProxyState(workspaceID, proxyID, payload.State); err != nil {
+		switch {
+		case errors.Is(err, database.ErrWorkspaceCapacityReached):
+			writeError(w, err.Error(), http.StatusConflict)
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			writeError(w, "Proxy not found", http.StatusNotFound)
+		default:
+			writeError(w, err.Error(), http.StatusBadRequest)
+		}
+		return
+	}
+
+	proxy, active, err := database.GetProxyQueueState(proxyID)
+	if err != nil {
+		writeError(w, "Lifecycle changed, but queue synchronization failed", http.StatusServiceUnavailable)
+		return
+	}
+	if proxy != nil {
+		if active {
+			err = enqueueProxiesNow([]domain.Proxy{*proxy})
+		} else {
+			err = removeQueuedProxies([]domain.Proxy{*proxy})
+		}
+	}
+	if err != nil {
+		writeError(w, "Lifecycle changed, but queue synchronization failed", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func requeueProxy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -480,7 +526,7 @@ func requeueProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -511,7 +557,7 @@ func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
 }
 
 func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -547,7 +593,7 @@ func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteProxies(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -635,7 +681,7 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func exportProxies(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := auth.GetUserIDFromRequest(r)
+	userID, userErr := workspaceIDFromRequest(r)
 	if userErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return

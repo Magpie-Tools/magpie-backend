@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 )
 
@@ -225,5 +227,9 @@ func newAdminRequest(t *testing.T, method, path string, userID uint) *http.Reque
 
 	req := httptest.NewRequest(method, path, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	return req
+	return req.WithContext(context.WithValue(req.Context(), workspaceContextKey{}, database.WorkspaceAccess{
+		WorkspaceID: userID,
+		UserID:      userID,
+		Role:        domain.WorkspaceRoleOwner,
+	}))
 }

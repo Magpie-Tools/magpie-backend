@@ -164,7 +164,7 @@ func TestUserProxyBeforeSaveEncryptsAndAfterFindDecrypts(t *testing.T) {
 	security.ResetProxyCipherForTests()
 	t.Cleanup(security.ResetProxyCipherForTests)
 
-	access := UserProxy{UserID: 7, ProxyID: 12, Username: "user", Password: "secret"}
+	access := UserProxy{WorkspaceID: 7, ProxyID: 12, Username: "user", Password: "secret"}
 	if err := access.BeforeSave(nil); err != nil {
 		t.Fatalf("BeforeSave returned error: %v", err)
 	}

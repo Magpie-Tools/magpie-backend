@@ -37,11 +37,19 @@ func setupRotatingProxyTestDBWithDSN(t *testing.T, dsn string) *gorm.DB {
 	if err := db.Exec("PRAGMA busy_timeout = 5000").Error; err != nil {
 		t.Fatalf("set busy timeout: %v", err)
 	}
+	if err := configureWorkspaceJoinTables(db); err != nil {
+		t.Fatalf("configure workspace join tables: %v", err)
+	}
+	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
+		t.Fatalf("migrate managed proxy schema: %v", err)
+	}
 
 	if err := db.AutoMigrate(
 		&domain.User{},
+		&domain.Workspace{},
+		&domain.WorkspaceMembership{},
+		&domain.WorkspaceSubscription{},
 		&domain.Proxy{},
-		&domain.UserProxy{},
 		&domain.ProxyReputation{},
 		&domain.RotatingProxy{},
 		&domain.ProxyStatistic{},
@@ -74,6 +82,7 @@ func TestCreateRotatingProxy_AllowsDistinctListenProtocol(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	httpProto := domain.Protocol{Name: "http"}
 	socksProto := domain.Protocol{Name: "socks5"}
@@ -99,8 +108,8 @@ func TestCreateRotatingProxy_AllowsDistinctListenProtocol(t *testing.T) {
 		t.Fatalf("create proxy: %v", err)
 	}
 	if err := db.Create(&domain.UserProxy{
-		UserID:  user.ID,
-		ProxyID: proxy.ID,
+		WorkspaceID: user.ID,
+		ProxyID:     proxy.ID,
 	}).Error; err != nil {
 		t.Fatalf("link proxy: %v", err)
 	}
@@ -171,6 +180,7 @@ func TestCreateRotatingProxy_ListensOnProtocolWithoutUserFlag(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	httpProto := domain.Protocol{Name: "http"}
 	socksProto := domain.Protocol{Name: "socks5"}
@@ -196,8 +206,8 @@ func TestCreateRotatingProxy_ListensOnProtocolWithoutUserFlag(t *testing.T) {
 		t.Fatalf("create proxy: %v", err)
 	}
 	if err := db.Create(&domain.UserProxy{
-		UserID:  user.ID,
-		ProxyID: proxy.ID,
+		WorkspaceID: user.ID,
+		ProxyID:     proxy.ID,
 	}).Error; err != nil {
 		t.Fatalf("link proxy: %v", err)
 	}
@@ -246,6 +256,7 @@ func TestCreateRotatingProxy_UptimeFilterValidation(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	protocol := domain.Protocol{Name: "http"}
 	if err := db.Create(&protocol).Error; err != nil {
@@ -307,6 +318,7 @@ func TestGetNextRotatingProxy_RotatesAcrossAliveProxies(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	protocol := domain.Protocol{Name: "http"}
 	if err := db.Create(&protocol).Error; err != nil {
@@ -342,10 +354,10 @@ func TestGetNextRotatingProxy_RotatesAcrossAliveProxies(t *testing.T) {
 			t.Fatalf("create proxy %d: %v", idx, err)
 		}
 		if err := db.Create(&domain.UserProxy{
-			UserID:   user.ID,
-			ProxyID:  proxies[idx].ID,
-			Username: proxies[idx].Username,
-			Password: proxies[idx].Password,
+			WorkspaceID: user.ID,
+			ProxyID:     proxies[idx].ID,
+			Username:    proxies[idx].Username,
+			Password:    proxies[idx].Password,
 		}).Error; err != nil {
 			t.Fatalf("link proxy %d: %v", idx, err)
 		}
@@ -367,10 +379,10 @@ func TestGetNextRotatingProxy_RotatesAcrossAliveProxies(t *testing.T) {
 	}
 
 	rotator := domain.RotatingProxy{
-		UserID:     user.ID,
-		Name:       "test-rotator",
-		ProtocolID: protocol.ID,
-		ListenPort: 10500,
+		WorkspaceID: user.ID,
+		Name:        "test-rotator",
+		ProtocolID:  protocol.ID,
+		ListenPort:  10500,
 	}
 	if err := db.Create(&rotator).Error; err != nil {
 		t.Fatalf("create rotating proxy: %v", err)
@@ -432,6 +444,7 @@ func TestGetNextRotatingProxy_NoAliveProxies(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	protocol := domain.Protocol{Name: "http"}
 	if err := db.Create(&protocol).Error; err != nil {
@@ -455,8 +468,8 @@ func TestGetNextRotatingProxy_NoAliveProxies(t *testing.T) {
 		t.Fatalf("create proxy: %v", err)
 	}
 	if err := db.Create(&domain.UserProxy{
-		UserID:  user.ID,
-		ProxyID: proxy.ID,
+		WorkspaceID: user.ID,
+		ProxyID:     proxy.ID,
 	}).Error; err != nil {
 		t.Fatalf("link proxy: %v", err)
 	}
@@ -475,10 +488,10 @@ func TestGetNextRotatingProxy_NoAliveProxies(t *testing.T) {
 	}
 
 	rotator := domain.RotatingProxy{
-		UserID:     user.ID,
-		Name:       "noalive-rotator",
-		ProtocolID: protocol.ID,
-		ListenPort: 10600,
+		WorkspaceID: user.ID,
+		Name:        "noalive-rotator",
+		ProtocolID:  protocol.ID,
+		ListenPort:  10600,
 	}
 	if err := db.Create(&rotator).Error; err != nil {
 		t.Fatalf("create rotating proxy: %v", err)
@@ -500,6 +513,7 @@ func TestGetNextRotatingProxy_ReputationFilterApplied(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	protocol := domain.Protocol{Name: "http"}
 	if err := db.Create(&protocol).Error; err != nil {
@@ -522,8 +536,8 @@ func TestGetNextRotatingProxy_ReputationFilterApplied(t *testing.T) {
 			t.Fatalf("create proxy %d: %v", idx, err)
 		}
 		if err := db.Create(&domain.UserProxy{
-			UserID:  user.ID,
-			ProxyID: proxies[idx].ID,
+			WorkspaceID: user.ID,
+			ProxyID:     proxies[idx].ID,
 		}).Error; err != nil {
 			t.Fatalf("link proxy %d: %v", idx, err)
 		}
@@ -554,7 +568,7 @@ func TestGetNextRotatingProxy_ReputationFilterApplied(t *testing.T) {
 	}
 
 	rotator := domain.RotatingProxy{
-		UserID:           user.ID,
+		WorkspaceID:      user.ID,
 		Name:             "filtered-rotator",
 		ProtocolID:       protocol.ID,
 		ListenPort:       10800,
@@ -600,6 +614,7 @@ func TestGetNextRotatingProxy_UptimeFilterApplied(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	protocol := domain.Protocol{Name: "http"}
 	if err := db.Create(&protocol).Error; err != nil {
@@ -628,8 +643,8 @@ func TestGetNextRotatingProxy_UptimeFilterApplied(t *testing.T) {
 			t.Fatalf("create proxy %d: %v", proxyIdx, err)
 		}
 		if err := db.Create(&domain.UserProxy{
-			UserID:  user.ID,
-			ProxyID: proxies[proxyIdx].ID,
+			WorkspaceID: user.ID,
+			ProxyID:     proxies[proxyIdx].ID,
 		}).Error; err != nil {
 			t.Fatalf("link proxy %d: %v", proxyIdx, err)
 		}
@@ -654,7 +669,7 @@ func TestGetNextRotatingProxy_UptimeFilterApplied(t *testing.T) {
 	}
 
 	rotatorMin := domain.RotatingProxy{
-		UserID:           user.ID,
+		WorkspaceID:      user.ID,
 		Name:             "uptime-min-rotator",
 		ProtocolID:       protocol.ID,
 		ListenPort:       10900,
@@ -690,7 +705,7 @@ func TestGetNextRotatingProxy_UptimeFilterApplied(t *testing.T) {
 	}
 
 	rotatorMax := domain.RotatingProxy{
-		UserID:           user.ID,
+		WorkspaceID:      user.ID,
 		Name:             "uptime-max-rotator",
 		ProtocolID:       protocol.ID,
 		ListenPort:       10901,
@@ -735,6 +750,7 @@ func TestGetNextRotatingProxy_ConcurrentStress(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createTestWorkspaceForUser(t, db, user)
 
 	protocol := domain.Protocol{Name: "http"}
 	if err := db.Create(&protocol).Error; err != nil {
@@ -761,8 +777,8 @@ func TestGetNextRotatingProxy_ConcurrentStress(t *testing.T) {
 			t.Fatalf("create proxy %d: %v", i, err)
 		}
 		if err := db.Create(&domain.UserProxy{
-			UserID:  user.ID,
-			ProxyID: proxies[i].ID,
+			WorkspaceID: user.ID,
+			ProxyID:     proxies[i].ID,
 		}).Error; err != nil {
 			t.Fatalf("link proxy %d: %v", i, err)
 		}
@@ -784,10 +800,10 @@ func TestGetNextRotatingProxy_ConcurrentStress(t *testing.T) {
 	}
 
 	rotator := domain.RotatingProxy{
-		UserID:     user.ID,
-		Name:       "stress-rotator",
-		ProtocolID: protocol.ID,
-		ListenPort: 10700,
+		WorkspaceID: user.ID,
+		Name:        "stress-rotator",
+		ProtocolID:  protocol.ID,
+		ListenPort:  10700,
 	}
 	if err := db.Create(&rotator).Error; err != nil {
 		t.Fatalf("create rotating proxy: %v", err)

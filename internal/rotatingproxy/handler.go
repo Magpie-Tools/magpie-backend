@@ -21,6 +21,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/support"
 )
 
@@ -39,6 +40,7 @@ var (
 	dialUpstreamFunc           = dialUpstream
 	performUpstreamConnectFunc = performUpstreamConnect
 	connectThroughUpstreamFunc = connectThroughUpstream
+	recordManagedTrafficFunc   = jobruntime.AddWorkspaceManagedTraffic
 	maxRequestBodyBytes        = loadMaxRequestBodyBytes()
 	handshakeTimeout           = loadHandshakeTimeout()
 	upstreamTimeout            = loadUpstreamTimeout()
@@ -74,7 +76,7 @@ func (h *socksProxyHandler) handleSocks5(conn net.Conn) {
 		return
 	}
 
-	next, err := getNextRotatingProxyFunc(h.rotator.UserID, h.rotator.ID)
+	next, err := getNextRotatingProxyFunc(h.rotator.WorkspaceID, h.rotator.ID)
 	if err != nil {
 		_ = writeSocks5Reply(conn, 0x01)
 		return
@@ -98,7 +100,9 @@ func (h *socksProxyHandler) handleSocks5(conn net.Conn) {
 
 	clearConnDeadline(conn)
 	clearConnDeadline(upstreamConn)
-	pipeConnections(conn, upstreamConn)
+	recordManagedTrafficFunc(h.rotator.WorkspaceID, 1, 0)
+	managedBytes := pipeConnections(conn, upstreamConn)
+	recordManagedTrafficFunc(h.rotator.WorkspaceID, 0, managedBytes)
 }
 
 func (h *socksProxyHandler) performSocks5Handshake(conn net.Conn) (string, error) {
@@ -247,7 +251,7 @@ func (h *socksProxyHandler) handleSocks4(conn net.Conn) {
 	port := binary.BigEndian.Uint16(dstPort)
 	target := net.JoinHostPort(targetHost, strconv.Itoa(int(port)))
 
-	next, err := getNextRotatingProxyFunc(h.rotator.UserID, h.rotator.ID)
+	next, err := getNextRotatingProxyFunc(h.rotator.WorkspaceID, h.rotator.ID)
 	if err != nil || !supportedUpstream(next.Protocol) {
 		_ = writeSocks4Response(conn, 0x5B, dstPort, dstIP)
 		return
@@ -266,7 +270,9 @@ func (h *socksProxyHandler) handleSocks4(conn net.Conn) {
 
 	clearConnDeadline(conn)
 	clearConnDeadline(upstreamConn)
-	pipeConnections(conn, upstreamConn)
+	recordManagedTrafficFunc(h.rotator.WorkspaceID, 1, 0)
+	managedBytes := pipeConnections(conn, upstreamConn)
+	recordManagedTrafficFunc(h.rotator.WorkspaceID, 0, managedBytes)
 }
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.authenticateClient(w, r) {
@@ -329,7 +335,7 @@ func (h *proxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 	}
 
-	next, err := getNextRotatingProxyFunc(h.rotator.UserID, h.rotator.ID)
+	next, err := getNextRotatingProxyFunc(h.rotator.WorkspaceID, h.rotator.ID)
 	if err != nil {
 		http.Error(w, "failed to acquire upstream proxy", http.StatusBadGateway)
 		return
@@ -354,6 +360,17 @@ func (h *proxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
+	managedBytes := uint64(0)
+	if upstreamBody != nil {
+		upstreamBody = &managedTrafficReadCloser{
+			ReadCloser: upstreamBody,
+			bytes:      &managedBytes,
+		}
+	}
+	recordManagedTrafficFunc(h.rotator.WorkspaceID, 1, 0)
+	defer func() {
+		recordManagedTrafficFunc(h.rotator.WorkspaceID, 0, managedBytes)
+	}()
 
 	targetURL := r.URL
 	if !targetURL.IsAbs() {
@@ -417,12 +434,29 @@ func (h *proxyHandler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		log.Warn("rotating proxy: failed to copy response body", "rotator_id", h.rotator.ID, "error", err)
+	written, copyErr := io.Copy(w, resp.Body)
+	if written > 0 {
+		managedBytes += uint64(written)
+	}
+	if copyErr != nil {
+		log.Warn("rotating proxy: failed to copy response body", "rotator_id", h.rotator.ID, "error", copyErr)
 	}
 }
 
 var errRequestBodyTooLarge = errors.New("request body too large")
+
+type managedTrafficReadCloser struct {
+	io.ReadCloser
+	bytes *uint64
+}
+
+func (reader *managedTrafficReadCloser) Read(payload []byte) (int, error) {
+	read, err := reader.ReadCloser.Read(payload)
+	if read > 0 && reader.bytes != nil {
+		*reader.bytes += uint64(read)
+	}
+	return read, err
+}
 
 func loadMaxRequestBodyBytes() int {
 	limit := support.GetEnvInt(envRotatingProxyMaxRequestBodyBytes, defaultMaxRequestBodyBytes)
@@ -619,7 +653,7 @@ func (h *proxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	next, err := getNextRotatingProxyFunc(h.rotator.UserID, h.rotator.ID)
+	next, err := getNextRotatingProxyFunc(h.rotator.WorkspaceID, h.rotator.ID)
 	if err != nil {
 		writeHijackedResponse(buf, http.StatusBadGateway, "Failed to acquire upstream proxy")
 		return
@@ -651,7 +685,9 @@ func (h *proxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	clearConnDeadline(clientConn)
 	clearConnDeadline(upConn)
-	pipeConnections(clientConn, upConn)
+	recordManagedTrafficFunc(h.rotator.WorkspaceID, 1, 0)
+	managedBytes := pipeConnections(clientConn, upConn)
+	recordManagedTrafficFunc(h.rotator.WorkspaceID, 0, managedBytes)
 }
 
 func writeHijackedResponse(buf *bufio.ReadWriter, status int, message string) {
@@ -755,22 +791,32 @@ func performUpstreamConnect(conn net.Conn, targetHost string, next *dto.Rotating
 	return nil
 }
 
-func pipeConnections(left, right net.Conn) {
-	errCh := make(chan error, 2)
+func pipeConnections(left, right net.Conn) uint64 {
+	type result struct {
+		bytes int64
+		err   error
+	}
+	resultCh := make(chan result, 2)
 
 	go func() {
-		_, err := io.Copy(left, right)
-		errCh <- err
+		bytes, err := io.Copy(left, right)
+		resultCh <- result{bytes: bytes, err: err}
 	}()
 
 	go func() {
-		_, err := io.Copy(right, left)
-		errCh <- err
+		bytes, err := io.Copy(right, left)
+		resultCh <- result{bytes: bytes, err: err}
 	}()
 
-	<-errCh
-	left.Close()
-	right.Close()
+	first := <-resultCh
+	_ = left.Close()
+	_ = right.Close()
+	second := <-resultCh
+	total := first.bytes + second.bytes
+	if total <= 0 {
+		return 0
+	}
+	return uint64(total)
 }
 
 func dialProxyWithFallback(ctx context.Context, network, addr string, next *dto.RotatingProxyNext) (net.Conn, error) {

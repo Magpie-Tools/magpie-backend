@@ -85,7 +85,7 @@ func TestBuildProxySearchPredicate_AvoidsCastHeavyPredicates(t *testing.T) {
 		t.Fatalf("expected hostname predicate in %q", sql)
 	}
 	if !strings.Contains(sql, "proxy_tag_assignments") || !strings.Contains(sql, "pt.name_key LIKE ?") {
-		t.Fatalf("expected user-owned tag predicate in %q", sql)
+		t.Fatalf("expected workspace-owned tag predicate in %q", sql)
 	}
 }
 

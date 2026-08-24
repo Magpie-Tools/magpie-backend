@@ -740,7 +740,7 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 		log.Info("Skipped blacklisted scraped proxies", "count", len(blocked), "url", site.URL)
 	}
 
-	proxies, err := database.InsertAndGetProxiesWithUser(parsedProxies, support.GetUserIdsFromList(site.Users)...)
+	proxies, err := database.InsertAndGetProxiesWithWorkspace(parsedProxies, support.GetWorkspaceIDsFromList(site.Workspaces)...)
 	if err != nil {
 		log.Error("insert proxies from scraping failed", "err", err)
 	} else {

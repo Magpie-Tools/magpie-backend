@@ -30,7 +30,7 @@ func GetScrapingSourcesOfUsers(userID uint) []string {
 	if err := DB.Table("scrape_sites").
 		Select("scrape_sites.url").
 		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id").
-		Where("uss.user_id = ?", userID).
+		Where("uss.workspace_id = ?", userID).
 		Order("uss.created_at DESC").
 		Scan(&sources).Error; err != nil {
 		return nil
@@ -47,7 +47,7 @@ func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeS
 		siteIDs := make([]uint64, 0, len(sources))
 
 		// Load the user and existing associations
-		var user domain.User
+		var user domain.Workspace
 		if err := tx.Preload("ScrapeSites").First(&user, userID).Error; err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeS
 			// Reload newly touched sites with Users preloaded
 			var loaded []domain.ScrapeSite
 			if err := tx.
-				Preload("Users", preloadUserIDsOnly).
+				Preload("Workspaces", preloadWorkspaceIDsOnly).
 				Where("id IN ?", siteIDs).
 				Find(&loaded).Error; err != nil {
 				return err
@@ -125,7 +125,7 @@ func GetAllScrapeSites() ([]domain.ScrapeSite, error) {
 		Model(&domain.ScrapeSite{}).
 		Distinct("scrape_sites.*").
 		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id").
-		Preload("Users", preloadUserIDsOnly).
+		Preload("Workspaces", preloadWorkspaceIDsOnly).
 		Order("scrape_sites.id").
 		FindInBatches(&allProxies, batchSize, func(tx *gorm.DB, batch int) error {
 			collectedProxies = append(collectedProxies, allProxies...)
@@ -372,7 +372,7 @@ func exportCountOperator(operator string, legacyMode string) string {
 
 func buildScrapeSiteInfoQuery(userId uint) *gorm.DB {
 	return DB.Table("user_scrape_source_stats usss").
-		Where("usss.user_id = ?", userId)
+		Where("usss.workspace_id = ?", userId)
 }
 
 type scrapeSiteAggregateRow struct {
@@ -403,7 +403,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 				"scrape_sites.url AS url, "+
 				"uss.created_at AS added_at",
 		).
-		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id AND uss.user_id = ?", userId).
+		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id AND uss.workspace_id = ?", userId).
 		Where("scrape_sites.id = ?", scrapeSiteId).
 		Limit(1).
 		Scan(&base)
@@ -425,7 +425,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 				"MAX(pss.created_at) AS last_proxy_added_at, "+
 				"MAX(pos.last_checked_at) AS last_checked_at",
 		).
-		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.user_id = ?", userId).
+		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.workspace_id = ?", userId).
 		Joins("LEFT JOIN proxy_overall_statuses pos ON pos.proxy_id = pss.proxy_id").
 		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = pss.proxy_id AND pr.kind = ?", domain.ProxyReputationKindOverall).
 		Where("pss.scrape_site_id = ?", scrapeSiteId).
@@ -442,7 +442,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 	var repCounts []reputationCount
 	repResult := DB.Table("proxy_scrape_site pss").
 		Select("LOWER(COALESCE(NULLIF(pr.label, ''), 'unknown')) AS label, COUNT(*) AS count").
-		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.user_id = ?", userId).
+		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.workspace_id = ?", userId).
 		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = pss.proxy_id AND pr.kind = ?", domain.ProxyReputationKindOverall).
 		Where("pss.scrape_site_id = ?", scrapeSiteId).
 		Group("label").
@@ -534,9 +534,9 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 				"ufi.health_socks5 AS health_socks5, "+
 				"ufi.latest_check AS latest_check",
 		).
-		Where("ufi.user_id = ?", userId).
+		Where("ufi.workspace_id = ?", userId).
 		Joins("JOIN proxy_scrape_site pss ON pss.proxy_id = ufi.proxy_id AND pss.scrape_site_id = ?", scrapeSiteId).
-		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.user_id = ?", userId)
+		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.workspace_id = ?", userId)
 
 	query = applyProxyPageSort(query, options)
 
@@ -565,9 +565,9 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 
 		var total int64
 		countQuery := DB.Table("user_proxy_filter_indexes ufi").
-			Where("ufi.user_id = ?", userId).
+			Where("ufi.workspace_id = ?", userId).
 			Joins("JOIN proxy_scrape_site pss ON pss.proxy_id = ufi.proxy_id AND pss.scrape_site_id = ?", scrapeSiteId).
-			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.user_id = ?", userId)
+			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.workspace_id = ?", userId)
 		if filterQuery != nil {
 			countQuery = countQuery.Where("ufi.proxy_id IN (?)", filterQuery)
 		}
@@ -702,18 +702,18 @@ func DeleteScrapeSiteRelation(userId uint, scrapeSite []int) (int64, []domain.Sc
 		chunk := scrapeSite[start:end]
 		result := DB.
 			Where("scrape_site_id IN ?", chunk).
-			Where("user_id = ?", userId).
-			Delete(&domain.UserScrapeSite{})
+			Where("workspace_id = ?", userId).
+			Delete(&domain.WorkspaceScrapeSite{})
 
 		if result.Error != nil {
 			return totalDeleted, nil, result.Error
 		}
 
-		if DB.Migrator().HasTable(&domain.UserScrapeSourceStat{}) {
+		if DB.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 			if err := DB.
-				Where("user_id = ?", userId).
+				Where("workspace_id = ?", userId).
 				Where("scrape_site_id IN ?", chunk).
-				Delete(&domain.UserScrapeSourceStat{}).Error; err != nil {
+				Delete(&domain.WorkspaceScrapeSourceStat{}).Error; err != nil {
 				return totalDeleted, nil, err
 			}
 		}
@@ -786,7 +786,7 @@ func collectOrphanScrapeSiteIDs(candidateIDs []int) ([]uint64, error) {
 	}
 
 	var stillInUse []int
-	if err := DB.Model(&domain.UserScrapeSite{}).
+	if err := DB.Model(&domain.WorkspaceScrapeSite{}).
 		Where("scrape_site_id IN ?", candidateIDs).
 		Distinct("scrape_site_id").
 		Pluck("scrape_site_id", &stillInUse).Error; err != nil {
@@ -842,7 +842,7 @@ func DeleteOrphanScrapeSites(ctx context.Context) (int64, error) {
 
 func ScrapeSiteHasUsers(siteID uint64) (bool, error) {
 	var count int64
-	if err := DB.Model(&domain.UserScrapeSite{}).
+	if err := DB.Model(&domain.WorkspaceScrapeSite{}).
 		Where("scrape_site_id = ?", siteID).
 		Count(&count).Error; err != nil {
 		return false, err

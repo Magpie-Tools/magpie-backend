@@ -22,12 +22,12 @@ import (
 )
 
 var (
-	currentThreads        atomic.Uint32
-	stopChannel           = make(chan struct{}) // Signal to stop threads
-	userCache             sync.Map
-	checkProxyWithRetries = CheckProxyWithRetries
-	enqueueProxyStatistic = jobruntime.AddProxyStatisticForUsers
-	getUsersForChecker    = database.GetUsersByIDsForChecker
+	currentThreads          atomic.Uint32
+	stopChannel             = make(chan struct{}) // Signal to stop threads
+	workspaceCache          sync.Map
+	checkProxyWithRetries   = CheckProxyWithRetries
+	enqueueProxyStatistic   = jobruntime.AddProxyStatisticForUsers
+	getWorkspacesForChecker = database.GetWorkspacesByIDsForChecker
 )
 
 const (
@@ -35,8 +35,8 @@ const (
 	userCacheTTL          = 5 * time.Second
 )
 
-type cachedUser struct {
-	user      domain.User
+type cachedWorkspace struct {
+	user      domain.Workspace
 	expiresAt time.Time
 }
 
@@ -192,7 +192,7 @@ func work(parent context.Context) {
 		}
 
 		var payloadChanged bool
-		proxy, payloadChanged = refreshProxyUsers(proxy)
+		proxy, payloadChanged = refreshProxyWorkspaces(proxy)
 
 		judgeRequests, userSuccess, userHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy)
 		saveResponses := config.GetConfig().Checker.SaveResponses
@@ -265,14 +265,14 @@ func createWorkerContext(parent context.Context) (context.Context, func()) {
 	return ctx, cleanup
 }
 
-func refreshProxyUsers(proxy domain.Proxy) (domain.Proxy, bool) {
-	if len(proxy.Users) == 0 {
+func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
+	if len(proxy.Workspaces) == 0 {
 		return proxy, false
 	}
 
-	ids := make([]uint, 0, len(proxy.Users))
-	seen := make(map[uint]struct{}, len(proxy.Users))
-	for _, user := range proxy.Users {
+	ids := make([]uint, 0, len(proxy.Workspaces))
+	seen := make(map[uint]struct{}, len(proxy.Workspaces))
+	for _, user := range proxy.Workspaces {
 		if user.ID == 0 {
 			continue
 		}
@@ -284,36 +284,36 @@ func refreshProxyUsers(proxy domain.Proxy) (domain.Proxy, bool) {
 	}
 
 	now := time.Now()
-	refreshedUsers := make(map[uint]domain.User, len(ids))
+	refreshedWorkspaces := make(map[uint]domain.Workspace, len(ids))
 	missing := make([]uint, 0, len(ids))
 
 	for _, id := range ids {
-		if cached, ok := userCache.Load(id); ok {
-			entry, ok := cached.(cachedUser)
+		if cached, ok := workspaceCache.Load(id); ok {
+			entry, ok := cached.(cachedWorkspace)
 			if ok && entry.expiresAt.After(now) {
-				refreshedUsers[id] = entry.user
+				refreshedWorkspaces[id] = entry.user
 				continue
 			}
-			userCache.Delete(id)
+			workspaceCache.Delete(id)
 		}
 		missing = append(missing, id)
 	}
 
 	if len(missing) > 0 {
-		dbUsers, err := getUsersForChecker(missing)
+		dbWorkspaces, err := getWorkspacesForChecker(missing)
 		if err != nil {
 			log.Error("refresh proxy users", "error", err)
-			for i := range proxy.Users {
-				if fresh, ok := refreshedUsers[proxy.Users[i].ID]; ok {
-					proxy.Users[i] = fresh
+			for i := range proxy.Workspaces {
+				if fresh, ok := refreshedWorkspaces[proxy.Workspaces[i].ID]; ok {
+					proxy.Workspaces[i] = fresh
 				}
 			}
 			return proxy, false
 		} else {
 			expiry := now.Add(userCacheTTL)
-			for id, user := range dbUsers {
-				refreshedUsers[id] = user
-				userCache.Store(id, cachedUser{
+			for id, user := range dbWorkspaces {
+				refreshedWorkspaces[id] = user
+				workspaceCache.Store(id, cachedWorkspace{
 					user:      user,
 					expiresAt: expiry,
 				})
@@ -321,11 +321,11 @@ func refreshProxyUsers(proxy domain.Proxy) (domain.Proxy, bool) {
 		}
 	}
 
-	refreshed := make([]domain.User, 0, len(proxy.Users))
+	refreshed := make([]domain.Workspace, 0, len(proxy.Workspaces))
 	payloadChanged := false
-	seenRefreshed := make(map[uint]struct{}, len(proxy.Users))
-	for _, queuedUser := range proxy.Users {
-		fresh, ok := refreshedUsers[queuedUser.ID]
+	seenRefreshed := make(map[uint]struct{}, len(proxy.Workspaces))
+	for _, queuedWorkspace := range proxy.Workspaces {
+		fresh, ok := refreshedWorkspaces[queuedWorkspace.ID]
 		if !ok {
 			payloadChanged = true
 			continue
@@ -337,20 +337,20 @@ func refreshProxyUsers(proxy domain.Proxy) (domain.Proxy, bool) {
 		seenRefreshed[fresh.ID] = struct{}{}
 		refreshed = append(refreshed, fresh)
 	}
-	proxy.Users = refreshed
+	proxy.Workspaces = refreshed
 
 	return proxy, payloadChanged
 }
 
 func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
 	judgeRequests := make(map[string]*requestAssignment)
-	userSuccess := make(map[uint]bool, len(proxy.Users))
-	userHasChecks := make(map[uint]bool, len(proxy.Users))
+	userSuccess := make(map[uint]bool, len(proxy.Workspaces))
+	userHasChecks := make(map[uint]bool, len(proxy.Workspaces))
 
 	var maxTimeout uint16
 	var maxRetries uint8
 
-	for _, user := range proxy.Users {
+	for _, user := range proxy.Workspaces {
 		userSuccess[user.ID] = false
 		transportProtocol := support.ResolveCheckerTransportProtocol(user.TransportProtocol)
 
@@ -469,17 +469,17 @@ func collectCheckUserIDs(checks []userCheck) []uint {
 }
 
 func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[uint]bool) (map[uint]struct{}, []domain.Proxy) {
-	if len(proxy.Users) == 0 {
+	if len(proxy.Workspaces) == 0 {
 		return nil, nil
 	}
 
-	events := make([]failureEvent, 0, len(proxy.Users))
-	for _, user := range proxy.Users {
+	events := make([]failureEvent, 0, len(proxy.Workspaces))
+	for _, user := range proxy.Workspaces {
 		if !userHasChecks[user.ID] {
 			continue
 		}
 		events = append(events, failureEvent{
-			UserID:            user.ID,
+			WorkspaceID:       user.ID,
 			Success:           userSuccess[user.ID],
 			AutoRemove:        user.AutoRemoveFailingProxies,
 			FailureThreshold:  user.AutoRemoveFailureThreshold,
@@ -503,14 +503,14 @@ func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[ui
 }
 
 func filterRemovedUsers(proxy domain.Proxy, removed map[uint]struct{}) domain.Proxy {
-	filtered := make([]domain.User, 0, len(proxy.Users))
-	for _, user := range proxy.Users {
+	filtered := make([]domain.Workspace, 0, len(proxy.Workspaces))
+	for _, user := range proxy.Workspaces {
 		if _, ok := removed[user.ID]; ok {
 			continue
 		}
 		filtered = append(filtered, user)
 	}
-	proxy.Users = filtered
+	proxy.Workspaces = filtered
 
 	return proxy
 }

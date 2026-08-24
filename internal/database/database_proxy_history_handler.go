@@ -13,8 +13,8 @@ const (
 	maxProxyHistoryLimit     = 720
 )
 
-// SaveProxyHistorySnapshot stores a snapshot of the proxy count for every user at the time of invocation.
-// It records zero counts as well so we can track when users have no proxies.
+// SaveProxyHistorySnapshot stores the active-route count for every workspace.
+// It records zero counts so capacity changes remain visible over time.
 func SaveProxyHistorySnapshot(ctx context.Context) error {
 	if DB == nil {
 		return fmt.Errorf("database: connection was not configured")
@@ -25,38 +25,38 @@ func SaveProxyHistorySnapshot(ctx context.Context) error {
 		tx = tx.WithContext(ctx)
 	}
 
-	var userIDs []uint
-	if err := tx.Model(&domain.User{}).Pluck("id", &userIDs).Error; err != nil {
-		return fmt.Errorf("proxy history: fetch user ids: %w", err)
+	var workspaceIDs []uint
+	if err := tx.Model(&domain.Workspace{}).Pluck("id", &workspaceIDs).Error; err != nil {
+		return fmt.Errorf("proxy history: fetch workspace ids: %w", err)
 	}
 
-	if len(userIDs) == 0 {
+	if len(workspaceIDs) == 0 {
 		return nil
 	}
 
 	var counts []struct {
-		UserID     uint
-		ProxyCount int64
+		WorkspaceID uint
+		ProxyCount  int64
 	}
 
 	if err := tx.Table("user_proxies").
-		Select("user_id, COUNT(*) AS proxy_count").
-		Where("user_id IN ?", userIDs).
-		Group("user_id").
+		Select("workspace_id, COUNT(*) AS proxy_count").
+		Where("workspace_id IN ? AND state = ?", workspaceIDs, domain.ManagedProxyStateActive).
+		Group("workspace_id").
 		Scan(&counts).Error; err != nil {
 		return fmt.Errorf("proxy history: aggregate proxy counts: %w", err)
 	}
 
-	countByUser := make(map[uint]int64, len(counts))
+	countByWorkspace := make(map[uint]int64, len(counts))
 	for _, row := range counts {
-		countByUser[row.UserID] = row.ProxyCount
+		countByWorkspace[row.WorkspaceID] = row.ProxyCount
 	}
 
-	histories := make([]domain.ProxyHistory, 0, len(userIDs))
-	for _, userID := range userIDs {
+	histories := make([]domain.ProxyHistory, 0, len(workspaceIDs))
+	for _, workspaceID := range workspaceIDs {
 		histories = append(histories, domain.ProxyHistory{
-			UserID:     userID,
-			ProxyCount: countByUser[userID],
+			WorkspaceID: workspaceID,
+			ProxyCount:  countByWorkspace[workspaceID],
 		})
 	}
 
@@ -71,8 +71,8 @@ func SaveProxyHistorySnapshot(ctx context.Context) error {
 	return nil
 }
 
-// GetProxyHistoryEntries returns the most recent proxy history snapshots for a user, ordered chronologically.
-func GetProxyHistoryEntries(userID uint, limit int) []dto.ProxyHistoryEntry {
+// GetProxyHistoryEntries returns recent snapshots for a workspace.
+func GetProxyHistoryEntries(workspaceID uint, limit int) []dto.ProxyHistoryEntry {
 	if DB == nil {
 		return nil
 	}
@@ -81,7 +81,7 @@ func GetProxyHistoryEntries(userID uint, limit int) []dto.ProxyHistoryEntry {
 
 	rows := make([]domain.ProxyHistory, 0, limit)
 
-	DB.Where("user_id = ?", userID).
+	DB.Where("workspace_id = ?", workspaceID).
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&rows)

@@ -73,7 +73,8 @@ type User struct {
 	Password string `gorm:"not null;size:100" json:"-"`
 	Role     string `gorm:"not null;default:'user';check:role IN ('user', 'admin')"`
 
-	//Settings
+	// Legacy settings remain readable during workspace migration. New writes use
+	// Workspace and WorkspaceMemberPreference.
 	HTTPProtocol               bool       `gorm:"not null;default:false"`
 	HTTPSProtocol              bool       `gorm:"not null;default:true"`
 	SOCKS4Protocol             bool       `gorm:"not null;default:false"`
@@ -88,12 +89,8 @@ type User struct {
 	ScrapeSourceProxyColumns   StringList `gorm:"type:jsonb;default:'[]'"`
 	ScrapeSourceListColumns    StringList `gorm:"type:jsonb;default:'[]'"`
 
-	//Relations
-	Judges       []Judge        `gorm:"many2many:user_judges;"`
-	Proxies      []Proxy        `gorm:"many2many:user_proxies;"`
-	ProxyHistory []ProxyHistory `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	ScrapeSites  []ScrapeSite   `gorm:"many2many:user_scrape_site;"`
-	CreatedAt    time.Time      `gorm:"autoCreateTime"`
+	Memberships []WorkspaceMembership `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	CreatedAt   time.Time             `gorm:"autoCreateTime"`
 }
 
 func (u *User) ToUserSettings(simpleUserJudges []dto.SimpleUserJudge, scrapingSources []string) dto.UserSettings {

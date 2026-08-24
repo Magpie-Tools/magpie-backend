@@ -36,14 +36,14 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 		return err
 	}
 
-	if db.Migrator().HasTable(&domain.UserProxyFilterIndex{}) {
+	if db.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
 		var count int64
-		if err := db.Model(&domain.UserProxyFilterIndex{}).Count(&count).Error; err != nil {
+		if err := db.Model(&domain.WorkspaceProxyFilterIndex{}).Count(&count).Error; err != nil {
 			return fmt.Errorf("read model: count proxy filter index: %w", err)
 		}
 		var missingHosts int64
 		if count > 0 {
-			if err := db.Model(&domain.UserProxyFilterIndex{}).
+			if err := db.Model(&domain.WorkspaceProxyFilterIndex{}).
 				Where("host IS NULL OR BTRIM(host) = ''").
 				Count(&missingHosts).Error; err != nil {
 				return fmt.Errorf("read model: count missing proxy hosts: %w", err)
@@ -57,9 +57,9 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 		}
 	}
 
-	if db.Migrator().HasTable(&domain.UserScrapeSourceStat{}) {
+	if db.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		var count int64
-		if err := db.Model(&domain.UserScrapeSourceStat{}).Count(&count).Error; err != nil {
+		if err := db.Model(&domain.WorkspaceScrapeSourceStat{}).Count(&count).Error; err != nil {
 			return fmt.Errorf("read model: count scrape-source stats: %w", err)
 		}
 		if count == 0 {
@@ -74,12 +74,12 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 }
 
 func finalizeReadModelHostSchema(db *gorm.DB) error {
-	if db == nil || !isPostgresDialect(db) || !db.Migrator().HasTable(&domain.UserProxyFilterIndex{}) {
+	if db == nil || !isPostgresDialect(db) || !db.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
 		return nil
 	}
 
 	var missing int64
-	if err := db.Model(&domain.UserProxyFilterIndex{}).Where("host IS NULL OR BTRIM(host) = ''").Count(&missing).Error; err != nil {
+	if err := db.Model(&domain.WorkspaceProxyFilterIndex{}).Where("host IS NULL OR BTRIM(host) = ''").Count(&missing).Error; err != nil {
 		return fmt.Errorf("read model: verify proxy hosts: %w", err)
 	}
 	if missing > 0 {
@@ -109,11 +109,13 @@ func ensureReadModelSchema(db *gorm.DB) error {
 
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS user_proxy_filter_indexes (
-			user_id bigint NOT NULL,
+			workspace_id bigint NOT NULL,
 			proxy_id bigint NOT NULL,
-			PRIMARY KEY (user_id, proxy_id)
+			PRIMARY KEY (workspace_id, proxy_id)
 		)`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS host varchar(253)`,
+		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS state varchar(16) NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS pause_reason varchar(24) NOT NULL DEFAULT ''`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS ip_address inet`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS port integer NOT NULL DEFAULT 0`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS country varchar(56) NOT NULL DEFAULT 'N/A'`,
@@ -139,10 +141,10 @@ func ensureReadModelSchema(db *gorm.DB) error {
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS reputation_score real`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP`,
-		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_alive_latest ON user_proxy_filter_indexes (user_id, alive, latest_check DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_country ON user_proxy_filter_indexes (user_id, country_key)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_type ON user_proxy_filter_indexes (user_id, type_key)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_reputation ON user_proxy_filter_indexes (user_id, reputation_label, reputation_score DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_alive_latest ON user_proxy_filter_indexes (workspace_id, alive, latest_check DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_country ON user_proxy_filter_indexes (workspace_id, country_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_type ON user_proxy_filter_indexes (workspace_id, type_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_reputation ON user_proxy_filter_indexes (workspace_id, reputation_label, reputation_score DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_proxy_id ON user_proxy_filter_indexes (proxy_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_host ON user_proxy_filter_indexes (host)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_ip_address ON user_proxy_filter_indexes (ip_address)`,
@@ -154,9 +156,9 @@ func ensureReadModelSchema(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_alive_socks4 ON user_proxy_filter_indexes (alive_socks4)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_alive_socks5 ON user_proxy_filter_indexes (alive_socks5)`,
 		`CREATE TABLE IF NOT EXISTS user_scrape_source_stats (
-			user_id bigint NOT NULL,
+			workspace_id bigint NOT NULL,
 			scrape_site_id bigint NOT NULL,
-			PRIMARY KEY (user_id, scrape_site_id)
+			PRIMARY KEY (workspace_id, scrape_site_id)
 		)`,
 		`ALTER TABLE user_scrape_source_stats ADD COLUMN IF NOT EXISTS url text NOT NULL DEFAULT ''`,
 		`ALTER TABLE user_scrape_source_stats ADD COLUMN IF NOT EXISTS protocol_key varchar(16) NOT NULL DEFAULT ''`,
@@ -167,8 +169,8 @@ func ensureReadModelSchema(db *gorm.DB) error {
 		`ALTER TABLE user_scrape_source_stats ADD COLUMN IF NOT EXISTS added_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE user_scrape_source_stats ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE user_scrape_source_stats ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP`,
-		`CREATE INDEX IF NOT EXISTS idx_user_scrape_source_stats_user_added ON user_scrape_source_stats (user_id, added_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_user_scrape_source_stats_user_protocol ON user_scrape_source_stats (user_id, protocol_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_scrape_source_stats_user_added ON user_scrape_source_stats (workspace_id, added_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_scrape_source_stats_user_protocol ON user_scrape_source_stats (workspace_id, protocol_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_scrape_source_stats_proxy_count ON user_scrape_source_stats (proxy_count)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_scrape_source_stats_alive_count ON user_scrape_source_stats (alive_count)`,
 	}
@@ -356,7 +358,7 @@ func refreshUserProxyFilterIndexesForUserProxyIDs(tx *gorm.DB, userID uint, prox
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
-		if err := refreshUserProxyFilterIndexes(tx, "WHERE up.user_id = ? AND up.proxy_id IN ?", userID, proxyIDs[start:end]); err != nil {
+		if err := refreshUserProxyFilterIndexes(tx, "WHERE up.workspace_id = ? AND up.proxy_id IN ?", userID, proxyIDs[start:end]); err != nil {
 			return err
 		}
 	}
@@ -364,13 +366,13 @@ func refreshUserProxyFilterIndexesForUserProxyIDs(tx *gorm.DB, userID uint, prox
 }
 
 func refreshUserProxyFilterIndexes(tx *gorm.DB, where string, args ...interface{}) error {
-	if tx == nil || !tx.Migrator().HasTable(&domain.UserProxyFilterIndex{}) {
+	if tx == nil || !tx.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
 		return nil
 	}
 
 	query := `
 WITH scope AS (
-	SELECT up.user_id, up.proxy_id
+	SELECT up.workspace_id, up.proxy_id, up.state, up.pause_reason
 	FROM user_proxies up
 	` + where + `
 ),
@@ -408,8 +410,10 @@ health AS (
 ),
 rows AS (
 	SELECT
-		up.user_id,
+		up.workspace_id,
 		p.id AS proxy_id,
+		up.state,
+		up.pause_reason,
 		p.host,
 		p.ip_address,
 		p.port,
@@ -443,7 +447,7 @@ rows AS (
 	LEFT JOIN proxy_reputations pr ON pr.proxy_id = p.id AND pr.kind = 'overall'
 )
 INSERT INTO user_proxy_filter_indexes (
-	user_id, proxy_id, host, ip_address, port,
+	workspace_id, proxy_id, state, pause_reason, host, ip_address, port,
 	country, country_key, estimated_type, type_key, anonymity_level, anonymity_key,
 	alive, latest_check, response_time, attempt,
 	health_overall, health_http, health_https, health_socks4, health_socks5,
@@ -451,14 +455,16 @@ INSERT INTO user_proxy_filter_indexes (
 	reputation_label, reputation_score, created_at, updated_at
 )
 SELECT
-	user_id, proxy_id, host, ip_address, port,
+	workspace_id, proxy_id, state, pause_reason, host, ip_address, port,
 	country, country_key, estimated_type, type_key, anonymity_level, anonymity_key,
 	alive, latest_check, response_time, attempt,
 	health_overall, health_http, health_https, health_socks4, health_socks5,
 	alive_http, alive_https, alive_socks4, alive_socks5,
 	reputation_label, reputation_score, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM rows
-ON CONFLICT (user_id, proxy_id) DO UPDATE SET
+ON CONFLICT (workspace_id, proxy_id) DO UPDATE SET
+	state = EXCLUDED.state,
+	pause_reason = EXCLUDED.pause_reason,
 	host = EXCLUDED.host,
 	ip_address = EXCLUDED.ip_address,
 	port = EXCLUDED.port,
@@ -520,7 +526,7 @@ func refreshUserScrapeSourceStatsForUserSites(tx *gorm.DB, userID uint, siteIDs 
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
-		if err := refreshUserScrapeSourceStats(tx, "WHERE uss.user_id = ? AND ss.id IN ?", userID, siteIDs[start:end]); err != nil {
+		if err := refreshUserScrapeSourceStats(tx, "WHERE uss.workspace_id = ? AND ss.id IN ?", userID, siteIDs[start:end]); err != nil {
 			return err
 		}
 	}
@@ -528,7 +534,7 @@ func refreshUserScrapeSourceStatsForUserSites(tx *gorm.DB, userID uint, siteIDs 
 }
 
 func refreshUserScrapeSourceStatsForProxyIDs(tx *gorm.DB, proxyIDs []uint64) error {
-	if tx == nil || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.UserScrapeSourceStat{}) {
+	if tx == nil || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}
 
@@ -553,7 +559,7 @@ func refreshUserScrapeSourceStatsForProxyIDs(tx *gorm.DB, proxyIDs []uint64) err
 }
 
 func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxyIDs []uint64) error {
-	if tx == nil || userID == 0 || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.UserScrapeSourceStat{}) {
+	if tx == nil || userID == 0 || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}
 
@@ -566,7 +572,7 @@ func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxy
 		var siteIDs []uint64
 		if err := tx.Table("proxy_scrape_site pss").
 			Distinct("pss.scrape_site_id").
-			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.user_id = ?", userID).
+			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.workspace_id = ?", userID).
 			Where("pss.proxy_id IN ?", proxyIDs[start:end]).
 			Pluck("pss.scrape_site_id", &siteIDs).Error; err != nil {
 			return fmt.Errorf("read model: load user scrape-source ids for proxies: %w", err)
@@ -579,14 +585,14 @@ func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxy
 }
 
 func refreshUserScrapeSourceStats(tx *gorm.DB, where string, args ...interface{}) error {
-	if tx == nil || !tx.Migrator().HasTable(&domain.UserScrapeSourceStat{}) {
+	if tx == nil || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}
 
 	query := `
 WITH rows AS (
 	SELECT
-		uss.user_id,
+		uss.workspace_id,
 		ss.id AS scrape_site_id,
 		ss.url,
 		LOWER(split_part(ss.url, '://', 1)) AS protocol_key,
@@ -598,22 +604,22 @@ WITH rows AS (
 	FROM user_scrape_site uss
 	JOIN scrape_sites ss ON ss.id = uss.scrape_site_id
 	LEFT JOIN proxy_scrape_site pss ON pss.scrape_site_id = ss.id
-	LEFT JOIN user_proxies up ON up.user_id = uss.user_id AND up.proxy_id = pss.proxy_id
+	LEFT JOIN user_proxies up ON up.workspace_id = uss.workspace_id AND up.proxy_id = pss.proxy_id
 	LEFT JOIN proxy_overall_statuses pos ON pos.proxy_id = up.proxy_id
 	` + where + `
-	GROUP BY uss.user_id, ss.id, ss.url, uss.created_at
+	GROUP BY uss.workspace_id, ss.id, ss.url, uss.created_at
 )
 INSERT INTO user_scrape_source_stats (
-	user_id, scrape_site_id, url, protocol_key,
+	workspace_id, scrape_site_id, url, protocol_key,
 	proxy_count, alive_count, dead_count, unknown_count,
 	added_at, created_at, updated_at
 )
 SELECT
-	user_id, scrape_site_id, url, protocol_key,
+	workspace_id, scrape_site_id, url, protocol_key,
 	proxy_count, alive_count, dead_count, unknown_count,
 	added_at, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM rows
-ON CONFLICT (user_id, scrape_site_id) DO UPDATE SET
+ON CONFLICT (workspace_id, scrape_site_id) DO UPDATE SET
 	url = EXCLUDED.url,
 	protocol_key = EXCLUDED.protocol_key,
 	proxy_count = EXCLUDED.proxy_count,

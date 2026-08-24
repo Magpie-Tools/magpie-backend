@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,40 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/security"
 )
+
+func TestIngestProxyUploadUsesExplicitWorkspaceID(t *testing.T) {
+	originalInsert := insertProxiesForWorkspace
+	t.Cleanup(func() { insertProxiesForWorkspace = originalInsert })
+
+	const workspaceID uint = 91
+	var receivedWorkspaceIDs []uint
+	insertProxiesForWorkspace = func(_ []domain.Proxy, workspaceIDs ...uint) ([]domain.Proxy, error) {
+		receivedWorkspaceIDs = append([]uint(nil), workspaceIDs...)
+		return nil, nil
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("proxyTextarea", "198.51.100.10:8080"); err != nil {
+		t.Fatalf("write proxy field: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/addProxies", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	_, stats, _, err := ingestProxyUploadMultipartWithTags(httptest.NewRecorder(), request, workspaceID, nil, int64(body.Len()+1024))
+	if err != nil {
+		t.Fatalf("ingest proxy upload: %v", err)
+	}
+	if stats.ParsedCount != 1 {
+		t.Fatalf("parsed proxies = %d, want 1", stats.ParsedCount)
+	}
+	if len(receivedWorkspaceIDs) != 1 || receivedWorkspaceIDs[0] != workspaceID {
+		t.Fatalf("workspace ids = %v, want [%d]", receivedWorkspaceIDs, workspaceID)
+	}
+}
 
 func TestHandleExportProxiesStreamError_SanitizesClientMessage(t *testing.T) {
 	recorder := httptest.NewRecorder()
@@ -63,12 +99,12 @@ func TestRequeueProxy_ReturnsQueuedProxy(t *testing.T) {
 	var queued []domain.Proxy
 	getQueuedProxyForUser = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
 		proxy := domain.Proxy{
-			ID:       42,
-			IP:       "127.0.0.1",
-			Port:     8080,
-			Username: "user",
-			Password: "pass",
-			Users:    []domain.User{{ID: 7}},
+			ID:         42,
+			IP:         "127.0.0.1",
+			Port:       8080,
+			Username:   "user",
+			Password:   "pass",
+			Workspaces: []domain.Workspace{{ID: 7}},
 		}
 		if err := proxy.GenerateHash(); err != nil {
 			t.Fatalf("generate proxy hash: %v", err)
@@ -153,10 +189,10 @@ func TestRequeueProxy_ReturnsServiceUnavailableOnQueueFailure(t *testing.T) {
 
 	getQueuedProxyForUser = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
 		proxy := domain.Proxy{
-			ID:    proxyID,
-			IP:    "127.0.0.1",
-			Port:  8080,
-			Users: []domain.User{{ID: 7}},
+			ID:         proxyID,
+			IP:         "127.0.0.1",
+			Port:       8080,
+			Workspaces: []domain.Workspace{{ID: 7}},
 		}
 		if err := proxy.GenerateHash(); err != nil {
 			t.Fatalf("generate proxy hash: %v", err)

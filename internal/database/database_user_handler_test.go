@@ -37,8 +37,8 @@ func TestGetDashboardInfoServesCachedSnapshotWithoutDatabase(t *testing.T) {
 
 func TestDashboardProxyListsServeCachedSnapshotsWithoutDatabase(t *testing.T) {
 	const userID = uint(992)
-	recentKey := dashboardProxyListCacheKey{UserID: userID, Limit: defaultRecentProxyChecksLimit}
-	fastestKey := dashboardProxyListCacheKey{UserID: userID, Limit: dashboardFastestAliveLimit}
+	recentKey := dashboardProxyListCacheKey{WorkspaceID: userID, Limit: defaultRecentProxyChecksLimit}
+	fastestKey := dashboardProxyListCacheKey{WorkspaceID: userID, Limit: dashboardFastestAliveLimit}
 	expectedRecent := []dto.ProxyRecentCheck{{ID: 12, Port: 8080}}
 	expectedFastest := []dto.ProxyFastestAlive{{ID: 34, Port: 1080}}
 

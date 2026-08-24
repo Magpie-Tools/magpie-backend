@@ -119,7 +119,7 @@ func queueProxyDailyChecksBackfill(userID uint) {
 		<-timer.C
 
 		if _, err := ensureProxyDailyChecksBackfilled(userID); err != nil {
-			log.Warn("dashboard: async daily check backfill failed", "user_id", userID, "error", err)
+			log.Warn("dashboard: async daily check backfill failed", "workspace_id", userID, "error", err)
 		}
 	}()
 }
@@ -171,7 +171,7 @@ func loadUserProxyIDsMissingBackfill(tx *gorm.DB, userID uint) ([]uint64, error)
 	if err := tx.Table("user_proxies up").
 		Select("up.proxy_id").
 		Joins("LEFT JOIN proxy_daily_check_proxy_backfills b ON b.proxy_id = up.proxy_id").
-		Where("up.user_id = ? AND b.proxy_id IS NULL", userID).
+		Where("up.workspace_id = ? AND b.proxy_id IS NULL", userID).
 		Order("up.proxy_id").
 		Limit(proxyDailyBackfillBatchSize).
 		Scan(&rows).Error; err != nil {
@@ -235,7 +235,7 @@ func queryDashboardCheckCountsFromDaily(userID uint, weekAgo time.Time) (dashboa
 				"COALESCE(SUM(CASE WHEN pdc.day >= ? THEN pdc.checks_count ELSE 0 END), 0) AS total_checks_week",
 			nextDayStart,
 		).
-		Joins("JOIN user_proxies up ON up.proxy_id = pdc.proxy_id AND up.user_id = ?", userID).
+		Joins("JOIN user_proxies up ON up.proxy_id = pdc.proxy_id AND up.workspace_id = ?", userID).
 		Where("pdc.day < ?", todayStart).
 		Scan(&counts).Error
 	if err != nil {
@@ -253,7 +253,7 @@ func queryDashboardCheckCountsFromDaily(userID uint, weekAgo time.Time) (dashboa
 			nextDayStart,
 			todayStart,
 		).
-		Joins("JOIN user_proxies up ON up.proxy_id = ps.proxy_id AND up.user_id = ?", userID).
+		Joins("JOIN user_proxies up ON up.proxy_id = ps.proxy_id AND up.workspace_id = ?", userID).
 		Where("ps.created_at >= ?", cutoff).
 		Scan(&boundaryCounts).Error
 	if err != nil {
@@ -278,7 +278,7 @@ func loadDashboardCheckCountsDirect(userID uint, weekAgo time.Time) (dashboardCh
 			weekAgo,
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
-		Where("up.user_id = ?", userID).
+		Where("up.workspace_id = ?", userID).
 		Scan(&counts).Error
 	if err != nil {
 		return dashboardCheckCounts{}, err

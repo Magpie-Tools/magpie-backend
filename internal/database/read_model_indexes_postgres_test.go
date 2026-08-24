@@ -64,8 +64,8 @@ func TestReadModelBackfillStoresHostAndLiteralIPProjection(t *testing.T) {
 		t.Fatalf("create proxies: %v", err)
 	}
 	if err := db.Create(&[]domain.UserProxy{
-		{UserID: user.ID, ProxyID: proxies[0].ID},
-		{UserID: user.ID, ProxyID: proxies[1].ID},
+		{WorkspaceID: user.ID, ProxyID: proxies[0].ID},
+		{WorkspaceID: user.ID, ProxyID: proxies[1].ID},
 	}).Error; err != nil {
 		t.Fatalf("create proxy access rows: %v", err)
 	}

@@ -328,7 +328,7 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 	}
 
 	var proxies []domain.Proxy
-	if err := db.Preload("Users").
+	if err := db.Preload("Workspaces").
 		Where("ip_address IN ?", normalized).
 		Find(&proxies).Error; err != nil {
 		return 0, nil, err
@@ -341,11 +341,11 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 	perUser := make(map[uint][]int)
 	orphanSet := make(map[uint64]domain.Proxy)
 	for _, proxy := range proxies {
-		if len(proxy.Users) == 0 {
+		if len(proxy.Workspaces) == 0 {
 			orphanSet[proxy.ID] = proxy
 			continue
 		}
-		for _, user := range proxy.Users {
+		for _, user := range proxy.Workspaces {
 			perUser[user.ID] = append(perUser[user.ID], int(proxy.ID))
 		}
 	}
@@ -460,11 +460,11 @@ func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange
 	perUser := make(map[uint][]int)
 	orphanSet := make(map[uint64]domain.Proxy)
 	for _, proxy := range proxies {
-		if len(proxy.Users) == 0 {
+		if len(proxy.Workspaces) == 0 {
 			orphanSet[proxy.ID] = proxy
 			continue
 		}
-		for _, user := range proxy.Users {
+		for _, user := range proxy.Workspaces {
 			perUser[user.ID] = append(perUser[user.ID], int(proxy.ID))
 		}
 	}
@@ -506,7 +506,7 @@ func findProxiesInIPRanges(db *gorm.DB, prefixes []netip.Prefix) ([]domain.Proxy
 			}
 
 			var batch []domain.Proxy
-			if err := db.Preload("Users").
+			if err := db.Preload("Workspaces").
 				Where("("+strings.Join(conditions, " OR ")+")", args...).
 				Find(&batch).Error; err != nil {
 				return nil, err
@@ -524,7 +524,7 @@ func findProxiesInIPRanges(db *gorm.DB, prefixes []netip.Prefix) ([]domain.Proxy
 	}
 
 	var candidates []domain.Proxy
-	if err := db.Preload("Users").Find(&candidates).Error; err != nil {
+	if err := db.Preload("Workspaces").Find(&candidates).Error; err != nil {
 		return nil, err
 	}
 

@@ -20,6 +20,7 @@ func TestOwnershipVerifierDetectsOwnershipChanges(t *testing.T) {
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	createCheckerWorkspace(t, db, user)
 
 	proxy := domain.Proxy{
 		IP:            "10.0.0.55",
@@ -31,7 +32,7 @@ func TestOwnershipVerifierDetectsOwnershipChanges(t *testing.T) {
 		t.Fatalf("create proxy: %v", err)
 	}
 
-	link := domain.UserProxy{UserID: user.ID, ProxyID: proxy.ID}
+	link := domain.UserProxy{WorkspaceID: user.ID, ProxyID: proxy.ID}
 	if err := db.Create(&link).Error; err != nil {
 		t.Fatalf("link proxy: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestOwnershipVerifierDetectsOwnershipChanges(t *testing.T) {
 		t.Fatal("expected proxy to be reported as owned")
 	}
 
-	if err := db.Where("user_id = ? AND proxy_id = ?", user.ID, proxy.ID).
+	if err := db.Where("workspace_id = ? AND proxy_id = ?", user.ID, proxy.ID).
 		Delete(&domain.UserProxy{}).Error; err != nil {
 		t.Fatalf("delete user proxy: %v", err)
 	}

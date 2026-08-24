@@ -89,6 +89,11 @@ func AddProxyStatistic(proxyStatistic domain.ProxyStatistic) {
 }
 
 func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, userIDs []uint) {
+	if len(userIDs) > 0 {
+		proxyStatistic.WorkspaceIDs = userIDs
+	} else {
+		userIDs = proxyStatistic.WorkspaceIDs
+	}
 	policy := resolveStatisticsOverloadPolicy(userIDs)
 	blockDeadline := time.Time{}
 	if policy != statisticsOverloadPolicyDropNew {

@@ -19,7 +19,7 @@ type Judge struct {
 	FullString string `gorm:"size:512;not null;unique"`
 
 	ProxyStatistics []ProxyStatistic `gorm:"foreignKey:JudgeID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
-	Users           []User           `gorm:"many2many:user_judges;"`
+	Workspaces      []Workspace      `gorm:"many2many:user_judges;joinForeignKey:JudgeID;joinReferences:WorkspaceID;"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }

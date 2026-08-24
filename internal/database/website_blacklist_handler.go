@@ -92,13 +92,13 @@ func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []strin
 
 func findBlockedJudgeIDs(tx *gorm.DB, blockedSet map[string]struct{}) ([]uint, map[uint]struct{}, error) {
 	var rows []struct {
-		UserID  uint
-		JudgeID uint
-		URL     string
+		WorkspaceID uint
+		JudgeID     uint
+		URL         string
 	}
 
 	if err := tx.Table("user_judges").
-		Select("user_judges.user_id, user_judges.judge_id, judges.full_string AS url").
+		Select("user_judges.workspace_id, user_judges.judge_id, judges.full_string AS url").
 		Joins("JOIN judges ON judges.id = user_judges.judge_id").
 		Find(&rows).Error; err != nil {
 		return nil, nil, err
@@ -112,7 +112,7 @@ func findBlockedJudgeIDs(tx *gorm.DB, blockedSet map[string]struct{}) ([]uint, m
 			continue
 		}
 		blocked[row.JudgeID] = struct{}{}
-		affectedUsers[row.UserID] = struct{}{}
+		affectedUsers[row.WorkspaceID] = struct{}{}
 	}
 
 	return mapKeysUint(blocked), affectedUsers, nil
@@ -181,7 +181,7 @@ func deleteUserJudgeRelations(tx *gorm.DB, judgeIDs []uint, totalRemoved *int64)
 
 		res := tx.
 			Where("judge_id IN ?", judgeIDs[start:end]).
-			Delete(&domain.UserJudge{})
+			Delete(&domain.WorkspaceJudge{})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -212,7 +212,7 @@ func deleteUserScrapeRelations(tx *gorm.DB, siteIDs []uint64, totalRemoved *int6
 
 		res := tx.
 			Where("scrape_site_id IN ?", siteIDs[start:end]).
-			Delete(&domain.UserScrapeSite{})
+			Delete(&domain.WorkspaceScrapeSite{})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -229,18 +229,18 @@ func loadRemainingUserJudges(tx *gorm.DB, userSet map[uint]struct{}) (map[uint][
 	}
 
 	var rows []struct {
-		UserID     uint
-		JudgeID    uint
-		FullString string
-		CreatedAt  time.Time
-		Regex      string
+		WorkspaceID uint
+		JudgeID     uint
+		FullString  string
+		CreatedAt   time.Time
+		Regex       string
 	}
 
 	if err := tx.Table("user_judges").
-		Select("user_judges.user_id, judges.id AS judge_id, judges.full_string, judges.created_at, user_judges.regex").
+		Select("user_judges.workspace_id, judges.id AS judge_id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON judges.id = user_judges.judge_id").
-		Where("user_judges.user_id IN ?", userIDs).
-		Order("user_judges.user_id, judges.id").
+		Where("user_judges.workspace_id IN ?", userIDs).
+		Order("user_judges.workspace_id, judges.id").
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -250,7 +250,7 @@ func loadRemainingUserJudges(tx *gorm.DB, userSet map[uint]struct{}) (map[uint][
 		result[id] = nil
 	}
 	for _, row := range rows {
-		result[row.UserID] = append(result[row.UserID], UserJudgeAssignment{
+		result[row.WorkspaceID] = append(result[row.WorkspaceID], UserJudgeAssignment{
 			JudgeID:    row.JudgeID,
 			FullString: row.FullString,
 			Regex:      row.Regex,

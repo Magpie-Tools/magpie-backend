@@ -39,6 +39,11 @@ func getGraphQLHandler() (http.Handler, error) {
 			} else if err != nil {
 				log.Debug("GraphQL token rejected", "error", err)
 			}
+			if access, err := workspaceAccessFromRequest(r); err == nil {
+				ctx = gqlschema.WithWorkspaceAccess(ctx, access.WorkspaceID, access.Role)
+			} else {
+				log.Debug("GraphQL workspace rejected", "error", err)
+			}
 
 			base.ContextHandler(ctx, w, r)
 		})

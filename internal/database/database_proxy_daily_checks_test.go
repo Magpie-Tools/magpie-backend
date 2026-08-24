@@ -19,7 +19,7 @@ func TestDashboardCheckCountsFollowCurrentProxyOwnership(t *testing.T) {
 	})
 
 	// Current ownership: proxy 1 belongs only to user 2.
-	if err := db.Exec(`INSERT INTO user_proxies (user_id, proxy_id) VALUES (?, ?)`, 2, 1).Error; err != nil {
+	if err := db.Exec(`INSERT INTO user_proxies (workspace_id, proxy_id) VALUES (?, ?)`, 2, 1).Error; err != nil {
 		t.Fatalf("insert user_proxies: %v", err)
 	}
 
@@ -94,7 +94,7 @@ func openDailyChecksSQLite(t *testing.T) *gorm.DB {
 
 	stmts := []string{
 		`CREATE TABLE user_proxies (
-			user_id INTEGER NOT NULL,
+			workspace_id INTEGER NOT NULL,
 			proxy_id INTEGER NOT NULL
 		);`,
 		`CREATE TABLE proxy_daily_checks (

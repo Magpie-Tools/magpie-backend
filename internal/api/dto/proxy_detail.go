@@ -16,4 +16,6 @@ type ProxyDetail struct {
 	LatestStatistic *ProxyStatistic           `json:"latest_statistic,omitempty"`
 	Reputation      *ProxyReputationBreakdown `json:"reputation,omitempty"`
 	Tags            []ProxyTag                `json:"tags"`
+	State           string                    `json:"state"`
+	PauseReason     string                    `json:"pause_reason,omitempty"`
 }

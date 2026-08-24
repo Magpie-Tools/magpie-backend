@@ -16,7 +16,7 @@ const (
 	maxProxySnapshotLimit     = 720
 )
 
-// SaveProxySnapshots stores snapshots for alive and scraped proxies per user.
+// SaveProxySnapshots stores snapshots for active routes in every workspace.
 func SaveProxySnapshots(ctx context.Context) error {
 	if DB == nil {
 		return fmt.Errorf("database: connection was not configured")
@@ -27,37 +27,37 @@ func SaveProxySnapshots(ctx context.Context) error {
 		tx = tx.WithContext(ctx)
 	}
 
-	var userIDs []uint
-	if err := tx.Model(&domain.User{}).Pluck("id", &userIDs).Error; err != nil {
-		return fmt.Errorf("proxy snapshot: fetch user ids: %w", err)
+	var workspaceIDs []uint
+	if err := tx.Model(&domain.Workspace{}).Pluck("id", &workspaceIDs).Error; err != nil {
+		return fmt.Errorf("proxy snapshot: fetch workspace ids: %w", err)
 	}
 
-	if len(userIDs) == 0 {
+	if len(workspaceIDs) == 0 {
 		return nil
 	}
 
-	aliveCountByUser, err := aliveProxyCountByUser(tx, userIDs)
+	aliveCountByWorkspace, err := aliveProxyCountByWorkspace(tx, workspaceIDs)
 	if err != nil {
 		return err
 	}
 
-	scrapedCountByUser, err := scrapedProxyCountByUser(tx, userIDs)
+	scrapedCountByWorkspace, err := scrapedProxyCountByWorkspace(tx, workspaceIDs)
 	if err != nil {
 		return err
 	}
 
-	snapshots := make([]domain.ProxySnapshot, 0, len(userIDs)*2)
-	for _, userID := range userIDs {
+	snapshots := make([]domain.ProxySnapshot, 0, len(workspaceIDs)*2)
+	for _, workspaceID := range workspaceIDs {
 		snapshots = append(snapshots,
 			domain.ProxySnapshot{
-				UserID: userID,
-				Metric: domain.ProxySnapshotMetricAlive,
-				Count:  aliveCountByUser[userID],
+				WorkspaceID: workspaceID,
+				Metric:      domain.ProxySnapshotMetricAlive,
+				Count:       aliveCountByWorkspace[workspaceID],
 			},
 			domain.ProxySnapshot{
-				UserID: userID,
-				Metric: domain.ProxySnapshotMetricScraped,
-				Count:  scrapedCountByUser[userID],
+				WorkspaceID: workspaceID,
+				Metric:      domain.ProxySnapshotMetricScraped,
+				Count:       scrapedCountByWorkspace[workspaceID],
 			},
 		)
 	}
@@ -87,7 +87,7 @@ func GetProxySnapshotEntries(userID uint, metric string, limit int) []dto.ProxyS
 
 	rows := make([]domain.ProxySnapshot, 0, limit)
 
-	DB.Where("user_id = ? AND metric = ?", userID, metric).
+	DB.Where("workspace_id = ? AND metric = ?", userID, metric).
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&rows)
@@ -118,86 +118,86 @@ func normalizeProxySnapshotLimit(limit int) int {
 	return limit
 }
 
-func aliveProxyCountByUser(tx *gorm.DB, userIDs []uint) (map[uint]int64, error) {
+func aliveProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]int64, error) {
 	var rows []struct {
-		UserID     uint
-		AliveCount int64
+		WorkspaceID uint
+		AliveCount  int64
 	}
 
 	if err := tx.Table("user_proxies AS up").
-		Select("up.user_id AS user_id, COUNT(DISTINCT up.proxy_id) AS alive_count").
+		Select("up.workspace_id AS workspace_id, COUNT(DISTINCT up.proxy_id) AS alive_count").
 		Joins("JOIN proxy_overall_statuses pos ON pos.proxy_id = up.proxy_id").
-		Where("up.user_id IN ?", userIDs).
+		Where("up.workspace_id IN ? AND up.state = ?", workspaceIDs, domain.ManagedProxyStateActive).
 		Where("pos.overall_alive = ?", true).
-		Group("up.user_id").
+		Group("up.workspace_id").
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("proxy snapshot: aggregate alive counts: %w", err)
 	}
 
-	counts := make(map[uint]int64, len(userIDs))
-	for _, userID := range userIDs {
-		counts[userID] = 0
+	counts := make(map[uint]int64, len(workspaceIDs))
+	for _, workspaceID := range workspaceIDs {
+		counts[workspaceID] = 0
 	}
 
 	for _, row := range rows {
-		counts[row.UserID] = row.AliveCount
+		counts[row.WorkspaceID] = row.AliveCount
 	}
 
 	return counts, nil
 }
 
-func scrapedProxyCountByUser(tx *gorm.DB, userIDs []uint) (map[uint]int64, error) {
+func scrapedProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]int64, error) {
 	var rows []struct {
-		UserID       uint
+		WorkspaceID  uint
 		ScrapedCount int64
 	}
 
 	if err := tx.Table("user_proxies AS up").
-		Select("up.user_id AS user_id, COUNT(*) AS scraped_count").
-		Where("up.user_id IN ?", userIDs).
+		Select("up.workspace_id AS workspace_id, COUNT(*) AS scraped_count").
+		Where("up.workspace_id IN ? AND up.state = ?", workspaceIDs, domain.ManagedProxyStateActive).
 		Where("EXISTS (SELECT 1 FROM proxy_scrape_site ps WHERE ps.proxy_id = up.proxy_id)").
-		Group("up.user_id").
+		Group("up.workspace_id").
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("proxy snapshot: aggregate scraped counts: %w", err)
 	}
 
-	counts := make(map[uint]int64, len(userIDs))
-	for _, userID := range userIDs {
-		counts[userID] = 0
+	counts := make(map[uint]int64, len(workspaceIDs))
+	for _, workspaceID := range workspaceIDs {
+		counts[workspaceID] = 0
 	}
 
 	for _, row := range rows {
-		counts[row.UserID] = row.ScrapedCount
+		counts[row.WorkspaceID] = row.ScrapedCount
 	}
 
 	return counts, nil
 }
 
 // GetCurrentAliveProxyCount returns the latest alive proxy count for a user based on proxy statistics.
-func GetCurrentAliveProxyCount(userID uint) int64 {
+func GetCurrentAliveProxyCount(workspaceID uint) int64 {
 	if DB == nil {
 		return 0
 	}
 
-	counts, err := aliveProxyCountByUser(DB, []uint{userID})
+	counts, err := aliveProxyCountByWorkspace(DB, []uint{workspaceID})
 	if err != nil {
 		return 0
 	}
 
-	return counts[userID]
+	return counts[workspaceID]
 }
 
-func GetCurrentScrapedProxyCount(userID uint) int64 {
+func GetCurrentScrapedProxyCount(workspaceID uint) int64 {
 	if DB == nil {
 		return 0
 	}
 
-	counts, err := scrapedProxyCountByUser(DB, []uint{userID})
+	counts, err := scrapedProxyCountByWorkspace(DB, []uint{workspaceID})
 	if err != nil {
 		return 0
 	}
 
-	return counts[userID]
+	return counts[workspaceID]
 }
 
 type proxySnapshotCountSummary struct {
@@ -213,7 +213,7 @@ func getProxySnapshotCountSummary(userID uint, metric string, since time.Time) p
 
 	var latest domain.ProxySnapshot
 	latestResult := DB.
-		Where("user_id = ? AND metric = ?", userID, metric).
+		Where("workspace_id = ? AND metric = ?", userID, metric).
 		Order("created_at DESC, id DESC").
 		Limit(1).
 		Find(&latest)
@@ -223,7 +223,7 @@ func getProxySnapshotCountSummary(userID uint, metric string, since time.Time) p
 
 	var baseline domain.ProxySnapshot
 	baselineResult := DB.
-		Where("user_id = ? AND metric = ? AND created_at >= ?", userID, metric, since).
+		Where("workspace_id = ? AND metric = ? AND created_at >= ?", userID, metric, since).
 		Order("created_at ASC, id ASC").
 		Limit(1).
 		Find(&baseline)

@@ -13,14 +13,14 @@ import (
 
 var addDefaultJudgeMutex sync.Mutex
 
-// AddDefaultJudgesToUsers gets empty judges list of users and adds the default judges (from config) to the db
-// this is the ugliest function I have ever written. I really need to make this better
+// AddDefaultJudgesToUsers keeps its exported name for compatibility. Judges are
+// assigned to workspaces, not accounts.
 func AddDefaultJudgesToUsers() {
 	addDefaultJudgeMutex.Lock()
 	defer addDefaultJudgeMutex.Unlock()
 
 	cfg := config.GetConfig()
-	users := database.GetUsersThatDontHaveJudges()
+	workspaces := database.GetWorkspacesThatDontHaveJudges()
 
 	judgesWithRegex := make([]*domain.JudgeWithRegex, 0, len(cfg.Checker.Judges))
 	judgeList := make([]*domain.Judge, 0, len(cfg.Checker.Judges))
@@ -72,7 +72,7 @@ func AddDefaultJudgesToUsers() {
 		}
 	}
 
-	err := database.AddUserJudgesRelation(users, judgesWithRegex)
+	err := database.AddWorkspaceJudgesRelation(workspaces, judgesWithRegex)
 	if err != nil {
 		log.Error("Error adding user judgeList to database", "error", err)
 	} else {
@@ -81,21 +81,21 @@ func AddDefaultJudgesToUsers() {
 			judgesNonPointer[i] = *j
 		}
 
-		judges.AddJudgesToUsers(support.GetUserIdsFromList(users), judgesNonPointer)
+		judges.AddJudgesToUsers(support.GetWorkspaceIDsFromList(workspaces), judgesNonPointer)
 	}
 }
 
 func addJudgeRelationsToCache() {
-	userJudges, jwr := database.GetAllUserJudgeRelations()
+	workspaceJudges, jwr := database.GetAllWorkspaceJudgeRelations()
 
-	for _, userJudge := range userJudges {
+	for _, workspaceJudge := range workspaceJudges {
 		for _, judge := range jwr {
-			if userJudge.JudgeID == judge.Judge.ID {
+			if workspaceJudge.JudgeID == judge.Judge.ID {
 				if config.IsWebsiteBlocked(judge.Judge.FullString) {
-					log.Info("Skipping cached judge because website is blocked", "url", judge.Judge.FullString, "user_id", userJudge.UserID)
+					log.Info("Skipping cached judge because website is blocked", "url", judge.Judge.FullString, "workspace_id", workspaceJudge.WorkspaceID)
 					continue
 				}
-				judges.AddUserJudge(userJudge.UserID, judge.Judge, judge.Regex)
+				judges.AddUserJudge(workspaceJudge.WorkspaceID, judge.Judge, judge.Regex)
 			}
 		}
 	}
