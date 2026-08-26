@@ -51,15 +51,46 @@ type WorkspaceMember struct {
 	JoinedAt     time.Time `json:"joined_at"`
 }
 
-type WorkspaceMemberCreateRequest struct {
+type WorkspaceMemberUpdateRequest struct {
+	Role         string `json:"role"`
+	BillingAdmin bool   `json:"billing_admin"`
+}
+
+type WorkspaceInvitation struct {
+	ID                 uint      `json:"id"`
+	WorkspaceID        uint      `json:"workspace_id"`
+	WorkspaceName      string    `json:"workspace_name"`
+	InviteeUserID      uint      `json:"invitee_user_id"`
+	InviteeEmail       string    `json:"invitee_email"`
+	InviterUserID      *uint     `json:"inviter_user_id,omitempty"`
+	InviterEmail       string    `json:"inviter_email"`
+	Role               string    `json:"role"`
+	BillingAdmin       bool      `json:"billing_admin"`
+	NotificationStatus string    `json:"notification_status"`
+	ExpiresAt          time.Time `json:"expires_at"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type WorkspaceInvitationCreateRequest struct {
 	Email        string `json:"email"`
 	Role         string `json:"role"`
 	BillingAdmin bool   `json:"billing_admin"`
 }
 
-type WorkspaceMemberUpdateRequest struct {
+type WorkspaceInvitationUpdateRequest struct {
 	Role         string `json:"role"`
 	BillingAdmin bool   `json:"billing_admin"`
+}
+
+type WorkspaceInvitationResponse struct {
+	Invitation WorkspaceInvitation `json:"invitation"`
+	Warning    string              `json:"warning,omitempty"`
+}
+
+type WorkspaceInvitationAcceptance struct {
+	WorkspaceID   uint   `json:"workspace_id"`
+	WorkspaceName string `json:"workspace_name"`
 }
 
 type ManagedProxyLifecycleRequest struct {

@@ -191,6 +191,7 @@ func Setup(ctx context.Context) error {
 	go jobruntime.StartProxyGeoRefreshRoutine(ctx)
 	go maintenance.StartOrphanCleanupRoutine(ctx)
 	go maintenance.StartPasswordResetCleanupRoutine(ctx)
+	go maintenance.StartWorkspaceInvitationCleanupRoutine(ctx)
 	go jobruntime.StartGeoLiteUpdateRoutine(ctx)
 	go jobruntime.StartAbuseIPDBRoutine(ctx)
 	go jobruntime.StartEmailDeliveryRoutine(ctx)

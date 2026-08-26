@@ -22,6 +22,10 @@ const (
 	WorkspaceOverageDisabled  = "disabled"
 	WorkspaceOverageAllowed   = "allowed"
 	WorkspaceOverageUnlimited = "unlimited"
+
+	WorkspaceInvitationNotificationNotConfigured = "not_configured"
+	WorkspaceInvitationNotificationQueued        = "queued"
+	WorkspaceInvitationNotificationFailed        = "failed"
 )
 
 var (
@@ -106,6 +110,43 @@ type WorkspaceMembership struct {
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime"`
+}
+
+// WorkspaceInvitation is a pending, account-bound offer of membership. Rows
+// exist only while the invitation can still be accepted.
+type WorkspaceInvitation struct {
+	ID            uint   `gorm:"primaryKey;autoIncrement"`
+	WorkspaceID   uint   `gorm:"not null;index;uniqueIndex:idx_workspace_invitation_pending,priority:1"`
+	InviteeUserID uint   `gorm:"not null;index;uniqueIndex:idx_workspace_invitation_pending,priority:2"`
+	InviterUserID *uint  `gorm:"index"`
+	InviterEmail  string `gorm:"not null;size:255"`
+	Role          string `gorm:"not null;size:16;check:workspace_invitation_role,role IN ('admin','operator','viewer')"`
+	BillingAdmin  bool   `gorm:"not null;default:false"`
+	Notification  string `gorm:"not null;size:24;default:'not_configured';check:workspace_invitation_notification,notification IN ('not_configured','queued','failed')"`
+
+	Workspace Workspace `gorm:"constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	Invitee   User      `gorm:"foreignKey:InviteeUserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	Inviter   *User     `gorm:"foreignKey:InviterUserID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"-"`
+
+	ExpiresAt time.Time `gorm:"not null;index"`
+	CreatedAt time.Time `gorm:"autoCreateTime"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime"`
+}
+
+func (invitation *WorkspaceInvitation) Normalize() error {
+	invitation.Role = strings.ToLower(strings.TrimSpace(invitation.Role))
+	if invitation.Role != WorkspaceRoleAdmin && invitation.Role != WorkspaceRoleOperator && invitation.Role != WorkspaceRoleViewer {
+		return ErrInvalidWorkspaceRole
+	}
+	invitation.InviterEmail = strings.ToLower(strings.TrimSpace(invitation.InviterEmail))
+	switch invitation.Notification {
+	case "":
+		invitation.Notification = WorkspaceInvitationNotificationNotConfigured
+	case WorkspaceInvitationNotificationNotConfigured, WorkspaceInvitationNotificationQueued, WorkspaceInvitationNotificationFailed:
+	default:
+		invitation.Notification = WorkspaceInvitationNotificationNotConfigured
+	}
+	return nil
 }
 
 func (membership *WorkspaceMembership) Normalize() error {

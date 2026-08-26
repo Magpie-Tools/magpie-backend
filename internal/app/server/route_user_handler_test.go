@@ -878,6 +878,7 @@ func setupUserRegistrationTestDB(t *testing.T) {
 			domain.WorkspaceMembership{},
 			domain.WorkspaceMemberPreference{},
 			domain.WorkspaceSubscription{},
+			domain.WorkspaceInvitation{},
 		}
 		cfg.SeedDefaults = false
 	}); err != nil {

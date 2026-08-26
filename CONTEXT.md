@@ -16,6 +16,10 @@ _Avoid_: Account, organization, team
 A user account's access to one workspace, including its role and billing-administrator status. Removing a membership changes access only.
 _Avoid_: Proxy access, seat ownership
 
+**Workspace invitation**:
+A workspace-owned, time-limited offer for an existing user account to become a workspace member with a specified role and billing-administrator status. It grants no workspace access before acceptance and remains manageable when its inviter leaves.
+_Avoid_: Workspace membership, immediate member addition
+
 **Workspace role**:
 A membership's permission level inside one workspace. Workspace roles are owner, admin, operator, and viewer.
 _Avoid_: User role, global role

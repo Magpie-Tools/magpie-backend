@@ -192,6 +192,7 @@ func defaultMigrations() []any {
 		domain.User{},
 		domain.Workspace{},
 		domain.WorkspaceMembership{},
+		domain.WorkspaceInvitation{},
 		domain.WorkspaceMemberPreference{},
 		domain.WorkspaceSubscription{},
 		domain.WorkspaceUsagePeriod{},

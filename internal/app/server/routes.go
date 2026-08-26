@@ -92,9 +92,15 @@ func OpenRoutes(ctx context.Context, port int) error {
 	apiMux.Handle("PATCH /workspaces/{id}", auth.RequireAuth(http.HandlerFunc(updateWorkspace)))
 	apiMux.Handle("POST /workspaces/{id}/select", auth.RequireAuth(http.HandlerFunc(selectWorkspace)))
 	apiMux.Handle("GET /workspaces/{id}/members", auth.RequireAuth(http.HandlerFunc(listWorkspaceMembers)))
-	apiMux.Handle("POST /workspaces/{id}/members", auth.RequireAuth(http.HandlerFunc(addWorkspaceMember)))
 	apiMux.Handle("PATCH /workspaces/{id}/members/{userId}", auth.RequireAuth(http.HandlerFunc(updateWorkspaceMember)))
 	apiMux.Handle("DELETE /workspaces/{id}/members/{userId}", auth.RequireAuth(http.HandlerFunc(removeWorkspaceMember)))
+	apiMux.Handle("GET /workspaces/{id}/invitations", auth.RequireAuth(http.HandlerFunc(listWorkspaceInvitations)))
+	apiMux.Handle("POST /workspaces/{id}/invitations", auth.RequireAuth(http.HandlerFunc(createWorkspaceInvitation)))
+	apiMux.Handle("PATCH /workspaces/{id}/invitations/{invitationId}", auth.RequireAuth(http.HandlerFunc(updateWorkspaceInvitation)))
+	apiMux.Handle("DELETE /workspaces/{id}/invitations/{invitationId}", auth.RequireAuth(http.HandlerFunc(revokeWorkspaceInvitation)))
+	apiMux.Handle("GET /invitations", auth.RequireAuth(http.HandlerFunc(listUserWorkspaceInvitations)))
+	apiMux.Handle("POST /invitations/{invitationId}/accept", auth.RequireAuth(http.HandlerFunc(acceptWorkspaceInvitation)))
+	apiMux.Handle("POST /invitations/{invitationId}/decline", auth.RequireAuth(http.HandlerFunc(declineWorkspaceInvitation)))
 
 	apiMux.Handle("GET /getDashboardInfo", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getDashboardInfo))))
 

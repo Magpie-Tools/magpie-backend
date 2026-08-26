@@ -111,32 +111,6 @@ func listWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"members": members})
 }
 
-func addWorkspaceMember(w http.ResponseWriter, r *http.Request) {
-	workspaceID, access, ok := requirePathWorkspaceAccess(w, r, domain.WorkspaceRoleAdmin)
-	if !ok {
-		return
-	}
-	var payload dto.WorkspaceMemberCreateRequest
-	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
-		return
-	}
-	payload.Role = strings.ToLower(strings.TrimSpace(payload.Role))
-	if (payload.BillingAdmin || payload.Role == domain.WorkspaceRoleOwner) && !access.IsOwner() {
-		writeError(w, "Only a workspace owner can grant ownership or billing access", http.StatusForbidden)
-		return
-	}
-	member, err := database.AddWorkspaceMember(workspaceID, payload.Email, payload.Role, payload.BillingAdmin)
-	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, database.ErrWorkspaceMemberExists) {
-			status = http.StatusConflict
-		}
-		writeError(w, err.Error(), status)
-		return
-	}
-	writeJSON(w, http.StatusCreated, member)
-}
-
 func updateWorkspaceMember(w http.ResponseWriter, r *http.Request) {
 	workspaceID, access, ok := requirePathWorkspaceAccess(w, r, domain.WorkspaceRoleAdmin)
 	if !ok {
@@ -156,8 +130,13 @@ func updateWorkspaceMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Workspace member not found", http.StatusNotFound)
 		return
 	}
-	if !access.IsOwner() && (existing.IsOwner() || payload.Role == domain.WorkspaceRoleOwner || existing.BillingAdmin != payload.BillingAdmin) {
-		writeError(w, "Only a workspace owner can change ownership or billing access", http.StatusForbidden)
+	if !access.IsOwner() && (existing.Role == domain.WorkspaceRoleOwner ||
+		existing.Role == domain.WorkspaceRoleAdmin ||
+		payload.Role == domain.WorkspaceRoleOwner ||
+		payload.Role == domain.WorkspaceRoleAdmin ||
+		existing.BillingAdmin ||
+		payload.BillingAdmin) {
+		writeError(w, "Only a workspace owner can manage owners, administrators, or billing access", http.StatusForbidden)
 		return
 	}
 	if err := database.UpdateWorkspaceMember(workspaceID, memberUserID, payload.Role, payload.BillingAdmin); err != nil {
@@ -185,8 +164,8 @@ func removeWorkspaceMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Workspace member not found", http.StatusNotFound)
 		return
 	}
-	if existing.IsOwner() && !access.IsOwner() {
-		writeError(w, "Only a workspace owner can remove another owner", http.StatusForbidden)
+	if !access.IsOwner() && (existing.Role == domain.WorkspaceRoleOwner || existing.Role == domain.WorkspaceRoleAdmin || existing.BillingAdmin) {
+		writeError(w, "Only a workspace owner can remove owners, administrators, or billing administrators", http.StatusForbidden)
 		return
 	}
 	if err := database.RemoveWorkspaceMember(workspaceID, memberUserID); err != nil {
