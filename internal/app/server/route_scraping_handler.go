@@ -51,7 +51,13 @@ func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
 
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	filters := parseScrapeSourceListFilters(r)
-	scrapeSiteInfoPages := database.GetScrapeSiteInfoPageWithSearchAndFilters(userID, page, search, filters)
+	pageSize := 0
+	if rawPageSize := strings.TrimSpace(r.URL.Query().Get("pageSize")); rawPageSize != "" {
+		if parsed, parseErr := strconv.Atoi(rawPageSize); parseErr == nil && parsed > 0 {
+			pageSize = parsed
+		}
+	}
+	scrapeSiteInfoPages := database.GetScrapeSiteInfoPageWithOptions(userID, page, pageSize, search, filters)
 
 	json.NewEncoder(w).Encode(scrapeSiteInfoPages)
 }

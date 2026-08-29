@@ -20,7 +20,10 @@ import (
 	"magpie/internal/domain"
 )
 
-const scrapeSitesPerPage = 20
+const (
+	scrapeSitesPerPage    = 40
+	maxScrapeSitesPerPage = 100
+)
 
 var ErrNoScrapeSourcesSelected = errors.New("no scraping sources selected for deletion")
 
@@ -213,7 +216,12 @@ func GetScrapeSiteInfoPageWithSearch(userId uint, page int, search string) []dto
 }
 
 func GetScrapeSiteInfoPageWithSearchAndFilters(userId uint, page int, search string, filters dto.ScrapeSourceListFilters) []dto.ScrapeSiteInfo {
-	offset := (page - 1) * scrapeSitesPerPage
+	return GetScrapeSiteInfoPageWithOptions(userId, page, scrapeSitesPerPage, search, filters)
+}
+
+func GetScrapeSiteInfoPageWithOptions(userId uint, page int, pageSize int, search string, filters dto.ScrapeSourceListFilters) []dto.ScrapeSiteInfo {
+	page, pageSize = normalizeScrapeSitePage(page, pageSize)
+	offset := (page - 1) * pageSize
 
 	var results []dto.ScrapeSiteInfo
 
@@ -232,10 +240,20 @@ func GetScrapeSiteInfoPageWithSearchAndFilters(userId uint, page int, search str
 
 	query.Order("usss.added_at DESC").
 		Offset(offset).
-		Limit(scrapeSitesPerPage).
+		Limit(pageSize).
 		Scan(&results)
 
 	return results
+}
+
+func normalizeScrapeSitePage(page int, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > maxScrapeSitesPerPage {
+		pageSize = scrapeSitesPerPage
+	}
+	return page, pageSize
 }
 
 func GetScrapeSiteInfoForExport(userId uint, settings dto.ScrapeSourceExportSettings) ([]dto.ScrapeSiteInfo, error) {
