@@ -538,6 +538,8 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 	query := DB.Table("user_proxy_filter_indexes ufi").
 		Select(
 			"ufi.proxy_id AS id, "+
+				"ufi.state AS state, "+
+				"ufi.pause_reason AS pause_reason, "+
 				"ufi.host AS ip_address, "+
 				"ufi.port AS port, "+
 				"ufi.estimated_type AS estimated_type, "+
