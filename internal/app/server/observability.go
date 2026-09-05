@@ -68,6 +68,9 @@ func withPanicRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					panic(recovered)
+				}
 				log.Error("Recovered panic in HTTP handler",
 					"request_id", requestIDFromRequest(r),
 					"method", r.Method,
@@ -202,10 +205,20 @@ func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
 	return n, err
 }
 
-func (r *statusRecorder) Flush() {
-	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
+// Unwrap allows ResponseController to reach connection deadline methods.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+func (r *statusRecorder) FlushError() error {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
 	}
+	return http.NewResponseController(r.ResponseWriter).Flush()
+}
+
+func (r *statusRecorder) Flush() {
+	_ = r.FlushError()
 }
 
 func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {

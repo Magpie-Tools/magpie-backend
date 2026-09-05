@@ -69,17 +69,17 @@ func TestHandleExportProxiesStreamError_SanitizesClientMessage(t *testing.T) {
 	}
 }
 
-func TestHandleExportProxiesStreamError_DoesNotWriteAfterStreamingBegan(t *testing.T) {
+func TestHandleExportProxiesStreamError_AbortsAfterStreamingBegan(t *testing.T) {
 	recorder := httptest.NewRecorder()
-
+	defer func() {
+		if got := recover(); got != http.ErrAbortHandler {
+			t.Fatalf("panic = %v, want ErrAbortHandler", got)
+		}
+		if recorder.Body.Len() != 0 {
+			t.Fatalf("error appended to export: %q", recorder.Body.String())
+		}
+	}()
 	handleExportProxiesStreamError(recorder, errors.New("db stream aborted"), true)
-
-	if recorder.Body.Len() != 0 {
-		t.Fatalf("expected no body write after streaming started, got %q", recorder.Body.String())
-	}
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-	}
 }
 
 func TestRequeueProxy_ReturnsQueuedProxy(t *testing.T) {

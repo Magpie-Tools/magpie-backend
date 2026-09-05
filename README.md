@@ -43,6 +43,19 @@ cost is acceptable.
 
 ## Validation
 
+Proxy export regression tests cover batching, request cancellation, response
+deadlines, and interrupted transfers. To also exercise the frontend nginx
+template on Linux with Docker and the frontend repository cloned alongside this
+one, run:
+
+```bash
+MAGPIE_EXPORT_NGINX_IMAGE=nginx:alpine go test ./internal/app/server -run TestProxyExportThroughNginx -count=1 -v
+```
+
+This starts an isolated nginx container and a test backend, waits 31 seconds
+before sending an export batch, and checks timeout errors and client
+disconnects. It removes the test container afterward.
+
 ```bash
 go test ./...
 go test -race ./...

@@ -2490,7 +2490,7 @@ func DeleteProxiesWithSettings(userID uint, settings dto.DeleteSettings) (int64,
 	return DeleteProxyRelation(userID, intIDs)
 }
 
-func StreamProxiesForExport(userID uint, settings dto.ExportSettings, batchSize int, consume func(domain.Proxy) error) error {
+func StreamProxiesForExport(ctx context.Context, userID uint, settings dto.ExportSettings, batchSize int, consume func([]domain.Proxy) error) error {
 	if DB == nil {
 		return fmt.Errorf("database connection was not initialised")
 	}
@@ -2501,7 +2501,7 @@ func StreamProxiesForExport(userID uint, settings dto.ExportSettings, batchSize 
 		batchSize = proxyExportBatchSize
 	}
 
-	tx := DB.Begin(&sql.TxOptions{
+	tx := DB.WithContext(ctx).Begin(&sql.TxOptions{
 		ReadOnly:  true,
 		Isolation: sql.LevelRepeatableRead,
 	})
@@ -2509,7 +2509,7 @@ func StreamProxiesForExport(userID uint, settings dto.ExportSettings, batchSize 
 		return tx.Error
 	}
 	defer func() {
-		if err := tx.Rollback().Error; err != nil && !errors.Is(err, gorm.ErrInvalidTransaction) {
+		if err := tx.Rollback().Error; err != nil && !errors.Is(err, gorm.ErrInvalidTransaction) && !errors.Is(err, sql.ErrTxDone) {
 			log.Error("failed to rollback export transaction", "error", err)
 		}
 	}()
@@ -2532,8 +2532,11 @@ func StreamProxiesForExport(userID uint, settings dto.ExportSettings, batchSize 
 
 	var lastID uint64
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		var ids []uint64
-		query := idQuery
+		query := idQuery.Session(&gorm.Session{})
 		if lastID > 0 {
 			query = query.Where("proxies.id > ?", lastID)
 		}
@@ -2550,10 +2553,11 @@ func StreamProxiesForExport(userID uint, settings dto.ExportSettings, batchSize 
 		}
 
 		filtered := filterProxiesForExport(proxies, settings)
-		for _, proxy := range filtered {
-			if err := consume(proxy); err != nil {
-				return err
-			}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := consume(filtered); err != nil {
+			return err
 		}
 
 		lastID = ids[len(ids)-1]

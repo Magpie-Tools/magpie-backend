@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -692,35 +693,71 @@ func exportProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain")
-	w.Header().Set("Content-Disposition", "attachment; filename=proxies.txt")
-	writer := bufio.NewWriterSize(w, 256*1024)
-	wroteBytes := false
-
-	err := database.StreamProxiesForExport(userID, settings, proxyExportBatchSize, func(proxy domain.Proxy) error {
-		line := support.FormatProxy(proxy, settings.OutputFormat)
-		if _, err := writer.WriteString(line); err != nil {
-			return err
-		}
-		if err := writer.WriteByte('\n'); err != nil {
-			return err
-		}
-		wroteBytes = true
-		return nil
+	timeout := time.Duration(resolvePositiveEnvInt("PROXY_EXPORT_TIMEOUT_SECONDS", 300)) * time.Second
+	writeProxyExport(w, r, timeout, settings.OutputFormat, func(ctx context.Context, consume func([]domain.Proxy) error) error {
+		return database.StreamProxiesForExport(ctx, userID, settings, proxyExportBatchSize, consume)
 	})
-	if err != nil {
-		handleExportProxiesStreamError(w, err, wroteBytes)
+}
+
+// The context bounds database work; the additional write grace allows a timeout
+// error to reach the client when no export bytes have been sent yet.
+func writeProxyExport(w http.ResponseWriter, r *http.Request, timeout time.Duration, outputFormat string, stream func(context.Context, func([]domain.Proxy) error) error) {
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	response := newStatusRecorder(w)
+	controller := http.NewResponseController(response)
+	if err := controller.SetWriteDeadline(deadline.Add(5 * time.Second)); err != nil {
+		handleExportProxiesStreamError(response, err, false)
 		return
 	}
 
+	response.Header().Set("Content-Type", "text/plain")
+	response.Header().Set("Content-Disposition", "attachment; filename=proxies.txt")
+	response.Header().Set("X-Accel-Buffering", "no")
+	writer := bufio.NewWriterSize(response, 256*1024)
+	err := stream(ctx, func(proxies []domain.Proxy) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if len(proxies) == 0 {
+			return nil
+		}
+		for _, proxy := range proxies {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if _, err := writer.WriteString(support.FormatProxy(proxy, outputFormat) + "\n"); err != nil {
+				return err
+			}
+		}
+		if err := writer.Flush(); err != nil {
+			return err
+		}
+		return controller.Flush()
+	})
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		handleExportProxiesStreamError(response, err, response.HeaderWritten())
+		return
+	}
 	if err := writer.Flush(); err != nil {
-		log.Warn("export proxies flush failed", "error", err)
+		handleExportProxiesStreamError(response, err, response.HeaderWritten())
 	}
 }
 
 func handleExportProxiesStreamError(w http.ResponseWriter, err error, wroteBytes bool) {
 	log.Error("export proxies stream failed", "error", err)
 	if wroteBytes {
+		// A normal return would terminate the chunked response successfully and
+		// let the browser save a partial file. Preserve an interrupted transfer.
+		panic(http.ErrAbortHandler)
+	}
+	w.Header().Del("Content-Disposition")
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeError(w, "Export timed out. Try exporting a smaller selection.", http.StatusGatewayTimeout)
 		return
 	}
 	writeError(w, "Could not export proxies", http.StatusInternalServerError)
