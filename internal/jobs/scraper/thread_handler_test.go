@@ -40,57 +40,6 @@ func TestResolvePostProcessQueueSize_DefaultAndClamp(t *testing.T) {
 	}
 }
 
-func TestResolveScraperPagePoolCaps_DefaultAndClamp(t *testing.T) {
-	t.Setenv(envScraperPagePoolMin, "")
-	t.Setenv(envScraperPagePoolMax, "")
-	minPages, maxPages := resolveScraperPagePoolCaps()
-	if minPages != defaultScraperPagePoolMin || maxPages != defaultScraperPagePoolMax {
-		t.Fatalf("caps = (%d,%d), want (%d,%d)", minPages, maxPages, defaultScraperPagePoolMin, defaultScraperPagePoolMax)
-	}
-
-	t.Setenv(envScraperPagePoolMin, "0")
-	t.Setenv(envScraperPagePoolMax, "5000")
-	minPages, maxPages = resolveScraperPagePoolCaps()
-	if minPages != 1 || maxPages != maxScraperPages {
-		t.Fatalf("caps = (%d,%d), want (1,%d)", minPages, maxPages, maxScraperPages)
-	}
-
-	t.Setenv(envScraperPagePoolMin, "200")
-	t.Setenv(envScraperPagePoolMax, "50")
-	minPages, maxPages = resolveScraperPagePoolCaps()
-	if minPages != 50 || maxPages != 50 {
-		t.Fatalf("caps = (%d,%d), want (50,50)", minPages, maxPages)
-	}
-}
-
-func TestCalculateRequiredPages_PerInstanceAndCap(t *testing.T) {
-	required := calculateRequiredPages(
-		2000, // total sites
-		4,    // replicas
-		1000, // timeout ms
-		0,    // retries
-		1000, // interval ms
-		1,
-		maxScraperPages,
-	)
-	if required != 500 {
-		t.Fatalf("required pages = %d, want 500", required)
-	}
-
-	capped := calculateRequiredPages(
-		2000,
-		4,
-		1000,
-		0,
-		1000,
-		1,
-		100,
-	)
-	if capped != 100 {
-		t.Fatalf("capped pages = %d, want 100", capped)
-	}
-}
-
 func TestShouldEmitScrapePopErrorLog_RateLimitAndSuppressedCount(t *testing.T) {
 	resetScrapePopErrorLogStateForTest()
 	t.Cleanup(resetScrapePopErrorLogStateForTest)
@@ -182,60 +131,5 @@ func TestRequestScraperWorkerStop_SucceedsWithListener(t *testing.T) {
 	case <-stopped:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("expected stop signal to be delivered")
-	}
-}
-
-func TestRequestScraperPageStop_DoesNotBlockWithoutListener(t *testing.T) {
-	originalStopPage := stopPage
-	stopPage = make(chan struct{})
-	t.Cleanup(func() {
-		stopPage = originalStopPage
-	})
-
-	done := make(chan bool, 1)
-	go func() {
-		done <- requestScraperPageStop()
-	}()
-
-	select {
-	case ok := <-done:
-		if ok {
-			t.Fatal("requestScraperPageStop should return false when no page worker is listening")
-		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("requestScraperPageStop blocked without listener")
-	}
-}
-
-func TestRequestScraperPageStop_SucceedsWithListener(t *testing.T) {
-	originalStopPage := stopPage
-	stopPage = make(chan struct{})
-	t.Cleanup(func() {
-		stopPage = originalStopPage
-	})
-
-	stopped := make(chan struct{})
-	go func() {
-		<-stopPage
-		close(stopped)
-	}()
-
-	deadline := time.Now().Add(100 * time.Millisecond)
-	delivered := false
-	for time.Now().Before(deadline) {
-		if requestScraperPageStop() {
-			delivered = true
-			break
-		}
-		runtime.Gosched()
-	}
-	if !delivered {
-		t.Fatal("requestScraperPageStop should return true when a page worker listener is available")
-	}
-
-	select {
-	case <-stopped:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("expected page stop signal to be delivered")
 	}
 }

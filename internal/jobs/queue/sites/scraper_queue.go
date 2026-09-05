@@ -249,14 +249,11 @@ func (rssq *RedisScrapeSiteQueue) AddToQueue(sites []domain.ScrapeSite) error {
 	ctx := rssq.baseContext()
 
 	pipe := client.Pipeline()
-	interval := config.GetTimeBetweenScrapes()
 	now := time.Now()
-	sitesLenDuration := time.Duration(len(filtered))
 	batchSize := 50
 
 	for i, site := range filtered {
-		offset := (interval * time.Duration(i)) / sitesLenDuration
-		nextCheck := now.Add(offset)
+		nextCheck := now
 		siteKey := scrapesiteKeyPrefix + site.URL
 		queueKey := rssq.queueKeyForMember(site.URL)
 
@@ -542,13 +539,22 @@ func coerceLuaInt64(value interface{}) (int64, error) {
 }
 
 func (rssq *RedisScrapeSiteQueue) RequeueScrapeSite(site domain.ScrapeSite, lastCheckTime time.Time) error {
+	return rssq.requeueScrapeSite(site, lastCheckTime, rssq.getEffectiveScrapeInterval())
+}
+
+// Retry transient failures promptly, without delaying sources whose configured
+// scrape interval is already shorter than the retry delay.
+func (rssq *RedisScrapeSiteQueue) RetryScrapeSite(site domain.ScrapeSite, delay time.Duration) error {
+	return rssq.requeueScrapeSite(site, time.Now(), min(delay, rssq.getEffectiveScrapeInterval()))
+}
+
+func (rssq *RedisScrapeSiteQueue) requeueScrapeSite(site domain.ScrapeSite, lastCheckTime time.Time, interval time.Duration) error {
 	client, err := rssq.clientOrErr()
 	if err != nil {
 		return err
 	}
 	ctx := rssq.baseContext()
 
-	interval := rssq.getEffectiveScrapeInterval()
 	base := lastCheckTime
 	if now := time.Now(); now.After(base) {
 		base = now

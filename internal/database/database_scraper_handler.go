@@ -44,6 +44,13 @@ func GetScrapingSourcesOfUsers(userID uint) []string {
 
 // SaveScrapingSourcesOfUsers appends new sources to the user without removing existing ones.
 func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeSite, error) {
+	return SaveScrapingSourcesWithMode(userID, sources, domain.ScrapeFetchHTTP)
+}
+
+func SaveScrapingSourcesWithMode(userID uint, sources []string, mode string) ([]domain.ScrapeSite, error) {
+	if !domain.ValidScrapeFetchMode(mode) {
+		return nil, fmt.Errorf("invalid fetch mode")
+	}
 	var sites []domain.ScrapeSite
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		sites = make([]domain.ScrapeSite, 0, len(sources))
@@ -91,9 +98,11 @@ func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeS
 
 		// Append only new associations
 		if len(sites) > 0 {
-			if err := tx.Model(&user).
-				Association("ScrapeSites").
-				Append(&sites); err != nil {
+			associations := make([]domain.WorkspaceScrapeSite, 0, len(sites))
+			for _, site := range sites {
+				associations = append(associations, domain.WorkspaceScrapeSite{WorkspaceID: userID, ScrapeSiteID: site.ID, FetchMode: mode})
+			}
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&associations, 500).Error; err != nil {
 				return err
 			}
 
@@ -232,7 +241,7 @@ func GetScrapeSiteInfoPageWithOptions(userId uint, page int, pageSize int, searc
 			"usss.alive_count AS alive_count, " +
 			"usss.dead_count AS dead_count, " +
 			"usss.unknown_count AS unknown_count, " +
-			"usss.added_at AS added_at",
+			"usss.added_at AS added_at, uss.fetch_mode, uss.last_scraped_at, uss.last_scrape_status, uss.last_scrape_error, uss.last_scrape_proxy_count",
 	)
 
 	query = applyScrapeSiteSearch(query, search)
@@ -266,7 +275,7 @@ func GetScrapeSiteInfoForExport(userId uint, settings dto.ScrapeSourceExportSett
 			"usss.alive_count AS alive_count, " +
 			"usss.dead_count AS dead_count, " +
 			"usss.unknown_count AS unknown_count, " +
-			"usss.added_at AS added_at",
+			"usss.added_at AS added_at, uss.fetch_mode, uss.last_scraped_at, uss.last_scrape_status, uss.last_scrape_error, uss.last_scrape_proxy_count",
 	)
 
 	if len(settings.ScrapeSources) > 0 {
@@ -390,6 +399,7 @@ func exportCountOperator(operator string, legacyMode string) string {
 
 func buildScrapeSiteInfoQuery(userId uint) *gorm.DB {
 	return DB.Table("user_scrape_source_stats usss").
+		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = usss.scrape_site_id AND uss.workspace_id = usss.workspace_id").
 		Where("usss.workspace_id = ?", userId)
 }
 
@@ -409,6 +419,12 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 	}
 
 	type scrapeSiteBaseRow struct {
+		FetchMode            string     `gorm:"column:fetch_mode"`
+		LastScrapedAt        *time.Time `gorm:"column:last_scraped_at"`
+		LastScrapeStatus     string     `gorm:"column:last_scrape_status"`
+		LastScrapeError      string     `gorm:"column:last_scrape_error"`
+		LastScrapeProxyCount int        `gorm:"column:last_scrape_proxy_count"`
+
 		Id      uint64    `gorm:"column:id"`
 		Url     string    `gorm:"column:url"`
 		AddedAt time.Time `gorm:"column:added_at"`
@@ -419,7 +435,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 		Select(
 			"scrape_sites.id AS id, "+
 				"scrape_sites.url AS url, "+
-				"uss.created_at AS added_at",
+				"uss.created_at AS added_at, uss.fetch_mode, uss.last_scraped_at, uss.last_scrape_status, uss.last_scrape_error, uss.last_scrape_proxy_count",
 		).
 		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id AND uss.workspace_id = ?", userId).
 		Where("scrape_sites.id = ?", scrapeSiteId).
@@ -499,17 +515,22 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 	}
 
 	detail := &dto.ScrapeSiteDetail{
-		Id:                  base.Id,
-		Url:                 base.Url,
-		AddedAt:             base.AddedAt,
-		ProxyCount:          stats.ProxyCount,
-		AliveCount:          stats.AliveCount,
-		DeadCount:           stats.DeadCount,
-		UnknownCount:        stats.UnknownCount,
-		AvgReputation:       avgReputation,
-		LastProxyAddedAt:    lastProxyAddedAt,
-		LastCheckedAt:       lastCheckedAt,
-		ReputationBreakdown: breakdown,
+		FetchMode:            base.FetchMode,
+		LastScrapedAt:        base.LastScrapedAt,
+		LastScrapeStatus:     base.LastScrapeStatus,
+		LastScrapeError:      base.LastScrapeError,
+		LastScrapeProxyCount: base.LastScrapeProxyCount,
+		Id:                   base.Id,
+		Url:                  base.Url,
+		AddedAt:              base.AddedAt,
+		ProxyCount:           stats.ProxyCount,
+		AliveCount:           stats.AliveCount,
+		DeadCount:            stats.DeadCount,
+		UnknownCount:         stats.UnknownCount,
+		AvgReputation:        avgReputation,
+		LastProxyAddedAt:     lastProxyAddedAt,
+		LastCheckedAt:        lastCheckedAt,
+		ReputationBreakdown:  breakdown,
 	}
 
 	return detail, nil
@@ -868,4 +889,40 @@ func ScrapeSiteHasUsers(siteID uint64) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// GetScrapeSiteSubscriptions reads current ownership and mode. Queue payloads
+// may predate a settings change or workspace removal.
+func GetScrapeSiteSubscriptions(ctx context.Context, siteID uint64) ([]domain.WorkspaceScrapeSite, error) {
+	var subscriptions []domain.WorkspaceScrapeSite
+	err := DB.WithContext(ctx).Where("scrape_site_id = ?", siteID).Find(&subscriptions).Error
+	return subscriptions, err
+}
+
+func UpdateScrapeSourceFetchMode(ctx context.Context, workspaceID uint, siteID uint64, mode string) (bool, error) {
+	if !domain.ValidScrapeFetchMode(mode) {
+		return false, fmt.Errorf("invalid fetch mode")
+	}
+	result := DB.WithContext(ctx).Model(&domain.WorkspaceScrapeSite{}).
+		Where("workspace_id = ? AND scrape_site_id = ?", workspaceID, siteID).
+		Updates(map[string]any{"fetch_mode": mode, "last_scraped_at": nil, "last_scrape_status": "", "last_scrape_error": "", "last_scrape_proxy_count": 0})
+	return result.RowsAffected > 0, result.Error
+}
+
+func RecordScrapeResult(ctx context.Context, siteID uint64, workspaceIDs []uint, mode, status string, count int, scrapeErr error, attemptedAt time.Time) error {
+	if len(workspaceIDs) == 0 {
+		return nil
+	}
+	message := ""
+	if scrapeErr != nil {
+		message = scrapeErr.Error()
+		if len(message) > 2000 {
+			runes := []rune(message)
+			message = string(runes[:min(500, len(runes))])
+		}
+	}
+	return DB.WithContext(ctx).Model(&domain.WorkspaceScrapeSite{}).
+		Where("scrape_site_id = ? AND workspace_id IN ? AND fetch_mode = ?", siteID, workspaceIDs, mode).
+		Where("last_scraped_at IS NULL OR last_scraped_at <= ?", attemptedAt).
+		Updates(map[string]any{"last_scraped_at": attemptedAt, "last_scrape_status": status, "last_scrape_error": message, "last_scrape_proxy_count": count}).Error
 }

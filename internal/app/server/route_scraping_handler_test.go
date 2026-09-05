@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"magpie/internal/api/dto"
@@ -232,4 +234,40 @@ func newAdminRequest(t *testing.T, method, path string, userID uint) *http.Reque
 		UserID:      userID,
 		Role:        domain.WorkspaceRoleOwner,
 	}))
+}
+
+func TestUpdateScrapeSourceSettingsValidatesModeAndWorkspace(t *testing.T) {
+	original := updateScrapeSourceFetchMode
+	t.Cleanup(func() { updateScrapeSourceFetchMode = original })
+	for _, tc := range []struct {
+		body  string
+		found bool
+		want  int
+	}{
+		{`{"fetch_mode":"http"}`, true, http.StatusOK},
+		{`{"fetch_mode":"browser"}`, true, http.StatusOK},
+		{`{"fetch_mode":"auto"}`, true, http.StatusBadRequest},
+		{`{}`, true, http.StatusBadRequest},
+		{`{"fetch_mode":"http"}`, false, http.StatusNotFound},
+	} {
+		called := false
+		updateScrapeSourceFetchMode = func(ctx context.Context, workspaceID uint, siteID uint64, mode string) (bool, error) {
+			called = true
+			if workspaceID != 7 || siteID != 42 {
+				t.Fatalf("wrong update scope: %d/%d", workspaceID, siteID)
+			}
+			return tc.found, nil
+		}
+		req := newAdminRequest(t, http.MethodPatch, "/api/scrapingSources/42", 7)
+		req.Body = io.NopCloser(strings.NewReader(tc.body))
+		req.SetPathValue("id", "42")
+		rec := httptest.NewRecorder()
+		updateScrapeSourceSettings(rec, req)
+		if rec.Code != tc.want {
+			t.Fatalf("body=%s code=%d want=%d response=%s", tc.body, rec.Code, tc.want, rec.Body.String())
+		}
+		if tc.want == http.StatusBadRequest && called {
+			t.Fatal("invalid settings reached database")
+		}
+	}
 }

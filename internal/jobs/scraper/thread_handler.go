@@ -2,7 +2,6 @@ package scraper
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"magpie/internal/blacklist"
 	"magpie/internal/config"
@@ -12,17 +11,12 @@ import (
 	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/support"
 	"math"
-	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/proto"
-	"github.com/go-rod/stealth"
 )
 
 /* ─────────────────────────────  thread control  ─────────────────────────── */
@@ -33,40 +27,19 @@ var (
 	scraperNow     = time.Now
 )
 
-const maxScraperPages = 2000
-
 const (
-	browserEnsureWaitTimeout     = 2 * time.Second
-	browserEnsureWaitPoll        = 100 * time.Millisecond
-	browserRestartInitialBackoff = 500 * time.Millisecond
-	browserRestartMaxBackoff     = 15 * time.Second
-	scrapePopErrorLogInterval    = 30 * time.Second
-	defaultPostProcessWorkers    = 8
-	defaultPostProcessQueueSize  = 256
-	maxPostProcessWorkers        = 64
-	maxPostProcessQueueSize      = 4096
-	envPostProcessWorkers        = "SCRAPER_POST_PROCESS_WORKERS"
-	envPostProcessQueueSize      = "SCRAPER_POST_PROCESS_QUEUE_CAPACITY"
-	defaultScraperPagePoolMin    = 1
-	defaultScraperPagePoolMax    = maxScraperPages
-	envScraperPagePoolMin        = "SCRAPER_PAGE_POOL_MIN_CAPACITY"
-	envScraperPagePoolMax        = "SCRAPER_PAGE_POOL_MAX_CAPACITY"
+	scrapePopErrorLogInterval   = 30 * time.Second
+	defaultPostProcessWorkers   = 8
+	defaultPostProcessQueueSize = 16
+	maxPostProcessWorkers       = 64
+	maxPostProcessQueueSize     = 4096
+	envPostProcessWorkers       = "SCRAPER_POST_PROCESS_WORKERS"
+	envPostProcessQueueSize     = "SCRAPER_POST_PROCESS_QUEUE_CAPACITY"
 )
 
-/* ─────────────────────────────  browser & page pool  ───────────────────── */
-
 var (
-	browser      *rod.Browser
-	pagePool     = make(chan *rod.Page, maxScraperPages)
-	currentPages atomic.Int32
-
-	postProcessQueue chan scrapedHTMLJob
-
-	stopPage     = make(chan struct{}) // signals that a page should be closed
-	browserAlive atomic.Bool
-	restartCh    = make(chan struct{}, 1) // coalesced restart signal
-	startOnce    sync.Once
-
+	postProcessQueue       chan scrapedHTMLJob
+	startOnce              sync.Once
 	scrapePopErrorLogState struct {
 		mu         sync.Mutex
 		lastLogAt  time.Time
@@ -75,8 +48,10 @@ var (
 )
 
 type scrapedHTMLJob struct {
-	site domain.ScrapeSite
-	html string
+	site        domain.ScrapeSite
+	html        string
+	mode        string
+	attemptedAt time.Time
 }
 
 /* ─────────────────────────────  startup  ─────────────────────────────────── */
@@ -84,9 +59,6 @@ type scrapedHTMLJob struct {
 func StartInfrastructure() {
 	startOnce.Do(func() {
 		postProcessQueue = make(chan scrapedHTMLJob, resolvePostProcessQueueSize())
-		go BrowserWatchdog() // listen for restart requests
-		requestRestartBrowser()
-		go ManagePagePool() // keep pool aligned with demand
 		startScrapedHTMLWorkers(resolvePostProcessWorkers())
 	})
 }
@@ -163,119 +135,114 @@ func requestScraperWorkerStop() bool {
 	}
 }
 
-func requestScraperPageStop() bool {
-	select {
-	case stopPage <- struct{}{}:
-		return true
-	default:
-		return false
+// Each URL is fetched once for each mode requested by its current workspaces.
+// HTTP groups run first, and browser capacity failures do not wait for a slot.
+func scrapeWorker(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-}
-
-/* ─────────────────────────────  worker  ─────────────────────────────────── */
-
-func scrapeWorker(parent context.Context) {
-	if parent == nil {
-		parent = context.Background()
-	}
-
-	ctx, cancel := context.WithCancel(parent)
-	done := make(chan struct{})
-
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	go func() {
-		defer close(done)
 		select {
 		case <-stopThread:
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
-
-	defer func() {
-		cancel()
-		<-done
-	}()
-
-	for {
+	for ctx.Err() == nil {
 		site, due, err := sitequeue.PublicScrapeSiteQueue.GetNextScrapeSiteContext(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if ctx.Err() != nil {
 				return
 			}
 			logScrapeQueuePopError(err)
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
 			continue
 		}
-
-		cfg := config.GetConfig()
-		timeout := time.Duration(cfg.Scraper.Timeout) * time.Millisecond
-
-		skipScrape := false
-		if config.IsWebsiteBlocked(site.URL) {
-			log.Info("Skipping blocked scrape site", "url", site.URL)
-			_ = sitequeue.PublicScrapeSiteQueue.RemoveFromQueue([]domain.ScrapeSite{site})
+		retry, queued := scrapeSite(ctx, site)
+		if !queued {
 			continue
 		}
-		if cfg.Scraper.RespectRobots {
-			result, robotsErr := CheckRobotsAllowance(site.URL, timeout)
-			if robotsErr != nil {
-				log.Warn("robots.txt check failed", "url", site.URL, "err", robotsErr)
-			}
-			if result.RobotsFound && !result.Allowed {
-				log.Info("robots.txt disallows scraping; skipping", "url", site.URL)
-				skipScrape = true
-			}
+		if ctx.Err() != nil {
+			return
+		} // The processing lease recovers interrupted work.
+		if retry {
+			err = sitequeue.PublicScrapeSiteQueue.RetryScrapeSite(site, browserRetryDelay)
+		} else {
+			err = sitequeue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due)
 		}
-
-		var html string
-		var scrapeErr error
-
-		if !skipScrape {
-			for attempts := 0; attempts < 3; attempts++ {
-				html, scrapeErr = ScraperRequest(site.URL, timeout)
-				if isConnClosed(scrapeErr) {
-					// Treat DevTools socket loss as transient infra failure, not site failure.
-					browserAlive.Store(false)
-					requestRestartBrowser()
-					time.Sleep(1 * time.Second)
-					continue
-				}
-				if scrapeErr == nil || !strings.Contains(scrapeErr.Error(), "timeout waiting for available page") {
-					break
-				}
-				log.Debug("retrying after page timeout", "url", site.URL, "attempt", attempts+1)
-				time.Sleep(1 * time.Second)
-			}
-
-			if scrapeErr != nil {
-				log.Warn("scrape failed", "url", site.URL, "err", scrapeErr)
-			} else {
-				if err := enqueueScrapedHTML(ctx, site, html); err != nil {
-					log.Warn("scraped html enqueue interrupted", "url", site.URL, "err", err)
-				}
-			}
-		}
-
-		hasUsers, err := database.ScrapeSiteHasUsers(site.ID)
 		if err != nil {
-			log.Error("verify scrape site ownership", "site_id", site.ID, "url", site.URL, "err", err)
-			if err := sitequeue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due); err != nil {
-				log.Error("requeue site", "err", err)
+			log.Error("requeue scrape source", "site_id", site.ID, "err", err)
+		}
+	}
+}
+
+func scrapeSite(ctx context.Context, site domain.ScrapeSite) (retry bool, queued bool) {
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, 5*time.Second)
+	subscriptions, err := database.GetScrapeSiteSubscriptions(lookupCtx, site.ID)
+	cancelLookup()
+	if err != nil {
+		log.Error("load scrape subscriptions", "site_id", site.ID, "err", err)
+		return true, true
+	}
+	if len(subscriptions) == 0 || config.IsWebsiteBlocked(site.URL) {
+		if err := sitequeue.PublicScrapeSiteQueue.RemoveFromQueue([]domain.ScrapeSite{site}); err != nil {
+			log.Error("remove unused scrape source", "err", err)
+		}
+		// Caller must not recreate the removed queue member.
+		return false, false
+	}
+	cfg := config.GetConfig()
+	timeout := effectiveScrapeTimeout(time.Duration(cfg.Scraper.Timeout) * time.Millisecond)
+	var robotsBlocked bool
+	if cfg.Scraper.RespectRobots {
+		result, err := CheckRobotsAllowance(site.URL, timeout)
+		if err != nil {
+			log.Warn("robots.txt check failed", "url", site.URL, "err", err)
+		}
+		robotsBlocked = result.RobotsFound && !result.Allowed
+	}
+	retry = false
+	for _, mode := range []string{domain.ScrapeFetchHTTP, domain.ScrapeFetchBrowser} {
+		group := site
+		group.Workspaces = nil
+		for _, subscription := range subscriptions {
+			if subscription.FetchMode == mode {
+				group.Workspaces = append(group.Workspaces, domain.Workspace{ID: subscription.WorkspaceID})
 			}
+		}
+		if len(group.Workspaces) == 0 {
 			continue
 		}
-
-		if !hasUsers {
-			log.Debug("scrape site no longer in use; skipping requeue", "site_id", site.ID, "url", site.URL)
-			if err := sitequeue.PublicScrapeSiteQueue.RemoveFromQueue([]domain.ScrapeSite{site}); err != nil {
-				log.Error("failed to remove scrape site without owners from queue", "site_id", site.ID, "url", site.URL, "err", err)
-			}
+		attemptedAt := time.Now()
+		if robotsBlocked {
+			recordScrapeResult(group, mode, "blocked", 0, nil, attemptedAt)
 			continue
 		}
-
-		if err := sitequeue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due); err != nil {
-			log.Error("requeue site", "err", err)
+		html, err := ScraperRequestContext(ctx, site.URL, mode, timeout)
+		if err != nil {
+			log.Warn("scrape failed", "url", site.URL, "mode", mode, "err", err)
+			recordScrapeResult(group, mode, "error", 0, err, attemptedAt)
+			retry = retry || shouldRetryScrape(err)
+			continue
 		}
+		if err := enqueueScrapedHTML(ctx, group, html, mode, attemptedAt); err != nil {
+			retry = true
+		}
+	}
+	return retry, true
+}
+
+func recordScrapeResult(site domain.ScrapeSite, mode, status string, count int, scrapeErr error, attemptedAt time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := database.RecordScrapeResult(ctx, site.ID, support.GetWorkspaceIDsFromList(site.Workspaces), mode, status, count, scrapeErr, attemptedAt); err != nil {
+		log.Error("record scrape result", "site_id", site.ID, "err", err)
 	}
 }
 
@@ -353,336 +320,65 @@ func autoThreadCount(cfg config.Config) uint32 {
 	return uint32(threads)
 }
 
-/* ─────────────────────────────  page-pool mgmt  ─────────────────────────── */
-
-func ManagePagePool() {
-	for {
-		cfg := config.GetConfig()
-		targetPages := calcRequiredPages(cfg)
-
-		for currentPages.Load() < targetPages {
-			if err := addPage(); err != nil {
-				if isConnClosed(err) {
-					browserAlive.Store(false)
-					requestRestartBrowser()
-				}
-				log.Error("add page", "err", err)
-				time.Sleep(1 * time.Second)
-				continue
-			}
-		}
-
-		for currentPages.Load() > targetPages {
-			shrunk := false
-			select {
-			case p := <-pagePool:
-				_ = safeClosePage(p)
-				currentPages.Add(-1)
-				shrunk = true
-			default:
-				if requestScraperPageStop() {
-					shrunk = true
-				}
-			}
-			if !shrunk {
-				break
-			}
-		}
-
-		time.Sleep(15 * time.Second)
-	}
-}
-
-func calcRequiredPages(cfg config.Config) int32 {
-	totalSites := int64(1)
-	if n, err := sitequeue.PublicScrapeSiteQueue.GetScrapeSiteCount(); err == nil {
-		totalSites = n
-	}
-
-	activeInstances := 1
-	if n, err := sitequeue.PublicScrapeSiteQueue.GetActiveInstances(); err == nil && n > 0 {
-		activeInstances = n
-	}
-
-	interval := config.CalculateMillisecondsOfCheckingPeriod(cfg.Scraper.ScraperTimer)
-	minPages, maxPages := resolveScraperPagePoolCaps()
-
-	required := calculateRequiredPages(
-		totalSites,
-		activeInstances,
-		uint64(cfg.Scraper.Timeout),
-		uint64(cfg.Scraper.Retries),
-		interval,
-		minPages,
-		maxPages,
-	)
-	return int32(required)
-}
-
-func resolveScraperPagePoolCaps() (int64, int64) {
-	minPages := int64(support.GetEnvInt(envScraperPagePoolMin, defaultScraperPagePoolMin))
-	maxPages := int64(support.GetEnvInt(envScraperPagePoolMax, defaultScraperPagePoolMax))
-
-	if minPages < 1 {
-		minPages = 1
-	}
-	if minPages > maxScraperPages {
-		minPages = maxScraperPages
-	}
-
-	if maxPages < 1 {
-		maxPages = 1
-	}
-	if maxPages > maxScraperPages {
-		maxPages = maxScraperPages
-	}
-
-	if minPages > maxPages {
-		minPages = maxPages
-	}
-
-	return minPages, maxPages
-}
-
-func calculateRequiredPages(totalSites int64, activeInstances int, timeoutMs, retries, intervalMs uint64, minPages, maxPages int64) int64 {
-	if totalSites < 0 {
-		totalSites = 0
-	}
-	if activeInstances < 1 {
-		activeInstances = 1
-	}
-	if intervalMs == 0 {
-		intervalMs = 86_400_000
-	}
-	if minPages < 1 {
-		minPages = 1
-	}
-	if maxPages < 1 {
-		maxPages = 1
-	}
-	if maxPages > maxScraperPages {
-		maxPages = maxScraperPages
-	}
-	if minPages > maxPages {
-		minPages = maxPages
-	}
-
-	perInstanceSites := (uint64(totalSites) + uint64(activeInstances) - 1) / uint64(activeInstances)
-	var required uint64
-	if perInstanceSites > 0 {
-		totalWorkMs := perInstanceSites * timeoutMs * (retries + 1)
-		required = (totalWorkMs + intervalMs - 1) / intervalMs
-		if required < 1 {
-			required = 1
-		}
-	}
-
-	if required < uint64(minPages) {
-		required = uint64(minPages)
-	}
-	if required > uint64(maxPages) {
-		required = uint64(maxPages)
-	}
-
-	return int64(required)
-}
-
-func addPage() error {
-	if err := ensureBrowser(); err != nil {
-		return err
-	}
-	p, err := stealth.Page(browser)
-	if err != nil {
-		if isConnClosed(err) {
-			browserAlive.Store(false)
-			requestRestartBrowser()
-		}
-		return fmt.Errorf("stealth page: %w", err)
-	}
-	select {
-	case pagePool <- p:
-		currentPages.Add(1)
-		return nil
-	default:
-		_ = safeClosePage(p)
-		return fmt.Errorf("pool full")
-	}
-}
-
-func recyclePage(p *rod.Page) {
-	select {
-	case <-stopPage:
-		_ = safeClosePage(p)
-		currentPages.Add(-1)
-		return
-	default:
-	}
-
-	if err := resetPage(p); err != nil {
-		log.Debug("page reset failed, replacing", "err", err)
-		_ = safeClosePage(p)
-		currentPages.Add(-1)
-		if isConnClosed(err) {
-			browserAlive.Store(false)
-			requestRestartBrowser()
-		}
-		go func() {
-			if err := addPage(); err != nil {
-				log.Error("add replacement page", "err", err)
-			}
-		}()
-		return
-	}
-
-	select {
-	case pagePool <- p:
-		// recycled
-	default:
-		_ = safeClosePage(p)
-		currentPages.Add(-1)
-	}
-}
-
-/* ─────────────────────────────  browser lifecycle  ──────────────────────── */
-
-func BrowserWatchdog() {
-	for range restartCh {
-		browserAlive.Store(false)
-
-		// drain page pool; old pages are tied to dead DevTools socket
-		for {
-			select {
-			case p := <-pagePool:
-				_ = safeClosePage(p)
-				currentPages.Add(-1)
-			default:
-				goto drained
-			}
-		}
-	drained:
-
-		restartBrowserWithRetry()
-
-		// repopulate opportunistically to previous target
-		go func(target int32) {
-			for currentPages.Load() < target {
-				if err := addPage(); err != nil {
-					time.Sleep(300 * time.Millisecond)
-					continue
-				}
-			}
-		}(currentPages.Load() + 0) // snapshot
-	}
-}
-
-func requestRestartBrowser() {
-	select {
-	case restartCh <- struct{}{}:
-	default:
-	}
-}
-
-func ensureBrowser() error {
-	if browserAlive.Load() {
-		return nil
-	}
-	requestRestartBrowser()
-	deadline := time.Now().Add(browserEnsureWaitTimeout)
-	for !browserAlive.Load() && time.Now().Before(deadline) {
-		time.Sleep(browserEnsureWaitPoll)
-	}
-	if !browserAlive.Load() {
-		return fmt.Errorf("browser not available")
-	}
-	return nil
-}
-
-func restartBrowserWithRetry() {
-	backoff := browserRestartInitialBackoff
-
-	for {
-		if err := restartBrowser(); err == nil {
-			return
-		} else {
-			log.Error("browser restart failed; running in degraded mode until retry succeeds", "err", err, "retry_in", backoff)
-		}
-
-		time.Sleep(backoff)
-		backoff *= 2
-		if backoff > browserRestartMaxBackoff {
-			backoff = browserRestartMaxBackoff
-		}
-	}
-}
-
-func restartBrowser() error {
-	browserAlive.Store(false)
-
-	// Close old quietly
-	if browser != nil {
-		_ = rod.Try(func() { browser.MustClose() })
-		browser = nil
-	}
-
-	// Launch Chrome
-	url, err := launcher.New().
-		// Sleep/resume can confuse leakless in dev; keep it off on laptops
-		Leakless(true).
-		Headless(true).
-		// Flags that reduce background throttling after resume
-		Set("disable-background-timer-throttling").
-		Set("disable-backgrounding-occluded-windows").
-		Set("disable-renderer-backgrounding").
-		Launch()
-	if err != nil {
-		return fmt.Errorf("browser launch failed: %w", err)
-	}
-
-	b := rod.New().ControlURL(url)
-	// connect with simple backoff
-	var connectErr error
-	for i := 0; i < 10; i++ {
-		if connectErr = b.Connect(); connectErr == nil {
-			break
-		}
-		time.Sleep(time.Duration(250*(i+1)) * time.Millisecond)
-	}
-	if connectErr != nil {
-		_ = rod.Try(func() { b.MustClose() })
-		return fmt.Errorf("browser connect failed: %w", connectErr)
-	}
-
-	browser = b
-	if err := (proto.BrowserSetDownloadBehavior{
-		Behavior:         proto.BrowserSetDownloadBehaviorBehaviorDeny,
-		BrowserContextID: browser.BrowserContextID,
-	}).Call(browser); err != nil {
-		log.Warn("disable browser downloads failed", "err", err)
-	}
-	browserAlive.Store(true)
-	return nil
-}
-
-/* ─────────────────────────────  helpers  ────────────────────────────────── */
-
-func safeClosePage(p *rod.Page) error {
-	return rod.Try(func() { p.MustClose() })
-}
-
 func startScrapedHTMLWorkers(count int) {
 	for i := 0; i < count; i++ {
 		go func() {
 			for job := range postProcessQueue {
-				handleScrapedHTML(job.site, job.html)
+				processScrapedHTMLJob(job)
 			}
 		}()
 	}
 }
 
-func enqueueScrapedHTML(ctx context.Context, site domain.ScrapeSite, html string) error {
+func processScrapedHTMLJob(job scrapedHTMLJob) {
+	count := 0
+	var resultErr error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			resultErr = fmt.Errorf("process scrape result: %v", recovered)
+		}
+		status := "success"
+		if count == 0 {
+			status = "empty"
+		}
+		if resultErr != nil {
+			status = "error"
+			log.Error("process scrape result", "site_id", job.site.ID, "err", resultErr)
+		}
+		recordScrapeResult(job.site, job.mode, status, count, resultErr, job.attemptedAt)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	subscriptions, err := database.GetScrapeSiteSubscriptions(ctx, job.site.ID)
+	if err != nil {
+		resultErr = err
+		return
+	}
+	// A queued HTML job must not reattach a removed workspace or deliver results
+	// from the previous mode after its setting changed.
+	allowed := make(map[uint]bool, len(subscriptions))
+	for _, subscription := range subscriptions {
+		if subscription.FetchMode == job.mode {
+			allowed[subscription.WorkspaceID] = true
+		}
+	}
+	workspaces := job.site.Workspaces
+	job.site.Workspaces = nil
+	for _, workspace := range workspaces {
+		if allowed[workspace.ID] {
+			job.site.Workspaces = append(job.site.Workspaces, workspace)
+		}
+	}
+	if len(job.site.Workspaces) == 0 {
+		return
+	}
+	count, resultErr = handleScrapedHTML(job.site, job.html)
+}
+
+func enqueueScrapedHTML(ctx context.Context, site domain.ScrapeSite, html, mode string, attemptedAt time.Time) error {
 	job := scrapedHTMLJob{
 		site: site,
-		html: html,
+		html: html, mode: mode, attemptedAt: attemptedAt,
 	}
 
 	select {
@@ -715,23 +411,9 @@ func resolvePostProcessQueueSize() int {
 	return size
 }
 
-func isConnClosed(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	s := err.Error()
-	return strings.Contains(s, "use of closed network connection") ||
-		strings.Contains(s, "websocket: close") ||
-		strings.Contains(s, "read tcp") ||
-		strings.Contains(s, "write tcp")
-}
-
 /* ─────────────────────────────  downstream handlers  ────────────────────── */
 
-func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
+func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) (int, error) {
 	proxyList := support.GetProxiesOfHTML(rawHTML)
 	parsedProxies := support.ParseScrapedTextToIPv4Proxies(strings.Join(proxyList, "\n"))
 
@@ -742,7 +424,7 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 
 	proxies, err := database.InsertAndGetProxiesWithWorkspace(parsedProxies, support.GetWorkspaceIDsFromList(site.Workspaces)...)
 	if err != nil {
-		log.Error("insert proxies from scraping failed", "err", err)
+		return 0, err
 	} else {
 		proxiesToEnrich := database.FilterProxiesMissingGeo(proxies)
 		if len(proxiesToEnrich) > 0 {
@@ -752,13 +434,14 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) {
 
 	err = database.AssociateProxiesToScrapeSite(site.ID, proxies)
 	if err != nil {
-		log.Warn("associate proxies to ScrapeSite failed", "err", err)
+		return 0, err
 	}
 
 	err = proxyqueue.PublicProxyQueue.AddToQueue(proxies)
 	if err != nil {
-		log.Error("adding scraped proxies to queue failed", "err", err)
+		return 0, err
 	}
 
-	log.Info(fmt.Sprintf("Found %d unique proxies that users don't have", len(proxies)), "url", site.URL)
+	log.Info("scrape completed", "proxy_count", len(parsedProxies), "url", site.URL)
+	return len(parsedProxies), nil
 }

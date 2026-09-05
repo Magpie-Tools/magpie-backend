@@ -367,6 +367,14 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mode := r.FormValue("fetch_mode")
+	if mode == "" {
+		mode = domain.ScrapeFetchHTTP
+	}
+	if !domain.ValidScrapeFetchMode(mode) {
+		writeError(w, "fetch_mode must be http or browser", http.StatusBadRequest)
+		return
+	}
 	textareaContent := r.FormValue("scrapeSourceTextarea") // Match the key sent by frontend
 	clipboardContent := r.FormValue("clipboardScrapeSources")
 	file, fileHeader, err := r.FormFile("file") // "file" is the key of the form field
@@ -432,7 +440,7 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sites, err := database.SaveScrapingSourcesOfUsers(userID, allowedSources)
+	sites, err := database.SaveScrapingSourcesWithMode(userID, allowedSources, mode)
 	if err != nil {
 		log.Error("Could not save sources to database", "error", err.Error())
 		writeError(w, "Could not save sources to database", http.StatusInternalServerError)
@@ -534,4 +542,38 @@ func getRobotsRespectSetting(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{
 		"respect_robots_txt": cfg.Scraper.RespectRobots,
 	})
+}
+
+// updateScrapeSourceSettings changes only the active workspace's subscription.
+func updateScrapeSourceSettings(w http.ResponseWriter, r *http.Request) {
+	workspaceID, err := workspaceIDFromRequest(r)
+	if err != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil || id == 0 {
+		writeError(w, "Invalid scrape source id", http.StatusBadRequest)
+		return
+	}
+	var settings struct {
+		FetchMode string `json:"fetch_mode"`
+	}
+	if !decodeJSONBodyLimited(w, r, &settings, resolveJSONMaxBodyBytes()) {
+		return
+	}
+	if !domain.ValidScrapeFetchMode(settings.FetchMode) {
+		writeError(w, "fetch_mode must be http or browser", http.StatusBadRequest)
+		return
+	}
+	updated, err := updateScrapeSourceFetchMode(r.Context(), workspaceID, id, settings.FetchMode)
+	if err != nil {
+		writeError(w, "Could not save scrape source settings", http.StatusInternalServerError)
+		return
+	}
+	if !updated {
+		writeError(w, "Scrape source not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"fetch_mode": settings.FetchMode})
 }

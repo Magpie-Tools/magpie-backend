@@ -133,6 +133,7 @@ func OpenRoutes(ctx context.Context, port int) error {
 	apiMux.Handle("GET /scrapingSources/check", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(checkScrapeSourceRobots))))
 	apiMux.Handle("GET /scrapingSources/respectRobots", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getRobotsRespectSetting))))
 	apiMux.Handle("GET /scrapingSources/{id}/proxies", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getScrapeSourceProxies))))
+	apiMux.Handle("PATCH /scrapingSources/{id}", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(updateScrapeSourceSettings))))
 	apiMux.Handle("GET /scrapingSources/{id}", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getScrapeSourceDetail))))
 
 	apiMux.Handle("GET /user/settings", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getUserSettings))))

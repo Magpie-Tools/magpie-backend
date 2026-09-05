@@ -11,6 +11,8 @@ import (
 	sitequeue "magpie/internal/jobs/queue/sites"
 )
 
+var updateScrapeSourceFetchMode = database.UpdateScrapeSourceFetchMode
+
 var enqueueScrapeSites = func(sites []domain.ScrapeSite) error {
 	return sitequeue.PublicScrapeSiteQueue.AddToQueue(sites)
 }

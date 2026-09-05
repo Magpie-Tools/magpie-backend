@@ -2,403 +2,225 @@ package scraper
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/go-rod/rod/lib/proto"
+	"github.com/go-rod/stealth"
 	"magpie/internal/config"
+	"magpie/internal/domain"
 	"magpie/internal/support"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
 )
 
 const (
 	scraperUserAgent               = "magpie-scraper/1.0"
 	envScraperFallbackMaxBodyBytes = "SCRAPER_FALLBACK_MAX_RESPONSE_BODY_BYTES"
 	envScraperCapturedMaxBodyBytes = "SCRAPER_CAPTURED_MAX_RESPONSE_BODY_BYTES"
-	defaultScraperFallbackMaxBody  = 8 << 20 // 8 MiB
-	defaultScraperCapturedMaxBody  = 8 << 20 // 8 MiB
+	defaultScraperFallbackMaxBody  = 8 << 20
+	defaultScraperCapturedMaxBody  = 8 << 20
 )
 
-/*
-ScraperRequest fetches the HTML of url within the given timeout.
-
-It borrows a *rod.Page from the global pagePool, does the navigation
-and then defers the page‑recycling to recyclePage(), which decides
-whether to return the page to the pool or close it (depending on
-signals from managePagePool). This keeps the request code tiny while
-all pool housekeeping lives in thread_handler.go.
-*/
-func ScraperRequest(url string, timeout time.Duration) (string, error) {
-	if err := validateScrapeTarget(url, timeout); err != nil {
-		return "", err
+func effectiveScrapeTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return 30 * time.Second
 	}
+	return timeout
+}
 
-	StartInfrastructure()
+// ScraperRequest uses HTTP. Browser rendering is an explicit source setting.
+func ScraperRequest(url string, timeout time.Duration) (string, error) {
+	return ScraperRequestContext(context.Background(), url, domain.ScrapeFetchHTTP, timeout)
+}
 
+func ScraperRequestContext(parent context.Context, url, mode string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, effectiveScrapeTimeout(timeout))
+	defer cancel()
+	if !domain.ValidScrapeFetchMode(mode) {
+		return "", fmt.Errorf("invalid scrape fetch mode %q", mode)
+	}
 	if config.IsWebsiteBlocked(url) {
 		return "", fmt.Errorf("scrape blocked by website blacklist: %s", url)
 	}
+	if mode == domain.ScrapeFetchHTTP {
+		return fetchDirectContext(ctx, url)
+	}
+	if _, err := support.ValidateOutboundHTTPURLContext(ctx, url); err != nil {
+		return "", err
+	}
+	return fetchBrowser(ctx, url, sharedBrowser())
+}
 
-	// 1) acquire a page with timeout
-	var basePage *rod.Page
-	select {
-	case basePage = <-pagePool:
-	case <-time.After(timeout):
-		return "", fmt.Errorf("timeout waiting for available page")
+func fetchBrowser(ctx context.Context, url string, manager *browserManager) (html string, err error) {
+	// Rod event setup can panic on a disconnected DevTools socket.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			html = ""
+			err = fmt.Errorf("%w: %v", errBrowserUnavailable, recovered)
+		}
+	}()
+	instance, release, err := manager.acquire(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	session, err := instance.browser.Context(ctx).Incognito()
+	if err != nil {
+		manager.invalidate(instance)
+		return "", fmt.Errorf("%w: create browser context: %v", errBrowserUnavailable, err)
+	}
+	// Dispose the complete context with a fresh, bounded deadline, even when the
+	// navigation deadline expired. No page recycling or shared cookie state.
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), browserCleanupTimeout)
+		defer cancel()
+		if closeErr := session.Context(cleanupCtx).Close(); closeErr != nil {
+			manager.invalidate(instance)
+		}
+		if isConnClosed(err) {
+			manager.invalidate(instance)
+		}
+	}()
+	page, err := stealth.Page(session)
+	if err != nil {
+		return "", err
+	}
+	if err := (proto.BrowserSetDownloadBehavior{Behavior: proto.BrowserSetDownloadBehaviorBehaviorDeny, BrowserContextID: session.BrowserContextID}).Call(session); err != nil {
+		return "", err
+	}
+	if err := (proto.FetchEnable{Patterns: []*proto.FetchRequestPattern{{URLPattern: "http://*"}, {URLPattern: "https://*"}}}).Call(page); err != nil {
+		return "", err
 	}
 
-	page := basePage.Timeout(timeout)
-
-	// 2) ensure we recycle it back (or close+re-add on error)
-	defer func() {
-		page.CancelTimeout()
-		recyclePage(basePage)
-	}()
-
-	// Deny disk downloads for this page; deprecated API but still honored.
-	_ = proto.PageSetDownloadBehavior{
-		Behavior: proto.PageSetDownloadBehaviorBehaviorDeny,
-	}.Call(page)
-
-	// Ensure network events are available so we can pull raw responses.
-	_ = proto.NetworkEnable{}.Call(page)
-	if err := (proto.FetchEnable{
-		Patterns: []*proto.FetchRequestPattern{
-			{URLPattern: "http://*", RequestStage: proto.FetchRequestStageRequest},
-			{URLPattern: "https://*", RequestStage: proto.FetchRequestStageRequest},
-		},
-	}).Call(page); err != nil {
-		return "", fmt.Errorf("enable browser request guard: %w", err)
+	eventCtx, cancelEvents := context.WithCancel(ctx)
+	var guardMu sync.Mutex
+	var guardErr error
+	reject := func(e error) {
+		guardMu.Lock()
+		if guardErr == nil {
+			guardErr = e
+		}
+		guardMu.Unlock()
 	}
-	defer func() {
-		_ = proto.FetchDisable{}.Call(page)
-	}()
-
-	var (
-		capturedBody         string
-		capturedMime         string
-		capturedDisposition  string
-		captured             bool
-		done                 = make(chan struct{})
-		doneOnce             sync.Once
-		responseCaptureError error
-	)
-
-	eventCtx, cancelEvents := context.WithCancel(context.Background())
-	defer cancelEvents()
-
-	var mainRequestID proto.NetworkRequestID
-	capturedBodyLimit := scraperCapturedMaxResponseBodyBytes()
-
-	waitResponse := page.Context(eventCtx).EachEvent(
+	waitEvents := page.Context(eventCtx).EachEvent(
 		func(e *proto.FetchRequestPaused) {
 			if e == nil || e.Request == nil {
 				return
 			}
-
-			if err := validateScrapeRuntimeURL(e.Request.URL, timeout); err != nil {
-				responseCaptureError = fmt.Errorf("unsafe browser request target: %w", err)
-				_ = proto.FetchFailRequest{
-					RequestID:   e.RequestID,
-					ErrorReason: proto.NetworkErrorReasonAccessDenied,
-				}.Call(page)
-				_ = page.StopLoading()
-				doneOnce.Do(func() { close(done) })
-				return
-			}
-
-			if err := (proto.FetchContinueRequest{RequestID: e.RequestID}).Call(page); err != nil {
-				responseCaptureError = fmt.Errorf("continue browser request: %w", err)
-				doneOnce.Do(func() { close(done) })
-			}
-		},
-		func(e *proto.NetworkRequestWillBeSent) {
-			if e.FrameID != "" && e.FrameID != page.FrameID {
-				return
-			}
-
-			if err := validateScrapeRuntimeURL(e.Request.URL, timeout); err != nil {
-				responseCaptureError = fmt.Errorf("unsafe browser request target: %w", err)
-				_ = page.StopLoading()
-				doneOnce.Do(func() { close(done) })
-				return
-			}
-			if e.Type == proto.NetworkResourceTypeDocument {
-				mainRequestID = e.RequestID
-				return
-			}
-			if mainRequestID == "" && (e.Request.URL == url || e.DocumentURL == url) {
-				mainRequestID = e.RequestID
-				return
-			}
-			if mainRequestID == "" && (e.Type == proto.NetworkResourceTypeOther || e.Type == proto.NetworkResourceTypeXHR || e.Type == proto.NetworkResourceTypeFetch) {
-				mainRequestID = e.RequestID
-			}
-		},
-		func(e *proto.NetworkResponseReceived) bool {
-			if e.FrameID != "" && e.FrameID != page.FrameID {
-				return false
-			}
-			if mainRequestID != "" && e.RequestID != mainRequestID {
-				return false
-			}
-			if err := validateScrapeRemoteIP(e.Response.RemoteIPAddress); err != nil {
-				responseCaptureError = fmt.Errorf("unsafe browser remote address: %w", err)
-				_ = page.StopLoading()
-				doneOnce.Do(func() { close(done) })
-				return true
-			}
-
-			if contentLengthExceedsLimit(e.Response.Headers, capturedBodyLimit) {
-				responseCaptureError = fmt.Errorf("captured response body exceeded %d bytes", capturedBodyLimit)
-				doneOnce.Do(func() { close(done) })
-				return true
-			}
-
-			body, err := proto.NetworkGetResponseBody{RequestID: e.RequestID}.Call(page)
-			if err != nil {
-				responseCaptureError = err
-				doneOnce.Do(func() { close(done) })
-				return true
-			}
-
-			if body.Base64Encoded {
-				if int64(base64.StdEncoding.DecodedLen(len(body.Body))) > capturedBodyLimit {
-					responseCaptureError = fmt.Errorf("captured response body exceeded %d bytes", capturedBodyLimit)
-					doneOnce.Do(func() { close(done) })
-					return true
-				}
-				raw, decodeErr := base64.StdEncoding.DecodeString(body.Body)
-				if decodeErr != nil {
-					responseCaptureError = decodeErr
-					doneOnce.Do(func() { close(done) })
-					return true
-				}
-				if int64(len(raw)) > capturedBodyLimit {
-					responseCaptureError = fmt.Errorf("captured response body exceeded %d bytes", capturedBodyLimit)
-					doneOnce.Do(func() { close(done) })
-					return true
-				}
-				capturedBody = string(raw)
+			requestErr := error(nil)
+			if config.IsWebsiteBlocked(e.Request.URL) {
+				requestErr = fmt.Errorf("browser request blocked by website blacklist")
 			} else {
-				if int64(len(body.Body)) > capturedBodyLimit {
-					responseCaptureError = fmt.Errorf("captured response body exceeded %d bytes", capturedBodyLimit)
-					doneOnce.Do(func() { close(done) })
-					return true
-				}
-				capturedBody = body.Body
+				validationCtx, cancel := context.WithTimeout(eventCtx, 2*time.Second)
+				_, requestErr = support.ValidateOutboundHTTPURLContext(validationCtx, e.Request.URL)
+				cancel()
 			}
-
-			captured = true
-			capturedMime = e.Response.MIMEType
-			capturedDisposition = headerValue(e.Response.Headers, "Content-Disposition")
-			mainRequestID = e.RequestID
-
-			doneOnce.Do(func() { close(done) })
-			return true
+			if requestErr != nil {
+				reject(requestErr)
+				_ = (proto.FetchFailRequest{RequestID: e.RequestID, ErrorReason: proto.NetworkErrorReasonAccessDenied}).Call(page)
+				_ = page.StopLoading()
+				return
+			}
+			if e := (proto.FetchContinueRequest{RequestID: e.RequestID}).Call(page); e != nil {
+				reject(e)
+			}
 		},
-		func(e *proto.NetworkLoadingFinished) bool {
-			if mainRequestID == "" || e.RequestID != mainRequestID {
-				return false
+		func(e *proto.NetworkResponseReceived) {
+			if e.FrameID != page.FrameID || e.Type != proto.NetworkResourceTypeDocument {
+				return
 			}
-			doneOnce.Do(func() { close(done) })
-			return true
+			if e.Response.Status >= 400 {
+				reject(&scrapeHTTPStatusError{code: e.Response.Status})
+			}
+			if e := validateScrapeRemoteIP(e.Response.RemoteIPAddress); e != nil {
+				reject(e)
+			}
 		},
 	)
-
-	go func() {
-		waitResponse()
-		doneOnce.Do(func() { close(done) })
+	eventsDone := make(chan struct{})
+	go func() { defer close(eventsDone); waitEvents() }()
+	// Keep interception running through load, scripts and DOM extraction. Stopping
+	// on the first response leaves later browser requests paused indefinitely.
+	defer func() {
+		cancelEvents()
+		<-eventsDone
+		guardMu.Lock()
+		defer guardMu.Unlock()
+		if guardErr != nil {
+			html = ""
+			err = guardErr
+		}
 	}()
-
-	waitWindow := time.Second
-	if timeout > 0 && timeout < waitWindow {
-		waitWindow = timeout
-	}
-
-	navErr := page.Navigate(url)
-
-	select {
-	case <-done:
-	case <-time.After(waitWindow):
-	}
-
-	if responseCaptureError != nil {
-		captured = false
-	}
-
-	if navErr != nil {
-		if captured {
-			return capturedBody, nil
-		}
-		if isNavigationAbortError(navErr) {
-			if fallback, err := fetchDirect(url, timeout); err == nil {
-				return fallback, nil
-			} else {
-				return "", fmt.Errorf("navigation aborted and fallback fetch failed: %w", err)
-			}
-		}
-		return "", navErr
-	}
-
-	if err := page.WaitLoad(); err != nil {
-		if captured {
-			return capturedBody, nil
-		}
-		if isNavigationAbortError(err) {
-			if fallback, fallbackErr := fetchDirect(url, timeout); fallbackErr == nil {
-				return fallback, nil
-			} else {
-				return "", fmt.Errorf("navigation aborted and fallback fetch failed: %w", fallbackErr)
-			}
-		}
+	waitIdle := page.WaitRequestIdle(300*time.Millisecond, nil, nil, nil)
+	if err := page.Navigate(url); err != nil {
 		return "", err
 	}
-
-	// 4) grab the HTML
-	html, err := page.HTML()
-	if err != nil {
-		if captured {
-			return capturedBody, nil
-		}
+	if err := page.WaitLoad(); err != nil {
 		return "", err
 	}
-	if captured && shouldPreferCapturedBody(capturedMime, capturedDisposition, html) {
-		return capturedBody, nil
+	waitIdle()
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	return html, nil
+	html, err = page.HTML()
+	if err == nil && int64(len(html)) > scraperCapturedMaxResponseBodyBytes() {
+		return "", fmt.Errorf("rendered HTML exceeds response body limit")
+	}
+	return html, err
 }
 
-func resetPage(page *rod.Page) error {
-	// Clear cookies
-	err := proto.NetworkClearBrowserCookies{}.Call(page)
-	if err != nil {
-		return fmt.Errorf("clear cookies: %w", err)
-	}
-
-	// Navigate to about:blank first
-	if err := page.Navigate("about:blank"); err != nil {
-		return fmt.Errorf("navigate blank: %w", err)
-	}
-	if err := page.WaitLoad(); err != nil {
-		return fmt.Errorf("wait blank: %w", err)
-	}
-
-	_, _ = page.Eval(`() => {
-        try {
-            localStorage.clear();
-            sessionStorage.clear();
-        } catch (e) {
-            // Silently ignore security errors
-        }
-        return true;
-    }`)
-
-	return nil
-}
-
-func headerValue(headers proto.NetworkHeaders, key string) string {
-	for k, v := range headers {
-		if strings.EqualFold(k, key) {
-			return fmt.Sprint(v)
+var directHTTPClient = func() *http.Client {
+	client := support.NewRestrictedOutboundHTTPClient(0)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
 		}
-	}
-	return ""
-}
-
-func shouldPreferCapturedBody(mime, disposition, html string) bool {
-	if disposition != "" && strings.Contains(strings.ToLower(disposition), "attachment") {
-		return true
-	}
-
-	if mime != "" && !strings.Contains(strings.ToLower(mime), "html") {
-		return true
-	}
-
-	if strings.TrimSpace(html) == "" {
-		return true
-	}
-
-	return false
-}
-
-func isNavigationAbortError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	msg := err.Error()
-	if msg == "" {
-		return false
-	}
-	if strings.Contains(strings.ToLower(msg), "context deadline exceeded") {
-		return true
-	}
-	abortSignatures := []string{
-		"net::ERR_ABORTED",
-		"NS_BINDING_ABORTED",
-		"ERR_INTERNET_DISCONNECTED",
-	}
-	for _, sig := range abortSignatures {
-		if strings.Contains(msg, sig) {
-			return true
+		if config.IsWebsiteBlocked(req.URL.String()) {
+			return fmt.Errorf("redirect blocked by website blacklist")
 		}
+		_, err := support.ValidateOutboundHTTPURLContext(req.Context(), req.URL.String())
+		return err
 	}
-	return false
+	return client
+}()
+
+type scrapeHTTPStatusError struct{ code int }
+
+func (e *scrapeHTTPStatusError) Error() string { return fmt.Sprintf("source returned HTTP %d", e.code) }
+func shouldRetryScrape(err error) bool {
+	var status *scrapeHTTPStatusError
+	return errors.Is(err, errBrowserBusy) || errors.Is(err, errBrowserUnavailable) ||
+		errors.Is(err, context.DeadlineExceeded) || isConnClosed(err) ||
+		(errors.As(err, &status) && (status.code == 429 || status.code >= 500))
 }
 
-func fetchDirect(url string, timeout time.Duration) (string, error) {
-	limit := 30 * time.Second
-	if timeout > 0 {
-		limit = timeout
-	}
-
+func fetchDirectContext(ctx context.Context, url string) (string, error) {
 	if config.IsWebsiteBlocked(url) {
-		return "", fmt.Errorf("direct fetch blocked by website blacklist: %s", url)
+		return "", fmt.Errorf("scrape blocked by website blacklist: %s", url)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
-	defer cancel()
-
 	validatedURL, err := support.ValidateOutboundHTTPURLContext(ctx, url)
 	if err != nil {
-		return "", fmt.Errorf("unsafe fallback target: %w", err)
+		return "", fmt.Errorf("unsafe HTTP target: %w", err)
 	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, validatedURL.String(), nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", scraperUserAgent)
-
-	client := support.NewRestrictedOutboundHTTPClient(limit)
-	resp, err := client.Do(req)
+	resp, err := directHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("fallback fetch status %d", resp.StatusCode)
+		return "", &scrapeHTTPStatusError{code: resp.StatusCode}
 	}
-
-	bodyLimit := scraperFallbackMaxResponseBodyBytes()
-	body, err := support.ReadAllWithLimit(resp.Body, bodyLimit)
+	body, err := support.ReadAllWithLimit(resp.Body, scraperFallbackMaxResponseBodyBytes())
 	if err != nil {
-		if errors.Is(err, support.ErrResponseBodyTooLarge) {
-			return "", fmt.Errorf("fallback response body exceeded %d bytes", bodyLimit)
-		}
 		return "", err
 	}
-
 	return string(body), nil
 }
 
@@ -416,58 +238,6 @@ func scraperCapturedMaxResponseBodyBytes() int64 {
 		limit = defaultScraperCapturedMaxBody
 	}
 	return int64(limit)
-}
-
-func contentLengthExceedsLimit(headers proto.NetworkHeaders, limit int64) bool {
-	if limit <= 0 {
-		return true
-	}
-	raw := strings.TrimSpace(headerValue(headers, "Content-Length"))
-	if raw == "" {
-		return false
-	}
-	length, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || length < 0 {
-		return false
-	}
-	return length > limit
-}
-
-func validateScrapeTarget(rawURL string, timeout time.Duration) error {
-	limit := 5 * time.Second
-	if timeout > 0 && timeout < limit {
-		limit = timeout
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
-	defer cancel()
-
-	if _, err := support.ValidateOutboundHTTPURLContext(ctx, rawURL); err != nil {
-		return fmt.Errorf("unsafe scrape target: %w", err)
-	}
-
-	return nil
-}
-
-func validateScrapeRuntimeURL(rawURL string, timeout time.Duration) error {
-	lower := strings.ToLower(strings.TrimSpace(rawURL))
-	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
-		return nil
-	}
-
-	limit := 2 * time.Second
-	if timeout > 0 && timeout < limit {
-		limit = timeout
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
-	defer cancel()
-
-	if _, err := support.ValidateOutboundHTTPURLContext(ctx, rawURL); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func validateScrapeRemoteIP(rawIP string) error {
