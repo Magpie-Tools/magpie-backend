@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"magpie/internal/api/dto"
@@ -16,6 +15,7 @@ import (
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	jobruntime "magpie/internal/jobs/runtime"
+	"magpie/internal/settings"
 	"magpie/internal/support"
 	"net/http"
 	"strings"
@@ -413,7 +413,7 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 	workspaceJudges := database.GetWorkspaceJudges(workspaceID)
 	scrapingSources := database.GetScrapingSourcesOfUsers(workspaceID)
 
-	json.NewEncoder(w).Encode(workspace.ToUserSettings(workspaceJudges, scrapingSources, preference))
+	writeJSON(w, http.StatusOK, workspace.ToUserSettings(workspaceJudges, scrapingSources, preference))
 }
 
 func saveUserSettings(w http.ResponseWriter, r *http.Request) {
@@ -433,35 +433,21 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var blocked []string
-	for _, judge := range userSettings.SimpleUserJudges {
-		if config.IsWebsiteBlocked(judge.Url) {
-			blocked = append(blocked, judge.Url)
+	if err := settings.SaveWorkspace(workspaceID, userID, userSettings); err != nil {
+		var blocked *settings.BlockedJudgesError
+		if errors.As(err, &blocked) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error":            "One or more judges point to blocked websites",
+				"blocked_websites": blocked.URLs,
+			})
+			return
 		}
-	}
-
-	if len(blocked) > 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{
-			"error":            "One or more judges point to blocked websites",
-			"blocked_websites": dedupe(blocked),
-		})
-		return
-	}
-
-	if err := database.UpdateWorkspaceSettings(workspaceID, userID, userSettings); err != nil {
 		log.Error("failed to update workspace settings", "workspace_id", workspaceID, "user_id", userID, "error", err)
 		writeError(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	jwrList, err := database.GetWorkspaceJudgesWithRegex(workspaceID)
-	if err != nil {
-		log.Warn("failed to refresh workspace judge cache after settings update", "workspace_id", workspaceID, "error", err)
-	} else {
-		judges.SetUserJudges(workspaceID, jwrList)
-	}
-
-	json.NewEncoder(w).Encode(map[string]string{"message": "Settings saved successfully"})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Settings saved successfully"})
 }
 
 func getUserRole(w http.ResponseWriter, r *http.Request) {
@@ -473,7 +459,7 @@ func getUserRole(w http.ResponseWriter, r *http.Request) {
 
 	user := database.GetUserFromId(userID)
 
-	json.NewEncoder(w).Encode(user.Role)
+	writeJSON(w, http.StatusOK, user.Role)
 }
 
 func changePassword(w http.ResponseWriter, r *http.Request) {
@@ -513,7 +499,7 @@ func changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode("Password changed successfully")
+	writeJSON(w, http.StatusOK, "Password changed successfully")
 }
 
 func changePasswordWithSessionRevocation(userID uint, currentPasswordHash string, payload dto.ChangePassword) error {
@@ -619,7 +605,7 @@ func deleteAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode("Account deleted successfully")
+	writeJSON(w, http.StatusOK, "Account deleted successfully")
 }
 
 func createUserWithFirstAdminRole(user *domain.User, policy userRegistrationPolicy) error {

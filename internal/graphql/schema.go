@@ -11,6 +11,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	workspacesettings "magpie/internal/settings"
 )
 
 type viewerData struct {
@@ -500,9 +501,6 @@ func NewSchema() (gql.Schema, error) {
 			"judges": &gql.InputObjectFieldConfig{
 				Type: gql.NewList(gql.NewNonNull(judgeInputType)),
 			},
-			"scrapingSources": &gql.InputObjectFieldConfig{
-				Type: gql.NewList(gql.NewNonNull(gql.String)),
-			},
 			"proxyListColumns": &gql.InputObjectFieldConfig{
 				Type: gql.NewList(gql.NewNonNull(gql.String)),
 			},
@@ -872,6 +870,12 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	if domain.WorkspaceRoleRank(role) < domain.WorkspaceRoleRank(domain.WorkspaceRoleOperator) {
 		return fmt.Errorf("workspace role does not permit settings changes")
 	}
+	timeout, _ := input["timeout"].(int)
+	retries, _ := input["retries"].(int)
+	failureThreshold, _ := input["autoRemoveFailureThreshold"].(int)
+	if err := workspacesettings.ValidateCheckerLimits(timeout, retries, failureThreshold); err != nil {
+		return err
+	}
 	workspace := database.GetWorkspaceByID(workspaceID)
 	if workspace.ID == 0 {
 		return fmt.Errorf("workspace %d not found", workspaceID)
@@ -893,10 +897,10 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	if v, ok := input["socks5Protocol"].(bool); ok {
 		settings.SOCKS5Protocol = v
 	}
-	if v, ok := input["timeout"].(int); ok && v >= 0 {
+	if v, ok := input["timeout"].(int); ok {
 		settings.Timeout = uint16(v)
 	}
-	if v, ok := input["retries"].(int); ok && v >= 0 {
+	if v, ok := input["retries"].(int); ok {
 		settings.Retries = uint8(v)
 	}
 	if v, ok := input["useHttpsForSocks"].(bool); ok {
@@ -905,10 +909,7 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	if v, ok := input["autoRemoveFailingProxies"].(bool); ok {
 		settings.AutoRemoveFailingProxies = v
 	}
-	if v, ok := input["autoRemoveFailureThreshold"].(int); ok && v >= 0 {
-		if v > 255 {
-			v = 255
-		}
+	if v, ok := input["autoRemoveFailureThreshold"].(int); ok {
 		settings.AutoRemoveFailureThreshold = uint8(v)
 	}
 
@@ -929,15 +930,6 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 		settings.SimpleUserJudges = judges
 	}
 
-	if rawSources, ok := input["scrapingSources"].([]interface{}); ok {
-		sources := make([]string, 0, len(rawSources))
-		for _, raw := range rawSources {
-			if s, ok := raw.(string); ok {
-				sources = append(sources, s)
-			}
-		}
-		settings.ScrapingSources = sources
-	}
 	if rawColumns, ok := input["proxyListColumns"].([]interface{}); ok {
 		columns := make([]string, 0, len(rawColumns))
 		for _, raw := range rawColumns {
@@ -966,7 +958,7 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 		settings.ScrapeSourceListColumns = columns
 	}
 
-	if err := database.UpdateWorkspaceSettings(workspaceID, userID, settings); err != nil {
+	if err := workspacesettings.SaveWorkspace(workspaceID, userID, settings); err != nil {
 		return err
 	}
 

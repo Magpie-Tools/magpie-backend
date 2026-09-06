@@ -77,7 +77,6 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
 	processingMs := time.Since(startedAt).Milliseconds()
 	response := dto.AddProxiesResponse{
 		ProxyCount: insertedCount,
@@ -93,7 +92,7 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 			ProcessingMs:        processingMs,
 		},
 	}
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func ingestProxyUploadMultipart(w http.ResponseWriter, r *http.Request, userID uint, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
@@ -312,7 +311,7 @@ func getProxyPage(w http.ResponseWriter, r *http.Request) {
 		Total:   total,
 	}
 
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func getProxyFilters(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +328,7 @@ func getProxyFilters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(options)
+	writeJSON(w, http.StatusOK, options)
 }
 
 func normalizeQueryList(values []string) []string {
@@ -399,7 +398,7 @@ func getProxyCount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(database.GetAllProxyCountOfUser(userID))
+	writeJSON(w, http.StatusOK, database.GetAllProxyCountOfUser(userID))
 }
 
 func getProxyDetail(w http.ResponseWriter, r *http.Request) {
@@ -428,7 +427,7 @@ func getProxyDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(detail)
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func updateManagedProxyLifecycle(w http.ResponseWriter, r *http.Request) {
@@ -554,7 +553,7 @@ func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]any{"statistics": statistics})
+	writeJSON(w, http.StatusOK, map[string]any{"statistics": statistics})
 }
 
 func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
@@ -590,7 +589,7 @@ func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(responseDetail)
+	writeJSON(w, http.StatusOK, responseDetail)
 }
 
 func deleteProxies(w http.ResponseWriter, r *http.Request) {
@@ -637,11 +636,11 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if deleted == 0 {
-			json.NewEncoder(w).Encode("No proxies matched the delete criteria.")
+			writeJSON(w, http.StatusOK, "No proxies matched the delete criteria.")
 			return
 		}
 
-		json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies.", deleted))
+		writeJSON(w, http.StatusOK, fmt.Sprintf("Deleted %d proxies.", deleted))
 		return
 	}
 
@@ -674,11 +673,11 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if deleted == 0 {
-		json.NewEncoder(w).Encode("No proxies matched the delete criteria.")
+		writeJSON(w, http.StatusOK, "No proxies matched the delete criteria.")
 		return
 	}
 
-	json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d proxies.", deleted))
+	writeJSON(w, http.StatusOK, fmt.Sprintf("Deleted %d proxies.", deleted))
 }
 
 func exportProxies(w http.ResponseWriter, r *http.Request) {

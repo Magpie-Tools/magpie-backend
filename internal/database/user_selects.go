@@ -20,8 +20,6 @@ var checkerWorkspaceSelectColumns = []string{
 	"auto_remove_failure_threshold",
 }
 
-var checkerUserSelectColumns = checkerWorkspaceSelectColumns
-
 func preloadCheckerWorkspaces(db *gorm.DB) *gorm.DB {
 	return db.Select(checkerWorkspaceSelectColumns)
 }
@@ -29,9 +27,6 @@ func preloadCheckerWorkspaces(db *gorm.DB) *gorm.DB {
 func preloadWorkspaceIDsOnly(db *gorm.DB) *gorm.DB {
 	return db.Select("id")
 }
-
-func preloadCheckerUsers(db *gorm.DB) *gorm.DB { return preloadCheckerWorkspaces(db) }
-func preloadUserIDsOnly(db *gorm.DB) *gorm.DB  { return preloadWorkspaceIDsOnly(db) }
 
 type activeProxyWorkspaceRow struct {
 	ProxyID                    uint64 `gorm:"column:proxy_id"`

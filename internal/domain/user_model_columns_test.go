@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestNormalizeProxyListColumns_PreservesCheckNow(t *testing.T) {
 	columns := NormalizeProxyListColumns([]string{"alive", "check_now", "actions"})
@@ -43,5 +46,33 @@ func TestNormalizeScrapeSourceListColumns_PreservesAliveCount(t *testing.T) {
 	}
 	if columns[1] != "alive_count" {
 		t.Fatalf("columns[1] = %q, want alive_count", columns[1])
+	}
+}
+
+func TestNormalizeColumnsPreservesAliasesOrderAndIndependentDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		normalize   func([]string) []string
+		input, want []string
+	}{
+		{"proxy", NormalizeProxyListColumns, []string{"alive_ratio_http", "invalid", "health_http", "tags"}, []string{"health_http", "tags"}},
+		{"source proxy", NormalizeScrapeSourceProxyColumns, []string{"alive_ratio_http", "invalid", "health_http", "tags"}, []string{"health_http", "tags"}},
+		{"source", NormalizeScrapeSourceListColumns, []string{"details", "invalid", "actions", "url"}, []string{"actions", "url"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.normalize(tc.input)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("normalized columns = %v, want %v", got, tc.want)
+			}
+			defaults := tc.normalize(nil)
+			fallback := tc.normalize([]string{"invalid"})
+			if !slices.Equal(fallback, defaults) {
+				t.Fatalf("invalid columns fallback = %v, want %v", fallback, defaults)
+			}
+			fallback[0] = "modified"
+			if !slices.Equal(tc.normalize(nil), defaults) {
+				t.Fatal("caller mutated shared defaults")
+			}
+		})
 	}
 }

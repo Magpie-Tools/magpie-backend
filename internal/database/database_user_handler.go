@@ -29,44 +29,6 @@ func GetUserFromId(id uint) domain.User {
 	return users
 }
 
-func GetUsersByIDsForChecker(ids []uint) (map[uint]domain.User, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
-	unique := make(map[uint]struct{}, len(ids))
-	filtered := make([]uint, 0, len(ids))
-	for _, id := range ids {
-		if id == 0 {
-			continue
-		}
-		if _, exists := unique[id]; exists {
-			continue
-		}
-		unique[id] = struct{}{}
-		filtered = append(filtered, id)
-	}
-
-	if len(filtered) == 0 {
-		return nil, nil
-	}
-
-	var users []domain.User
-	if err := DB.Model(&domain.User{}).
-		Select(checkerUserSelectColumns).
-		Where("id IN ?", filtered).
-		Find(&users).Error; err != nil {
-		return nil, err
-	}
-
-	result := make(map[uint]domain.User, len(users))
-	for _, user := range users {
-		result[user.ID] = user
-	}
-
-	return result, nil
-}
-
 func GetWorkspacesThatDontHaveJudges() []domain.Workspace {
 	var workspaces []domain.Workspace
 	DB.Where("id NOT IN (SELECT DISTINCT workspace_id FROM user_judges)").Find(&workspaces)

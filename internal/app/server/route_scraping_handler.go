@@ -32,7 +32,7 @@ func getScrapeSourcesCount(w http.ResponseWriter, r *http.Request) {
 
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	filters := parseScrapeSourceListFilters(r)
-	json.NewEncoder(w).Encode(database.GetAllScrapeSiteCountOfUserWithSearchAndFilters(userID, search, filters))
+	writeJSON(w, http.StatusOK, database.GetAllScrapeSiteCountOfUserWithSearchAndFilters(userID, search, filters))
 }
 
 func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +59,7 @@ func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
 	}
 	scrapeSiteInfoPages := database.GetScrapeSiteInfoPageWithOptions(userID, page, pageSize, search, filters)
 
-	json.NewEncoder(w).Encode(scrapeSiteInfoPages)
+	writeJSON(w, http.StatusOK, scrapeSiteInfoPages)
 }
 
 func parseScrapeSourceListFilters(r *http.Request) dto.ScrapeSourceListFilters {
@@ -190,7 +190,7 @@ func getScrapeSourceProxies(w http.ResponseWriter, r *http.Request) {
 		Total:   total,
 	}
 
-	json.NewEncoder(w).Encode(response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func getScrapeSourceDetail(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +219,7 @@ func getScrapeSourceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(detail)
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func requeueScrapeSource(w http.ResponseWriter, r *http.Request) {
@@ -349,11 +349,11 @@ func writeScrapeSourceDeleteResponse(w http.ResponseWriter, deleted int64, orpha
 	}
 
 	if deleted == 0 {
-		json.NewEncoder(w).Encode("No scraping sources matched the delete criteria.")
+		writeJSON(w, http.StatusOK, "No scraping sources matched the delete criteria.")
 		return
 	}
 
-	json.NewEncoder(w).Encode(fmt.Sprintf("Deleted %d scraping sources.", deleted))
+	writeJSON(w, http.StatusOK, fmt.Sprintf("Deleted %d scraping sources.", deleted))
 }
 
 func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
@@ -453,8 +453,7 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]int{"sourceCount": len(sites)})
+	writeJSON(w, http.StatusOK, map[string]int{"sourceCount": len(sites)})
 }
 
 func checkScrapeSourceRobots(w http.ResponseWriter, r *http.Request) {

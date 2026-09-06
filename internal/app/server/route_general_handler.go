@@ -1,14 +1,13 @@
 package server
 
 import (
-	"encoding/json"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"net/http"
 )
 
 func getGlobalSettings(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(config.GetConfig())
+	writeJSON(w, http.StatusOK, config.GetConfig())
 }
 
 func getDashboardInfo(w http.ResponseWriter, r *http.Request) {
@@ -20,5 +19,5 @@ func getDashboardInfo(w http.ResponseWriter, r *http.Request) {
 
 	dashInfo := database.GetDashboardInfo(userID)
 
-	json.NewEncoder(w).Encode(dashInfo)
+	writeJSON(w, http.StatusOK, dashInfo)
 }

@@ -114,67 +114,23 @@ func (u *User) ToUserSettings(simpleUserJudges []dto.SimpleUserJudge, scrapingSo
 }
 
 func NormalizeProxyListColumns(columns []string) []string {
-	if len(columns) == 0 {
-		return append([]string(nil), defaultProxyListColumns...)
-	}
-
-	seen := make(map[string]struct{}, len(columns))
-	normalized := make([]string, 0, len(columns))
-	for _, column := range columns {
-		canonical := canonicalProxyListColumn(column)
-		if _, exists := validProxyListColumns[canonical]; !exists {
-			continue
-		}
-		if _, duplicate := seen[canonical]; duplicate {
-			continue
-		}
-		seen[canonical] = struct{}{}
-		normalized = append(normalized, canonical)
-	}
-
-	if len(normalized) == 0 {
-		return append([]string(nil), defaultProxyListColumns...)
-	}
-
-	return normalized
+	return normalizeColumns(columns, defaultProxyListColumns, validProxyListColumns, canonicalProxyListColumn)
 }
 
 func NormalizeScrapeSourceProxyColumns(columns []string) []string {
-	if len(columns) == 0 {
-		return append([]string(nil), defaultScrapeSourceProxyColumns...)
-	}
-
-	seen := make(map[string]struct{}, len(columns))
-	normalized := make([]string, 0, len(columns))
-	for _, column := range columns {
-		canonical := canonicalProxyListColumn(column)
-		if _, exists := validProxyListColumns[canonical]; !exists {
-			continue
-		}
-		if _, duplicate := seen[canonical]; duplicate {
-			continue
-		}
-		seen[canonical] = struct{}{}
-		normalized = append(normalized, canonical)
-	}
-
-	if len(normalized) == 0 {
-		return append([]string(nil), defaultScrapeSourceProxyColumns...)
-	}
-
-	return normalized
+	return normalizeColumns(columns, defaultScrapeSourceProxyColumns, validProxyListColumns, canonicalProxyListColumn)
 }
 
 func NormalizeScrapeSourceListColumns(columns []string) []string {
-	if len(columns) == 0 {
-		return append([]string(nil), defaultScrapeSourceListColumns...)
-	}
+	return normalizeColumns(columns, defaultScrapeSourceListColumns, validScrapeSourceListColumns, canonicalScrapeSourceListColumn)
+}
 
+func normalizeColumns(columns, defaults []string, valid map[string]struct{}, canonicalize func(string) string) []string {
 	seen := make(map[string]struct{}, len(columns))
 	normalized := make([]string, 0, len(columns))
 	for _, column := range columns {
-		canonical := canonicalScrapeSourceListColumn(column)
-		if _, exists := validScrapeSourceListColumns[canonical]; !exists {
+		canonical := canonicalize(column)
+		if _, exists := valid[canonical]; !exists {
 			continue
 		}
 		if _, duplicate := seen[canonical]; duplicate {
@@ -183,11 +139,9 @@ func NormalizeScrapeSourceListColumns(columns []string) []string {
 		seen[canonical] = struct{}{}
 		normalized = append(normalized, canonical)
 	}
-
 	if len(normalized) == 0 {
-		return append([]string(nil), defaultScrapeSourceListColumns...)
+		return append([]string(nil), defaults...)
 	}
-
 	return normalized
 }
 
