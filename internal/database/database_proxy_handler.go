@@ -24,7 +24,6 @@ import (
 )
 
 const (
-	batchThreshold             = 8191  // Use batches when exceeding this number of records
 	maxParamsPerBatch          = 65534 // Conservative default (PostgreSQL's limit) - 1
 	minBatchSize               = 100   // Minimum batch size to maintain efficiency
 	deleteChunkSize            = 5000  // Keep large deletes under Postgres parameter limits
@@ -82,7 +81,7 @@ func InsertAndGetProxiesWithWorkspace(proxies []domain.Proxy, workspaceIDs ...ui
 
 	proxiesWithWorkspaces, err := fetchProxiesWithWorkspaces(DB, inserted)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load imported proxies with workspaces: %w", err)
 	}
 
 	return proxiesWithWorkspaces, nil
@@ -106,7 +105,6 @@ func insertAndAssociateProxies(proxies []domain.Proxy, workspaceIDs []uint) ([]d
 		return nil, nil
 	}
 
-	batchSize := calculateBatchSize(len(uniqueProxies))
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
@@ -118,19 +116,19 @@ func insertAndAssociateProxies(proxies []domain.Proxy, workspaceIDs []uint) ([]d
 		plan, err := planWorkspaceManagedProxyStates(tx, workspaceID, uniqueProxies)
 		if err != nil {
 			tx.Rollback()
-			return nil, err
+			return nil, fmt.Errorf("plan workspace %d proxy states: %w", workspaceID, err)
 		}
 		associationPlans[workspaceID] = plan
 	}
 
-	if err := insertProxies(tx, uniqueProxies, batchSize); err != nil {
+	if err := insertProxies(tx, uniqueProxies); err != nil {
 		tx.Rollback()
-		return nil, err
+		return nil, fmt.Errorf("insert %d proxy routes: %w", len(uniqueProxies), err)
 	}
 
 	if err := ensureProxyIDs(tx, uniqueProxies); err != nil {
 		tx.Rollback()
-		return nil, err
+		return nil, fmt.Errorf("resolve proxy IDs: %w", err)
 	}
 
 	hashToID := make(map[string]uint64, len(uniqueProxies))
@@ -155,9 +153,9 @@ func insertAndAssociateProxies(proxies []domain.Proxy, workspaceIDs []uint) ([]d
 			continue
 		}
 
-		if err := createWorkspaceAssociations(tx, workspaceProxies, workspaceID, plan, batchSize); err != nil {
+		if err := createWorkspaceAssociations(tx, workspaceProxies, workspaceID, plan); err != nil {
 			tx.Rollback()
-			return nil, err
+			return nil, fmt.Errorf("associate %d proxies with workspace %d: %w", len(workspaceProxies), workspaceID, err)
 		}
 	}
 
@@ -223,17 +221,22 @@ func planWorkspaceManagedProxyStates(tx *gorm.DB, workspaceID uint, proxies []do
 	for _, proxy := range proxies {
 		hashes = append(hashes, proxy.Hash)
 	}
-	var existingRows []existingRow
-	if err := tx.Table("user_proxies up").
-		Select("p.hash, up.state, up.pause_reason").
-		Joins("JOIN proxies p ON p.id = up.proxy_id").
-		Where("up.workspace_id = ? AND p.hash IN ?", workspaceID, hashes).
-		Scan(&existingRows).Error; err != nil {
-		return nil, err
-	}
-	existing := make(map[string]managedProxyStatePlan, len(existingRows))
-	for _, row := range existingRows {
-		existing[string(row.Hash)] = managedProxyStatePlan{State: row.State, PauseReason: row.PauseReason}
+	existing := make(map[string]managedProxyStatePlan)
+	// Reserve one parameter for workspace_id in addition to the route hashes.
+	const lookupBatchSize = maxParamsPerBatch - 1
+	for start := 0; start < len(hashes); start += lookupBatchSize {
+		end := min(start+lookupBatchSize, len(hashes))
+		var existingRows []existingRow
+		if err := tx.Table("user_proxies up").
+			Select("p.hash, up.state, up.pause_reason").
+			Joins("JOIN proxies p ON p.id = up.proxy_id").
+			Where("up.workspace_id = ? AND p.hash IN ?", workspaceID, hashes[start:end]).
+			Scan(&existingRows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range existingRows {
+			existing[string(row.Hash)] = managedProxyStatePlan{State: row.State, PauseReason: row.PauseReason}
+		}
 	}
 
 	limit, unlimited := subscription.ActivationLimit()
@@ -285,31 +288,31 @@ func deduplicateProxies(proxies []domain.Proxy) ([]domain.Proxy, error) {
 	return unique, nil
 }
 
-func calculateBatchSize(proxyCount int) int {
-	if proxyCount <= batchThreshold {
-		return proxyCount
+// Size inserts for their own table, including small imports. A row count that
+// fits proxies can exceed the parameter budget for wider managed-proxy rows.
+// Counting every mapped column also reserves room for explicitly supplied IDs.
+func calculateCreateBatchSize(tx *gorm.DB, model any, rowCount int) (int, error) {
+	if rowCount <= 0 {
+		return 0, nil
 	}
-
-	numFields, err := getNumDatabaseFields(domain.Proxy{}, DB)
-	if err != nil || numFields == 0 {
-		return minBatchSize // Fallback to safe minimum
+	numFields, err := getNumDatabaseFields(model, tx)
+	if err != nil {
+		return 0, err
 	}
-
-	batchSize := maxParamsPerBatch / numFields
-	return clamp(batchSize, minBatchSize, proxyCount)
+	if numFields <= 0 || numFields > maxParamsPerBatch {
+		return 0, fmt.Errorf("cannot batch insert with %d database fields", numFields)
+	}
+	return min(maxParamsPerBatch/numFields, rowCount), nil
 }
 
-func clamp(value, min, max int) int {
-	if value < min {
-		return min
+func insertProxies(tx *gorm.DB, proxies []domain.Proxy) error {
+	if len(proxies) == 0 {
+		return nil
 	}
-	if value > max {
-		return max
+	batchSize, err := calculateCreateBatchSize(tx, domain.Proxy{}, len(proxies))
+	if err != nil {
+		return err
 	}
-	return value
-}
-
-func insertProxies(tx *gorm.DB, proxies []domain.Proxy, batchSize int) error {
 	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "hash"}},
 		DoUpdates: clause.AssignmentColumns([]string{"hash"}), // Return IDs for existing routes.
@@ -328,20 +331,22 @@ func ensureProxyIDs(tx *gorm.DB, proxies []domain.Proxy) error {
 		return nil
 	}
 
-	var results []struct {
-		ID   uint64
-		Hash []byte
-	}
-	if err := tx.Model(&domain.Proxy{}).
-		Select("id, hash").
-		Where("hash IN ?", missing).
-		Find(&results).Error; err != nil {
-		return err
-	}
-
-	lookup := make(map[string]uint64, len(results))
-	for _, r := range results {
-		lookup[string(r.Hash)] = r.ID
+	lookup := make(map[string]uint64, len(missing))
+	for start := 0; start < len(missing); start += maxParamsPerBatch {
+		end := min(start+maxParamsPerBatch, len(missing))
+		var results []struct {
+			ID   uint64
+			Hash []byte
+		}
+		if err := tx.Model(&domain.Proxy{}).
+			Select("id, hash").
+			Where("hash IN ?", missing[start:end]).
+			Find(&results).Error; err != nil {
+			return err
+		}
+		for _, r := range results {
+			lookup[string(r.Hash)] = r.ID
+		}
 	}
 
 	for i, proxy := range proxies {
@@ -356,9 +361,14 @@ func ensureProxyIDs(tx *gorm.DB, proxies []domain.Proxy) error {
 	return nil
 }
 
-func createWorkspaceAssociations(tx *gorm.DB, proxies []domain.Proxy, workspaceID uint, plans map[string]managedProxyStatePlan, batchSize int) error {
+func createWorkspaceAssociations(tx *gorm.DB, proxies []domain.Proxy, workspaceID uint, plans map[string]managedProxyStatePlan) error {
 	if len(proxies) == 0 {
 		return nil
+	}
+
+	batchSize, err := calculateCreateBatchSize(tx, domain.ManagedProxy{}, len(proxies))
+	if err != nil {
+		return err
 	}
 
 	associations := make([]domain.ManagedProxy, len(proxies))

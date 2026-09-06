@@ -424,7 +424,7 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) (int, error) {
 
 	proxies, err := database.InsertAndGetProxiesWithWorkspace(parsedProxies, support.GetWorkspaceIDsFromList(site.Workspaces)...)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("save %d scraped proxies: %w", len(parsedProxies), err)
 	} else {
 		proxiesToEnrich := database.FilterProxiesMissingGeo(proxies)
 		if len(proxiesToEnrich) > 0 {
@@ -434,7 +434,7 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) (int, error) {
 
 	err = database.AssociateProxiesToScrapeSite(site.ID, proxies)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("associate proxies with source: %w", err)
 	}
 
 	err = proxyqueue.PublicProxyQueue.AddToQueue(proxies)
