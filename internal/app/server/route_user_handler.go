@@ -450,6 +450,20 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Settings saved successfully"})
 }
 
+func getUserProfile(w http.ResponseWriter, r *http.Request) {
+	userID, err := auth.GetUserIDFromRequest(r)
+	if err != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	user := database.GetUserFromId(userID)
+	if user.ID == 0 {
+		writeError(w, "User not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"email": user.Email, "role": user.Role})
+}
+
 func getUserRole(w http.ResponseWriter, r *http.Request) {
 	userID, userErr := auth.GetUserIDFromRequest(r)
 	if userErr != nil {

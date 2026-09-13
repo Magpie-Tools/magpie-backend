@@ -140,6 +140,7 @@ func OpenRoutes(ctx context.Context, port int) error {
 	apiMux.Handle("POST /user/settings", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(saveUserSettings))))
 	apiMux.Handle("GET /workspace/settings", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getUserSettings))))
 	apiMux.Handle("POST /workspace/settings", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(saveUserSettings))))
+	apiMux.Handle("GET /user/profile", auth.RequireAuth(http.HandlerFunc(getUserProfile)))
 	apiMux.Handle("GET /user/role", auth.RequireAuth(http.HandlerFunc(getUserRole)))
 	apiMux.Handle("POST /user/export", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(exportProxies))))
 	apiMux.Handle("GET /global/settings", auth.IsAdmin(http.HandlerFunc(getGlobalSettings)))
