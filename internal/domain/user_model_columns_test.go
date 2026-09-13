@@ -76,3 +76,15 @@ func TestNormalizeColumnsPreservesAliasesOrderAndIndependentDefaults(t *testing.
 		})
 	}
 }
+
+func TestNormalizeProxyColumns_PreservesActionButtons(t *testing.T) {
+	for _, normalize := range []func([]string) []string{NormalizeProxyListColumns, NormalizeScrapeSourceProxyColumns} {
+		got := normalize([]string{"ip_port", "actions_buttons"})
+		if !slices.Equal(got, []string{"ip_port", "actions_buttons"}) {
+			t.Fatalf("column preference lost: %v", got)
+		}
+		if slices.Contains(normalize(nil), "actions_buttons") {
+			t.Fatal("inline action buttons must remain opt-in")
+		}
+	}
+}
