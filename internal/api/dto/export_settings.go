@@ -17,6 +17,8 @@ type ExportSettings struct {
 	Countries        []string `json:"countries"`
 	Types            []string `json:"types"`
 	AnonymityLevels  []string `json:"anonymityLevels"`
+	States           []string `json:"states,omitempty"`
+	State            string   `json:"state"`
 	ProxyStatus      string   `json:"proxyStatus"`
 	ReputationLabels []string `json:"reputationLabels"`
 	TagIDs           []uint64 `json:"tagIds"`

@@ -1129,6 +1129,10 @@ func buildProxyListFilterQuery(userId uint, filters dto.ProxyListFilters) *gorm.
 		Select("ufi.proxy_id").
 		Where("ufi.workspace_id = ?", userId)
 
+	if states := filters.LifecycleStates(); len(states) > 0 {
+		query = query.Where("ufi.state IN ?", states)
+	}
+
 	if filters.Status == "alive" || filters.Status == "dead" {
 		if filters.Status == "alive" {
 			query = query.Where("ufi.alive = ?", true)
@@ -1231,6 +1235,9 @@ func normalizeProtocolFilters(protocols []string) []string {
 }
 
 func hasProxyListFilters(filters dto.ProxyListFilters) bool {
+	if len(filters.LifecycleStates()) > 0 {
+		return true
+	}
 	if filters.Status == "alive" || filters.Status == "dead" {
 		return true
 	}
@@ -2458,6 +2465,8 @@ func proxyListFiltersForExport(settings dto.ExportSettings) dto.ProxyListFilters
 	}
 
 	return dto.ProxyListFilters{
+		States:           dto.NormalizeProxyStateFilters(settings.States),
+		State:            dto.NormalizeProxyStateFilter(settings.State),
 		Status:           settings.ProxyStatus,
 		Protocols:        protocols,
 		MinHealthOverall: int(settings.MinHealthOverall),

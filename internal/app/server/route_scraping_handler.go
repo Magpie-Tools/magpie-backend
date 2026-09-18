@@ -157,6 +157,7 @@ func getScrapeSourceProxies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filters := dto.ProxyListFilters{
+		States:           dto.NormalizeProxyStateFilters(r.URL.Query()["state"]),
 		Status:           status,
 		Protocols:        normalizeQueryList(r.URL.Query()["protocol"]),
 		MinHealthOverall: parseHealthPercentParam(r.URL.Query().Get("minHealthOverall")),

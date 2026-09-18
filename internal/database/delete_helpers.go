@@ -56,6 +56,8 @@ func proxyListFiltersForDelete(settings dto.DeleteSettings) dto.ProxyListFilters
 	}
 
 	return dto.ProxyListFilters{
+		States:           dto.NormalizeProxyStateFilters(settings.States),
+		State:            dto.NormalizeProxyStateFilter(settings.State),
 		Status:           settings.ProxyStatus,
 		Protocols:        protocols,
 		MinHealthOverall: int(settings.MinHealthOverall),
