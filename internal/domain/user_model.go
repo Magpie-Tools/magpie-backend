@@ -33,7 +33,6 @@ var defaultScrapeSourceListColumns = []string{
 	"url",
 	"proxy_count",
 	"health",
-	"robots_check",
 	"actions",
 }
 
@@ -59,13 +58,14 @@ var validProxyListColumns = map[string]struct{}{
 }
 
 var validScrapeSourceListColumns = map[string]struct{}{
-	"url":          {},
-	"proxy_count":  {},
-	"alive_count":  {},
-	"health":       {},
-	"robots_check": {},
-	"scrape_now":   {},
-	"actions":      {},
+	"actions_buttons": {},
+	"url":             {},
+	"proxy_count":     {},
+	"alive_count":     {},
+	"health":          {},
+	"robots_check":    {},
+	"scrape_now":      {},
+	"actions":         {},
 }
 
 type User struct {

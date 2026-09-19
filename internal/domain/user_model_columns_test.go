@@ -88,3 +88,13 @@ func TestNormalizeProxyColumns_PreservesActionButtons(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeScrapeSourceListColumns_PreservesActionButtons(t *testing.T) {
+	got := NormalizeScrapeSourceListColumns([]string{"actions_buttons", "url", "actions", "actions_buttons"})
+	if !slices.Equal(got, []string{"actions_buttons", "url", "actions"}) {
+		t.Fatalf("column preference lost: %v", got)
+	}
+	if slices.Contains(NormalizeScrapeSourceListColumns(nil), "actions_buttons") {
+		t.Fatal("inline action buttons must remain opt-in")
+	}
+}
