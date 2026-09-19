@@ -225,10 +225,15 @@ func GetScrapeSiteInfoPageWithSearch(userId uint, page int, search string) []dto
 }
 
 func GetScrapeSiteInfoPageWithSearchAndFilters(userId uint, page int, search string, filters dto.ScrapeSourceListFilters) []dto.ScrapeSiteInfo {
-	return GetScrapeSiteInfoPageWithOptions(userId, page, scrapeSitesPerPage, search, filters)
+	return GetScrapeSiteInfoPageWithOptions(userId, page, scrapeSitesPerPage, search, filters, ScrapeSourcePageQueryOptions{})
 }
 
-func GetScrapeSiteInfoPageWithOptions(userId uint, page int, pageSize int, search string, filters dto.ScrapeSourceListFilters) []dto.ScrapeSiteInfo {
+type ScrapeSourcePageQueryOptions struct {
+	SortField string
+	SortOrder string
+}
+
+func GetScrapeSiteInfoPageWithOptions(userId uint, page int, pageSize int, search string, filters dto.ScrapeSourceListFilters, options ScrapeSourcePageQueryOptions) []dto.ScrapeSiteInfo {
 	page, pageSize = normalizeScrapeSitePage(page, pageSize)
 	offset := (page - 1) * pageSize
 
@@ -247,12 +252,34 @@ func GetScrapeSiteInfoPageWithOptions(userId uint, page int, pageSize int, searc
 	query = applyScrapeSiteSearch(query, search)
 	query = applyScrapeSiteListFilters(query, filters)
 
-	query.Order("usss.added_at DESC").
+	applyScrapeSourcePageSort(query, options).
 		Offset(offset).
 		Limit(pageSize).
 		Scan(&results)
 
 	return results
+}
+
+func applyScrapeSourcePageSort(query *gorm.DB, options ScrapeSourcePageQueryOptions) *gorm.DB {
+	expression := ""
+	switch options.SortField {
+	case "url":
+		expression = "LOWER(usss.url)"
+	case "proxy_count":
+		expression = "usss.proxy_count"
+	case "alive_count":
+		expression = "usss.alive_count"
+	case "health":
+		// Keep sources without data below zero health, and avoid integer division.
+		expression = "CASE WHEN usss.proxy_count > 0 THEN 1.0 * usss.alive_count / usss.proxy_count ELSE -1 END"
+	}
+	direction := strings.ToLower(strings.TrimSpace(options.SortOrder))
+	if expression == "" || (direction != "asc" && direction != "desc") {
+		return query.Order("usss.added_at DESC, usss.scrape_site_id ASC")
+	}
+	// Only allowlisted expressions and directions enter SQL. A unique tie-breaker
+	// keeps equal values in a stable order across pages.
+	return query.Order(expression + " " + strings.ToUpper(direction) + ", usss.scrape_site_id ASC")
 }
 
 func normalizeScrapeSitePage(page int, pageSize int) (int, int) {

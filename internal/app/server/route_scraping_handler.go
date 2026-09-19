@@ -57,7 +57,10 @@ func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
 			pageSize = parsed
 		}
 	}
-	scrapeSiteInfoPages := database.GetScrapeSiteInfoPageWithOptions(userID, page, pageSize, search, filters)
+	scrapeSiteInfoPages := database.GetScrapeSiteInfoPageWithOptions(userID, page, pageSize, search, filters, database.ScrapeSourcePageQueryOptions{
+		SortField: strings.TrimSpace(r.URL.Query().Get("sortField")),
+		SortOrder: strings.TrimSpace(r.URL.Query().Get("sortOrder")),
+	})
 
 	writeJSON(w, http.StatusOK, scrapeSiteInfoPages)
 }
