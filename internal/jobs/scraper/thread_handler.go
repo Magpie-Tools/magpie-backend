@@ -372,7 +372,7 @@ func processScrapedHTMLJob(job scrapedHTMLJob) {
 	if len(job.site.Workspaces) == 0 {
 		return
 	}
-	count, resultErr = handleScrapedHTML(job.site, job.html)
+	count, resultErr = handleScrapedHTML(job.site, job.html, job.mode)
 }
 
 func enqueueScrapedHTML(ctx context.Context, site domain.ScrapeSite, html, mode string, attemptedAt time.Time) error {
@@ -413,7 +413,7 @@ func resolvePostProcessQueueSize() int {
 
 /* ─────────────────────────────  downstream handlers  ────────────────────── */
 
-func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) (int, error) {
+func handleScrapedHTML(site domain.ScrapeSite, rawHTML, mode string) (int, error) {
 	proxyList := support.GetProxiesOfHTML(rawHTML)
 	parsedProxies := support.ParseScrapedTextToIPv4Proxies(strings.Join(proxyList, "\n"))
 
@@ -435,6 +435,12 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML string) (int, error) {
 	err = database.AssociateProxiesToScrapeSite(site.ID, proxies)
 	if err != nil {
 		return 0, fmt.Errorf("associate proxies with source: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := database.ApplyScrapeSourceTags(ctx, site.ID, mode, support.GetWorkspaceIDsFromList(site.Workspaces), proxies); err != nil {
+		return 0, fmt.Errorf("assign source tags: %w", err)
 	}
 
 	err = proxyqueue.PublicProxyQueue.AddToQueue(proxies)

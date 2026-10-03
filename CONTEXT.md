@@ -64,6 +64,18 @@ _Avoid_: Global proxy label, route tag
 The association between one proxy tag and one managed proxy. A managed proxy may have several tag assignments.
 _Avoid_: Proxy category
 
+**Scrape source**:
+A webpage URL from which Magpie extracts proxy routes.
+_Avoid_: Proxy provider, source website
+
+**Source subscription**:
+A workspace's use of one scrape source, including its source settings.
+_Avoid_: Source ownership, personal source
+
+**Source tagging rule**:
+A workspace's selection of tags to add to managed proxies observed in each future scrape of one subscribed source. These assignments accumulate with existing tags and remain until explicitly removed.
+_Avoid_: Source label, automatic proxy category
+
 **Organization**:
 A future billing and identity parent for several workspaces. Organizations are not part of the current ownership path.
 _Avoid_: Workspace

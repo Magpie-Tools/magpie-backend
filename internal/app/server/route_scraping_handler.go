@@ -379,6 +379,11 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "fetch_mode must be http or browser", http.StatusBadRequest)
 		return
 	}
+	tagIDs, err := parseStrictProxyTagIDs(r.MultipartForm.Value["auto_tag_ids"])
+	if err != nil {
+		writeError(w, "auto_tag_ids must contain positive tag ids", http.StatusBadRequest)
+		return
+	}
 	textareaContent := r.FormValue("scrapeSourceTextarea") // Match the key sent by frontend
 	clipboardContent := r.FormValue("clipboardScrapeSources")
 	file, fileHeader, err := r.FormFile("file") // "file" is the key of the form field
@@ -444,8 +449,12 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sites, err := database.SaveScrapingSourcesWithMode(userID, allowedSources, mode)
+	sites, err := database.SaveScrapingSourcesWithSettings(userID, allowedSources, mode, tagIDs)
 	if err != nil {
+		if errors.Is(err, database.ErrProxyTagNotFound) {
+			writeError(w, "One or more automatic tags do not belong to this workspace", http.StatusBadRequest)
+			return
+		}
 		log.Error("Could not save sources to database", "error", err.Error())
 		writeError(w, "Could not save sources to database", http.StatusInternalServerError)
 		return
@@ -559,18 +568,32 @@ func updateScrapeSourceSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Invalid scrape source id", http.StatusBadRequest)
 		return
 	}
-	var settings struct {
-		FetchMode string `json:"fetch_mode"`
-	}
+	var settings dto.ScrapeSourceSettings
 	if !decodeJSONBodyLimited(w, r, &settings, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	if !domain.ValidScrapeFetchMode(settings.FetchMode) {
+	if settings.FetchMode == nil && settings.AutoTagIDs == nil {
+		writeError(w, "Supply fetch_mode or auto_tag_ids", http.StatusBadRequest)
+		return
+	}
+	if settings.FetchMode != nil && !domain.ValidScrapeFetchMode(*settings.FetchMode) {
 		writeError(w, "fetch_mode must be http or browser", http.StatusBadRequest)
 		return
 	}
-	updated, err := updateScrapeSourceFetchMode(r.Context(), workspaceID, id, settings.FetchMode)
+	if settings.AutoTagIDs != nil {
+		for _, id := range *settings.AutoTagIDs {
+			if id == 0 {
+				writeError(w, "auto_tag_ids must contain positive tag ids", http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	updated, err := updateScrapeSourceSubscriptionSettings(r.Context(), workspaceID, id, settings)
 	if err != nil {
+		if errors.Is(err, database.ErrProxyTagNotFound) {
+			writeError(w, "One or more automatic tags do not belong to this workspace", http.StatusBadRequest)
+			return
+		}
 		writeError(w, "Could not save scrape source settings", http.StatusInternalServerError)
 		return
 	}
@@ -578,5 +601,5 @@ func updateScrapeSourceSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Scrape source not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"fetch_mode": settings.FetchMode})
+	writeJSON(w, http.StatusOK, settings)
 }

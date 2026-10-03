@@ -237,8 +237,9 @@ func newAdminRequest(t *testing.T, method, path string, userID uint) *http.Reque
 }
 
 func TestUpdateScrapeSourceSettingsValidatesModeAndWorkspace(t *testing.T) {
-	original := updateScrapeSourceFetchMode
-	t.Cleanup(func() { updateScrapeSourceFetchMode = original })
+	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
+	original := updateScrapeSourceSubscriptionSettings
+	t.Cleanup(func() { updateScrapeSourceSubscriptionSettings = original })
 	for _, tc := range []struct {
 		body  string
 		found bool
@@ -246,12 +247,17 @@ func TestUpdateScrapeSourceSettingsValidatesModeAndWorkspace(t *testing.T) {
 	}{
 		{`{"fetch_mode":"http"}`, true, http.StatusOK},
 		{`{"fetch_mode":"browser"}`, true, http.StatusOK},
+		{`{"auto_tag_ids":[1,2]}`, true, http.StatusOK},
+		{`{"auto_tag_ids":[]}`, true, http.StatusOK},
+		{`{"auto_tag_ids":[0]}`, true, http.StatusBadRequest},
+		{`{"auto_tag_ids":[-1]}`, true, http.StatusBadRequest},
+		{`{"auto_tag_ids":"1"}`, true, http.StatusBadRequest},
 		{`{"fetch_mode":"auto"}`, true, http.StatusBadRequest},
 		{`{}`, true, http.StatusBadRequest},
 		{`{"fetch_mode":"http"}`, false, http.StatusNotFound},
 	} {
 		called := false
-		updateScrapeSourceFetchMode = func(ctx context.Context, workspaceID uint, siteID uint64, mode string) (bool, error) {
+		updateScrapeSourceSubscriptionSettings = func(ctx context.Context, workspaceID uint, siteID uint64, settings dto.ScrapeSourceSettings) (bool, error) {
 			called = true
 			if workspaceID != 7 || siteID != 42 {
 				t.Fatalf("wrong update scope: %d/%d", workspaceID, siteID)
@@ -269,5 +275,22 @@ func TestUpdateScrapeSourceSettingsValidatesModeAndWorkspace(t *testing.T) {
 		if tc.want == http.StatusBadRequest && called {
 			t.Fatal("invalid settings reached database")
 		}
+	}
+}
+
+func TestUpdateScrapeSourceSettingsRejectsForeignTags(t *testing.T) {
+	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
+	original := updateScrapeSourceSubscriptionSettings
+	t.Cleanup(func() { updateScrapeSourceSubscriptionSettings = original })
+	updateScrapeSourceSubscriptionSettings = func(context.Context, uint, uint64, dto.ScrapeSourceSettings) (bool, error) {
+		return false, database.ErrProxyTagNotFound
+	}
+	req := newAdminRequest(t, http.MethodPatch, "/api/scrapingSources/42", 7)
+	req.Body = io.NopCloser(strings.NewReader(`{"auto_tag_ids":[9]}`))
+	req.SetPathValue("id", "42")
+	rec := httptest.NewRecorder()
+	updateScrapeSourceSettings(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

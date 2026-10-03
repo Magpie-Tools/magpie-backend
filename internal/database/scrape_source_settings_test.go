@@ -124,6 +124,8 @@ func TestNewSourceModesAndStatusAreReturnedPerWorkspace(t *testing.T) {
 	}
 	for _, sql := range []string{
 		"CREATE TABLE proxy_scrape_site (proxy_id integer, scrape_site_id integer, created_at datetime)",
+		"CREATE TABLE scrape_source_tags (workspace_id integer, scrape_site_id integer, proxy_tag_id integer)",
+		"CREATE TABLE proxy_tags (id integer, workspace_id integer, name text, name_key text, color text)",
 		"CREATE TABLE user_proxies (proxy_id integer, workspace_id integer)",
 		"CREATE TABLE proxy_overall_statuses (proxy_id integer, overall_alive boolean, last_checked_at datetime)",
 		"CREATE TABLE proxy_reputations (proxy_id integer, kind text, score real, label text)",

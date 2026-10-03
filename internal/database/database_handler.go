@@ -223,6 +223,7 @@ func defaultMigrations() []any {
 		domain.UserJudge{},
 		domain.ScrapeSite{},
 		domain.UserScrapeSite{},
+		domain.ScrapeSourceTag{},
 		domain.ProxyScrapeSite{},
 		domain.Protocol{},
 	}

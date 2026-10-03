@@ -48,17 +48,30 @@ func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeS
 }
 
 func SaveScrapingSourcesWithMode(userID uint, sources []string, mode string) ([]domain.ScrapeSite, error) {
+	return SaveScrapingSourcesWithSettings(userID, sources, mode, nil)
+}
+
+func SaveScrapingSourcesWithSettings(userID uint, sources []string, mode string, tagIDs []uint64) ([]domain.ScrapeSite, error) {
 	if !domain.ValidScrapeFetchMode(mode) {
 		return nil, fmt.Errorf("invalid fetch mode")
 	}
 	var sites []domain.ScrapeSite
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		for _, id := range tagIDs {
+			if id == 0 {
+				return ErrProxyTagNotFound
+			}
+		}
+		tagIDs = normalizeUint64IDs(tagIDs)
+		if err := validateScrapeSourceTags(tx, userID, tagIDs); err != nil {
+			return err
+		}
 		sites = make([]domain.ScrapeSite, 0, len(sources))
 		siteIDs := make([]uint64, 0, len(sources))
 
 		// Load the user and existing associations
 		var user domain.Workspace
-		if err := tx.Preload("ScrapeSites").First(&user, userID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("ScrapeSites").First(&user, userID).Error; err != nil {
 			return err
 		}
 
@@ -103,6 +116,9 @@ func SaveScrapingSourcesWithMode(userID uint, sources []string, mode string) ([]
 				associations = append(associations, domain.WorkspaceScrapeSite{WorkspaceID: userID, ScrapeSiteID: site.ID, FetchMode: mode})
 			}
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&associations, 500).Error; err != nil {
+				return err
+			}
+			if err := createScrapeSourceTags(tx, userID, siteIDs, tagIDs); err != nil {
 				return err
 			}
 
@@ -541,7 +557,12 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 		lastCheckedAt = new(stats.LastCheckedAt.Time)
 	}
 
+	autoTags, err := GetScrapeSourceTags(userId, scrapeSiteId)
+	if err != nil {
+		return nil, err
+	}
 	detail := &dto.ScrapeSiteDetail{
+		AutoTags:             autoTags,
 		FetchMode:            base.FetchMode,
 		LastScrapedAt:        base.LastScrapedAt,
 		LastScrapeStatus:     base.LastScrapeStatus,

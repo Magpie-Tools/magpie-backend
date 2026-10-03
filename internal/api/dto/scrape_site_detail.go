@@ -10,6 +10,7 @@ type ScrapeSiteReputationBreakdown struct {
 }
 
 type ScrapeSiteDetail struct {
+	AutoTags             []ProxyTag `json:"auto_tags"`
 	FetchMode            string     `json:"fetch_mode"`
 	LastScrapedAt        *time.Time `json:"last_scraped_at"`
 	LastScrapeStatus     string     `json:"last_scrape_status"`
