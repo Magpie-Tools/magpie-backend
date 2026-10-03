@@ -434,6 +434,10 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := settings.SaveWorkspace(workspaceID, userID, userSettings); err != nil {
+		if errors.Is(err, domain.ErrInvalidFailureAction) {
+			writeError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		var blocked *settings.BlockedJudgesError
 		if errors.As(err, &blocked) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{

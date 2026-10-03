@@ -30,6 +30,7 @@ type workspaceMigrationRow struct {
 	TransportProtocol          string `gorm:"not null;default:'tcp'"`
 	AutoRemoveFailingProxies   bool   `gorm:"not null;default:false"`
 	AutoRemoveFailureThreshold uint8  `gorm:"not null;default:3"`
+	FailureAction              string `gorm:"not null;size:16;default:'pause'"`
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

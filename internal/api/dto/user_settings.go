@@ -11,6 +11,7 @@ type UserSettings struct {
 	TransportProtocol          string `json:"transport_protocol"`
 	AutoRemoveFailingProxies   bool   `json:"auto_remove_failing_proxies"`
 	AutoRemoveFailureThreshold uint8  `json:"auto_remove_failure_threshold"`
+	FailureAction              string `json:"failure_action"`
 
 	SimpleUserJudges []SimpleUserJudge `json:"judges"`
 

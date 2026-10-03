@@ -1951,8 +1951,10 @@ func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, [
 				Joins("JOIN workspaces w ON w.id = up.workspace_id").
 				Where("w.auto_remove_failing_proxies = ?", true).
 				Where("w.auto_remove_failure_threshold > 0").
-				Where("up.state = ?", domain.ManagedProxyStateActive).
-				Where("up.consecutive_failures >= w.auto_remove_failure_threshold")
+			// Delete requires a new failed check, even after a restart.
+			Where("w.failure_action <> ?", domain.FailureActionDelete).
+			Where("up.state = ?", domain.ManagedProxyStateActive).
+			Where("up.consecutive_failures >= w.auto_remove_failure_threshold")
 	)
 
 	result := queryBase.FindInBatches(&batch, autoRemoveCleanupBatchSize, func(tx *gorm.DB, _ int) error {
@@ -2170,6 +2172,43 @@ func PauseManagedProxy(workspaceID uint, proxyID uint64, reason string) (bool, [
 	if err != nil || !paused {
 		return false, nil, err
 	}
+	inactive, err := proxiesWithoutActiveManagement(DB, []uint64{proxyID})
+	return true, inactive, err
+}
+
+// DeleteActiveManagedProxy applies failure deletion atomically. A manual pause
+// or archive during an in-flight check must not turn into an automatic deletion.
+func DeleteActiveManagedProxy(workspaceID uint, proxyID uint64) (bool, []domain.Proxy, error) {
+	if DB == nil {
+		return false, nil, fmt.Errorf("database not initialised")
+	}
+	deleted := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Where("workspace_id = ? AND proxy_id = ? AND state = ?", workspaceID, proxyID, domain.ManagedProxyStateActive).
+			Delete(&domain.ManagedProxy{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		deleted = true
+		if tx.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
+			if err := tx.Where("workspace_id = ? AND proxy_id = ?", workspaceID, proxyID).
+				Delete(&domain.WorkspaceProxyFilterIndex{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := refreshUserScrapeSourceStatsForUserProxyIDs(tx, workspaceID, []uint64{proxyID}); err != nil {
+			return err
+		}
+		return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
+	})
+	if err != nil || !deleted {
+		return false, nil, err
+	}
+	// Paused or archived management in another workspace still retains the route,
+	// but only active management should keep it in checker and rotator queues.
 	inactive, err := proxiesWithoutActiveManagement(DB, []uint64{proxyID})
 	return true, inactive, err
 }

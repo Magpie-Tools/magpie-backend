@@ -9,6 +9,9 @@ import (
 )
 
 const (
+	FailureActionPause  = "pause"
+	FailureActionDelete = "delete"
+
 	WorkspaceRoleOwner    = "owner"
 	WorkspaceRoleAdmin    = "admin"
 	WorkspaceRoleOperator = "operator"
@@ -29,6 +32,7 @@ const (
 )
 
 var (
+	ErrInvalidFailureAction        = errors.New("failure_action must be pause or delete")
 	ErrInvalidWorkspaceRole        = errors.New("invalid workspace role")
 	ErrInvalidWorkspaceOverageMode = errors.New("invalid workspace overage mode")
 )
@@ -50,6 +54,7 @@ type Workspace struct {
 	TransportProtocol          string `gorm:"not null;default:'tcp'"`
 	AutoRemoveFailingProxies   bool   `gorm:"not null;default:false"`
 	AutoRemoveFailureThreshold uint8  `gorm:"not null;default:3"`
+	FailureAction              string `gorm:"not null;size:16;default:'pause'"`
 
 	Memberships  []WorkspaceMembership `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 	Subscription WorkspaceSubscription `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
@@ -90,12 +95,21 @@ func (workspace Workspace) ToUserSettings(judges []dto.SimpleUserJudge, sources 
 		TransportProtocol:          workspace.TransportProtocol,
 		AutoRemoveFailingProxies:   workspace.AutoRemoveFailingProxies,
 		AutoRemoveFailureThreshold: workspace.AutoRemoveFailureThreshold,
+		FailureAction:              workspace.EffectiveFailureAction(),
 		SimpleUserJudges:           judges,
 		ScrapingSources:            sources,
 		ProxyListColumns:           NormalizeProxyListColumns(preference.ProxyListColumns.Clone()),
 		ScrapeSourceProxyColumns:   NormalizeScrapeSourceProxyColumns(preference.ScrapeSourceProxyColumns.Clone()),
 		ScrapeSourceListColumns:    NormalizeScrapeSourceListColumns(preference.ScrapeSourceListColumns.Clone()),
 	}
+}
+
+// EffectiveFailureAction keeps legacy or unset settings on the pause behavior.
+func (workspace Workspace) EffectiveFailureAction() string {
+	if workspace.FailureAction == FailureActionDelete {
+		return FailureActionDelete
+	}
+	return FailureActionPause
 }
 
 type WorkspaceMembership struct {

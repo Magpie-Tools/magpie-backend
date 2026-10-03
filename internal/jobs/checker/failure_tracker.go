@@ -27,6 +27,7 @@ type failureEvent struct {
 	Success           bool
 	AutoRemove        bool
 	FailureThreshold  uint8
+	FailureAction     string
 	HasEligibleChecks bool
 }
 
@@ -58,6 +59,7 @@ type failureIncrementEntry struct {
 	proxyID    uint64
 	autoRemove bool
 	threshold  uint8
+	action     string
 }
 
 type failurePair struct {
@@ -191,6 +193,7 @@ func (ft *failureTracker) processBatch(batch []*failureRequest) {
 				proxyID:    req.proxyID,
 				autoRemove: user.AutoRemove,
 				threshold:  user.FailureThreshold,
+				action:     user.FailureAction,
 			})
 		}
 	}
@@ -228,21 +231,35 @@ func (ft *failureTracker) processBatch(batch []*failureRequest) {
 		if count == 0 || count < uint16(entry.threshold) {
 			continue
 		}
-		paused, inactive, pauseErr := database.PauseManagedProxy(entry.userID, entry.proxyID, domain.ManagedProxyPauseReasonFailure)
-		if pauseErr != nil {
-			log.Error("auto-pause managed proxy", "proxy_id", entry.proxyID, "workspace_id", entry.userID, "error", pauseErr)
-			ft.failBatch(active, pauseErr)
-			return
+		var changed bool
+		var inactive []domain.Proxy
+		var actionErr error
+		action := domain.Workspace{FailureAction: entry.action}.EffectiveFailureAction()
+		if action == domain.FailureActionDelete {
+			changed, inactive, actionErr = database.DeleteActiveManagedProxy(entry.userID, entry.proxyID)
+		} else {
+			changed, inactive, actionErr = database.PauseManagedProxy(entry.userID, entry.proxyID, domain.ManagedProxyPauseReasonFailure)
 		}
-		if !paused {
-			continue
-		}
-		log.Info("auto-pausing managed proxy after repeated failures", "proxy_id", entry.proxyID, "workspace_id", entry.userID, "failures", count)
-		resp := responses[entry.request]
-		resp.markRemoved(entry.userID)
-		if len(inactive) > 0 {
+		// An action may have committed before its inactive-route lookup fails.
+		// Keep those ownership changes, including earlier actions in this batch.
+		if changed {
+			resp := responses[entry.request]
+			resp.markRemoved(entry.userID)
 			resp.orphaned = append(resp.orphaned, inactive...)
 		}
+		if actionErr != nil {
+			log.Error("apply managed proxy failure action", "proxy_id", entry.proxyID, "workspace_id", entry.userID, "action", action, "error", actionErr)
+			for _, req := range active {
+				resp := responses[req]
+				resp.err = actionErr
+				req.respond(*resp)
+			}
+			return
+		}
+		if !changed {
+			continue
+		}
+		log.Info("applied managed proxy failure action", "proxy_id", entry.proxyID, "workspace_id", entry.userID, "action", action, "failures", count)
 	}
 
 	for _, req := range active {

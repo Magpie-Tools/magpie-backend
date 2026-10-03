@@ -40,6 +40,22 @@ _Avoid_: Proxy endpoint, proxy record
 A workspace's management of one proxy route, including its encrypted credential copy, lifecycle state, failure state, and tag assignments. One workspace-to-route association consumes one unit of managed route capacity.
 _Avoid_: Proxy access, user proxy, proxy permission
 
+**Paused managed proxy**:
+A managed proxy retained by its workspace but excluded from active checking and rotation.
+_Avoid_: Deleted proxy, removed proxy
+
+**Managed proxy deletion**:
+Removal of a workspace's management of a proxy route, including its failure state and tag assignments. Other workspaces' management of the same route is unaffected.
+_Avoid_: Route deletion, proxy ban
+
+**Failure streak**:
+The number of consecutive eligible check cycles in which a managed proxy had no successful result. A successful cycle ends the streak.
+_Avoid_: Total failures, failed requests
+
+**Failure action**:
+A workspace's chosen response when a managed proxy reaches its failure-streak threshold, either pausing or deleting that managed proxy.
+_Avoid_: Automatic removal, failure cleanup
+
 **Proxy tag**:
 A workspace-owned name and color used to classify that workspace's managed proxies.
 _Avoid_: Global proxy label, route tag

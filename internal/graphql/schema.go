@@ -52,6 +52,7 @@ func NewSchema() (gql.Schema, error) {
 			"useHttpsForSocks":           &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
 			"autoRemoveFailingProxies":   &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
 			"autoRemoveFailureThreshold": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"failureAction":              &gql.Field{Type: gql.NewNonNull(gql.String)},
 			"judges":                     &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(simpleJudgeType)))},
 			"scrapingSources":            &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
 			"proxyListColumns":           &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
@@ -498,6 +499,7 @@ func NewSchema() (gql.Schema, error) {
 			"useHttpsForSocks":           &gql.InputObjectFieldConfig{Type: gql.Boolean},
 			"autoRemoveFailingProxies":   &gql.InputObjectFieldConfig{Type: gql.Boolean},
 			"autoRemoveFailureThreshold": &gql.InputObjectFieldConfig{Type: gql.Int},
+			"failureAction":              &gql.InputObjectFieldConfig{Type: gql.String},
 			"judges": &gql.InputObjectFieldConfig{
 				Type: gql.NewList(gql.NewNonNull(judgeInputType)),
 			},
@@ -599,6 +601,7 @@ func buildUserSettings(workspace domain.Workspace, preference domain.WorkspaceMe
 		"useHttpsForSocks":           dtoSettings.UseHttpsForSocks,
 		"autoRemoveFailingProxies":   dtoSettings.AutoRemoveFailingProxies,
 		"autoRemoveFailureThreshold": int(dtoSettings.AutoRemoveFailureThreshold),
+		"failureAction":              dtoSettings.FailureAction,
 		"judges":                     judgeList,
 		"scrapingSources":            dtoSettings.ScrapingSources,
 		"proxyListColumns":           dtoSettings.ProxyListColumns,
@@ -911,6 +914,9 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	}
 	if v, ok := input["autoRemoveFailureThreshold"].(int); ok {
 		settings.AutoRemoveFailureThreshold = uint8(v)
+	}
+	if v, ok := input["failureAction"].(string); ok {
+		settings.FailureAction = v
 	}
 
 	if rawJudges, ok := input["judges"].([]interface{}); ok {

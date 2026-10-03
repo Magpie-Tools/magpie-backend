@@ -18,6 +18,7 @@ var checkerWorkspaceSelectColumns = []string{
 	"transport_protocol",
 	"auto_remove_failing_proxies",
 	"auto_remove_failure_threshold",
+	"failure_action",
 }
 
 func preloadCheckerWorkspaces(db *gorm.DB) *gorm.DB {
@@ -41,6 +42,7 @@ type activeProxyWorkspaceRow struct {
 	TransportProtocol          string
 	AutoRemoveFailingProxies   bool
 	AutoRemoveFailureThreshold uint8
+	FailureAction              string
 }
 
 func hydrateActiveProxyWorkspaces(tx *gorm.DB, proxies []domain.Proxy) error {
@@ -78,7 +80,8 @@ func hydrateActiveProxyWorkspaces(tx *gorm.DB, proxies []domain.Proxy) error {
 			w.use_https_for_socks,
 			w.transport_protocol,
 			w.auto_remove_failing_proxies,
-			w.auto_remove_failure_threshold
+			w.auto_remove_failure_threshold,
+			w.failure_action
 		`).
 		Joins("JOIN workspaces w ON w.id = up.workspace_id").
 		Where("up.proxy_id IN ? AND up.state = ?", proxyIDs, domain.ManagedProxyStateActive).
@@ -101,6 +104,7 @@ func hydrateActiveProxyWorkspaces(tx *gorm.DB, proxies []domain.Proxy) error {
 			TransportProtocol:          row.TransportProtocol,
 			AutoRemoveFailingProxies:   row.AutoRemoveFailingProxies,
 			AutoRemoveFailureThreshold: row.AutoRemoveFailureThreshold,
+			FailureAction:              row.FailureAction,
 		}
 		for _, index := range indexes[row.ProxyID] {
 			proxies[index].Workspaces = append(proxies[index].Workspaces, workspace)

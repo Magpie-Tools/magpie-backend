@@ -136,6 +136,9 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 	if !workspace.Personal || workspace.Timeout != legacyUser.Timeout || workspace.Retries != legacyUser.Retries {
 		t.Fatalf("personal workspace did not retain user settings: %#v", workspace)
 	}
+	if workspace.FailureAction != domain.FailureActionPause {
+		t.Fatalf("legacy workspace failure action = %q, want pause", workspace.FailureAction)
+	}
 
 	var membership domain.WorkspaceMembership
 	if err := migratedDB.Where("workspace_id = ? AND user_id = ?", workspace.ID, legacyUser.ID).First(&membership).Error; err != nil {

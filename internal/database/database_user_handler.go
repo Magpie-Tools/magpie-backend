@@ -131,6 +131,10 @@ func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings
 			"AutoRemoveFailingProxies":   settings.AutoRemoveFailingProxies,
 			"AutoRemoveFailureThreshold": settings.AutoRemoveFailureThreshold,
 		}
+		// Older clients omit the action. Preserve the workspace's selection.
+		if settings.FailureAction != "" {
+			updates["FailureAction"] = settings.FailureAction
+		}
 		if err := tx.Model(&domain.Workspace{}).
 			Where("id = ?", workspaceID).
 			Updates(updates).Error; err != nil {

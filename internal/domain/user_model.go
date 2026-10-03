@@ -106,6 +106,7 @@ func (u *User) ToUserSettings(simpleUserJudges []dto.SimpleUserJudge, scrapingSo
 		TransportProtocol:          u.TransportProtocol,
 		AutoRemoveFailingProxies:   u.AutoRemoveFailingProxies,
 		AutoRemoveFailureThreshold: u.AutoRemoveFailureThreshold,
+		FailureAction:              FailureActionPause,
 		SimpleUserJudges:           simpleUserJudges,
 		ScrapingSources:            scrapingSources,
 		ProxyListColumns:           NormalizeProxyListColumns(u.ProxyListColumns.Clone()),

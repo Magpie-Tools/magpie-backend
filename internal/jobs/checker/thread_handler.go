@@ -483,6 +483,7 @@ func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[ui
 			Success:           userSuccess[user.ID],
 			AutoRemove:        user.AutoRemoveFailingProxies,
 			FailureThreshold:  user.AutoRemoveFailureThreshold,
+			FailureAction:     user.EffectiveFailureAction(),
 			HasEligibleChecks: true,
 		})
 	}
@@ -496,7 +497,6 @@ func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[ui
 	removed, orphaned, err := processFailureEvents(reqCtx, proxy.ID, events)
 	if err != nil {
 		log.Error("failed to process proxy failure tracking", "proxy_id", proxy.ID, "error", err)
-		return nil, nil
 	}
 
 	return removed, orphaned

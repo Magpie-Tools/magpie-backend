@@ -50,7 +50,7 @@ func submitSettings(t *testing.T, api string, userID, workspaceID uint, input ma
 		ctx := gqlschema.WithWorkspaceAccess(gqlschema.WithUserID(context.Background(), userID), workspaceID, domain.WorkspaceRoleOwner)
 		result := gql.Do(gql.Params{
 			Schema: schema, Context: ctx,
-			RequestString:  `mutation Update($input: UpdateUserSettingsInput!) { updateUserSettings(input: $input) { timeout retries judges { url regex } scrapingSources } }`,
+			RequestString:  `mutation Update($input: UpdateUserSettingsInput!) { updateUserSettings(input: $input) { timeout retries failureAction judges { url regex } scrapingSources } }`,
 			VariableValues: map[string]interface{}{"input": input},
 		})
 		if len(result.Errors) > 0 {
@@ -75,6 +75,45 @@ func submitSettings(t *testing.T, api string, userID, workspaceID uint, input ma
 		return fmt.Errorf("HTTP %d: %s", recorder.Code, recorder.Body.String())
 	}
 	return nil
+}
+
+func TestSettingsAPIsPersistAndPreserveFailureAction(t *testing.T) {
+	for _, api := range []string{"REST", "GraphQL"} {
+		t.Run(api, func(t *testing.T) {
+			userID, workspaceID := setupSettingsAPITest(t)
+			if actual := database.GetWorkspaceByID(workspaceID).FailureAction; actual != domain.FailureActionPause {
+				t.Fatalf("default action = %q", actual)
+			}
+			name := "failureAction"
+			if api == "REST" {
+				name = "failure_action"
+			}
+			for _, action := range []string{domain.FailureActionDelete, domain.FailureActionPause} {
+				if err := submitSettings(t, api, userID, workspaceID, map[string]any{name: action}); err != nil {
+					t.Fatal(err)
+				}
+				if actual := database.GetWorkspaceByID(workspaceID).FailureAction; actual != action {
+					t.Fatalf("action = %q, want %q", actual, action)
+				}
+				if err := submitSettings(t, api, userID, workspaceID, map[string]any{"timeout": 1234}); err != nil {
+					t.Fatal(err)
+				}
+				if actual := database.GetWorkspaceByID(workspaceID).FailureAction; actual != action {
+					t.Fatalf("omitted action reset %q to %q", action, actual)
+				}
+			}
+			for _, invalid := range []string{"archive", "DELETE", "remove"} {
+				before := database.GetWorkspaceByID(workspaceID)
+				if err := submitSettings(t, api, userID, workspaceID, map[string]any{name: invalid, "timeout": 4321}); err == nil {
+					t.Fatalf("accepted invalid action %q", invalid)
+				}
+				after := database.GetWorkspaceByID(workspaceID)
+				if after.FailureAction != before.FailureAction || after.Timeout != before.Timeout {
+					t.Fatal("invalid action partially saved settings")
+				}
+			}
+		})
+	}
 }
 
 func TestSettingsAPIsRefreshWorkspaceJudgeCache(t *testing.T) {

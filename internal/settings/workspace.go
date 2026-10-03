@@ -10,6 +10,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/config"
 	"magpie/internal/database"
+	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
 )
 
@@ -43,6 +44,11 @@ func ValidateCheckerLimits(timeout, retries, failureThreshold int) error {
 // and broadcasts the change to other instances. Scrape sources are managed by
 // the scrape-source API and are read-only in settings responses.
 func SaveWorkspace(workspaceID, userID uint, value dto.UserSettings) error {
+	switch value.FailureAction {
+	case "", domain.FailureActionPause, domain.FailureActionDelete:
+	default:
+		return domain.ErrInvalidFailureAction
+	}
 	if err := ValidateCheckerLimits(int(value.Timeout), int(value.Retries), int(value.AutoRemoveFailureThreshold)); err != nil {
 		return err
 	}
