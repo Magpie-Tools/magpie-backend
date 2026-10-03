@@ -6,7 +6,7 @@ scraping, reputation calculation, and rotating proxy listeners.
 
 ## Requirements
 
-- Go `1.26.x`
+- Go `1.27.1` or newer
 - PostgreSQL `17`
 - Redis `7`
 
@@ -57,11 +57,17 @@ before sending an export batch, and checks timeout errors and client
 disconnects. It removes the test container afterward.
 
 ```bash
-go test ./...
-go test -race ./...
+go test ./... -count=1
+go test -race ./... -count=1
 go vet ./...
 go build ./cmd/magpie
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 ```
+
+Set `MAGPIE_TEST_POSTGRES_DSN` to an isolated PostgreSQL test database to run
+the storage and migration integration checks. CI supplies that database.
+The [Go 1.27.1 upgrade report](docs/performance/go-1.27.1.md) records validation
+and queue/checker benchmark results.
 
 ## Container image
 

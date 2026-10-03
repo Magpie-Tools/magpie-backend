@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -133,5 +135,38 @@ func TestDefaultRequest_BlocksUnsafeOutboundTarget(t *testing.T) {
 	_, err := DefaultRequest("http://127.0.0.1")
 	if !errors.Is(err, support.ErrUnsafeOutboundTarget) {
 		t.Fatalf("DefaultRequest err = %v, want ErrUnsafeOutboundTarget", err)
+	}
+}
+
+func TestProxyCheckRequest_OversizedStreamingResponseReturnsPromptly(t *testing.T) {
+	t.Setenv(envCheckerMaxResponseBody, "32")
+	resetCheckerHTTPClientCacheForTests()
+	t.Cleanup(resetCheckerHTTPClientCacheForTests)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "65536")
+		_, _ = w.Write([]byte(strings.Repeat("x", 33)))
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	t.Cleanup(server.Close)
+	host, port, err := net.SplitHostPort(server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startedAt := time.Now()
+	_, err = ProxyCheckRequest(domain.Proxy{IP: host, Port: uint16(portNumber)}, &domain.Judge{FullString: server.URL}, "http", support.TransportTCP, 1000)
+	if err == nil || !strings.Contains(err.Error(), "judge response body exceeded") {
+		t.Fatalf("oversized response error = %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("body-limit rejection waited for unread response bytes: %s", elapsed)
 	}
 }

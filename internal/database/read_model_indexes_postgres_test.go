@@ -28,6 +28,11 @@ func TestReadModelBackfillStoresHostAndLiteralIPProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open admin database: %v", err)
 	}
+	adminSQL, err := admin.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adminSQL.Close() })
 	schema := fmt.Sprintf("read_model_hostname_test_%d", time.Now().UnixNano())
 	if err := admin.Exec(`CREATE SCHEMA ` + schema).Error; err != nil {
 		t.Fatalf("create test schema: %v", err)
@@ -40,6 +45,14 @@ func TestReadModelBackfillStoresHostAndLiteralIPProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open schema database: %v", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := configureWorkspaceJoinTables(db); err != nil {
+		t.Fatalf("configure workspace join tables: %v", err)
+	}
 	if err := db.AutoMigrate(defaultMigrations()...); err != nil {
 		t.Fatalf("auto migrate schema: %v", err)
 	}
@@ -47,9 +60,9 @@ func TestReadModelBackfillStoresHostAndLiteralIPProjection(t *testing.T) {
 		t.Fatalf("finalize proxy host schema: %v", err)
 	}
 
-	user := domain.User{Email: "read-model-hostname@example.test", Password: "hash", Role: "user"}
-	if err := db.Create(&user).Error; err != nil {
-		t.Fatalf("create user: %v", err)
+	workspace := domain.Workspace{Name: "Read model hostname test"}
+	if err := db.Create(&workspace).Error; err != nil {
+		t.Fatalf("create workspace: %v", err)
 	}
 	ipRoute := domain.Proxy{Port: 8080, Country: "N/A", EstimatedType: "N/A"}
 	if err := ipRoute.SetIP("2001:db8::80"); err != nil {
@@ -64,8 +77,8 @@ func TestReadModelBackfillStoresHostAndLiteralIPProjection(t *testing.T) {
 		t.Fatalf("create proxies: %v", err)
 	}
 	if err := db.Create(&[]domain.UserProxy{
-		{WorkspaceID: user.ID, ProxyID: proxies[0].ID},
-		{WorkspaceID: user.ID, ProxyID: proxies[1].ID},
+		{WorkspaceID: workspace.ID, ProxyID: proxies[0].ID},
+		{WorkspaceID: workspace.ID, ProxyID: proxies[1].ID},
 	}).Error; err != nil {
 		t.Fatalf("create proxy access rows: %v", err)
 	}

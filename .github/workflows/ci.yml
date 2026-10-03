@@ -11,11 +11,30 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: magpie_ci
+          POSTGRES_PASSWORD: magpie_ci
+          POSTGRES_DB: magpie_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U magpie_ci -d magpie_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MAGPIE_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=magpie_ci password=magpie_ci dbname=magpie_ci sslmode=disable
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./...
+      - run: go test ./... -count=1
+      - run: go test -race ./... -count=1
+      - run: go vet ./...
       - run: go build ./cmd/magpie
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
