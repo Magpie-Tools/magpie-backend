@@ -3,6 +3,11 @@ package dto
 import "time"
 
 type ProxyStatistic struct {
+	Transport      string    `json:"transport,omitempty"`
+	Timeout        uint16    `json:"timeout,omitempty"`
+	Retries        uint8     `json:"retries"`
+	ConfigKey      string    `json:"config_key,omitempty"`
+	Current        bool      `json:"current"`
 	Id             uint64    `json:"id"`
 	Alive          bool      `json:"alive"`
 	Attempt        uint8     `json:"attempt"`

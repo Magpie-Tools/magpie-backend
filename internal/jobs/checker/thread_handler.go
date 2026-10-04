@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"magpie/internal/api/dto"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -41,8 +43,10 @@ type cachedWorkspace struct {
 }
 
 type userCheck struct {
-	userID uint
-	regex  string
+	userID    uint
+	regex     string
+	configKey string
+	headers   []string
 }
 
 type requestAssignment struct {
@@ -50,6 +54,9 @@ type requestAssignment struct {
 	proxyProtocol     string
 	transportProtocol string
 	protocolID        int
+	timeout           uint16
+	retries           uint8
+	budgetSet         bool
 	checks            []userCheck
 }
 
@@ -283,6 +290,17 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 		ids = append(ids, user.ID)
 	}
 
+	if _, ready := lookupCheckerWorkspace(0); ready {
+		refreshed := make([]domain.Workspace, 0, len(ids))
+		for _, id := range ids {
+			if snapshot, _ := lookupCheckerWorkspace(id); snapshot != nil {
+				refreshed = append(refreshed, snapshot.Value)
+			}
+		}
+		changed := len(refreshed) != len(proxy.Workspaces)
+		proxy.Workspaces = refreshed
+		return proxy, changed
+	}
 	now := time.Now()
 	refreshedWorkspaces := make(map[uint]domain.Workspace, len(ids))
 	missing := make([]uint, 0, len(ids))
@@ -342,58 +360,70 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 	return proxy, payloadChanged
 }
 
-func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
-	judgeRequests := make(map[string]*requestAssignment)
-	userSuccess := make(map[uint]bool, len(proxy.Workspaces))
-	userHasChecks := make(map[uint]bool, len(proxy.Workspaces))
+var lookupCheckerWorkspace = checkerconfig.Lookup
 
+func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
+	requests := make(map[string]*requestAssignment)
+	success, hasChecks := make(map[uint]bool, len(proxy.Workspaces)), make(map[uint]bool, len(proxy.Workspaces))
 	var maxTimeout uint16
 	var maxRetries uint8
-
-	for _, user := range proxy.Workspaces {
-		userSuccess[user.ID] = false
-		transportProtocol := support.ResolveCheckerTransportProtocol(user.TransportProtocol)
-
-		if user.Timeout > maxTimeout {
-			maxTimeout = user.Timeout
-		}
-		if user.Retries > maxRetries {
-			maxRetries = user.Retries
-		}
-
-		for protocol, protocolID := range user.GetProtocolMap() {
-			judgeScheme := determineJudgeScheme(protocol, protocolID, user.UseHttpsForSocks)
-			if support.IsHTTP3Transport(transportProtocol) {
-				judgeScheme = "https"
-			}
-
-			nextJudge, regex := judges.GetNextJudge(user.ID, judgeScheme)
-			if nextJudge == nil || config.IsWebsiteBlocked(nextJudge.FullString) {
-				log.Debug("Skipping blocked or missing judge for request assignment", "user_id", user.ID, "scheme", judgeScheme, "proxy_protocol", protocol)
+	for workspaceIndex, workspace := range proxy.Workspaces {
+		success[workspace.ID] = false
+		var plan *checkerconfig.Plan
+		if snapshot, ready := lookupCheckerWorkspace(workspace.ID); ready {
+			if snapshot == nil {
 				continue
 			}
-			judgeKey := strconv.Itoa(int(nextJudge.ID)) + "_" + protocol + "_" + transportProtocol
-
-			assignment, found := judgeRequests[judgeKey]
-			if !found {
-				assignment = &requestAssignment{
-					judge:             nextJudge,
-					proxyProtocol:     protocol,
-					transportProtocol: transportProtocol,
-					protocolID:        protocolID,
-				}
-				judgeRequests[judgeKey] = assignment
+			workspace = snapshot.Value
+			proxy.Workspaces[workspaceIndex] = workspace
+			plan = snapshot.Plan(proxy.ID)
+		}
+		var resolved [4]dto.ProtocolCheckSettings
+		if plan != nil {
+			resolved = plan.Settings
+		} else {
+			resolved = domain.ResolveCheckerSettings(workspace.DefaultCheckerSettings(), nil)
+		}
+		for index, setting := range resolved {
+			if !setting.Enabled {
+				continue
 			}
-
-			assignment.checks = append(assignment.checks, userCheck{
-				userID: user.ID,
-				regex:  regex,
-			})
-			userHasChecks[user.ID] = true
+			protocol, protocolID := domain.CheckerProtocols[index], index+1
+			transport := support.ResolveCheckerTransportProtocol(setting.Transport)
+			if setting.Timeout > maxTimeout {
+				maxTimeout = setting.Timeout
+			}
+			if setting.Retries > maxRetries {
+				maxRetries = setting.Retries
+			}
+			var judge *domain.Judge
+			var regex, configKey string
+			var headers []string
+			if plan != nil {
+				judge, regex = plan.NextJudge(index)
+				configKey = plan.Keys[index]
+				headers = plan.Headers
+			} else {
+				scheme := determineJudgeScheme(protocol, protocolID, workspace.UseHttpsForSocks)
+				if support.IsHTTP3Transport(transport) {
+					scheme = "https"
+				}
+				judge, regex = judges.GetNextJudge(workspace.ID, scheme)
+			}
+			if judge == nil || config.IsWebsiteBlocked(judge.FullString) {
+				continue
+			}
+			key := strconv.Itoa(int(judge.ID)) + "_" + protocol + "_" + transport + "_" + strconv.Itoa(int(setting.Timeout)) + "_" + strconv.Itoa(int(setting.Retries))
+			assignment := requests[key]
+			if assignment == nil {
+				assignment = &requestAssignment{judge: judge, proxyProtocol: protocol, transportProtocol: transport, protocolID: protocolID, timeout: setting.Timeout, retries: setting.Retries, budgetSet: true}
+				requests[key] = assignment
+			}
+			assignment.checks = append(assignment.checks, userCheck{userID: workspace.ID, regex: regex, configKey: configKey, headers: headers})
+			hasChecks[workspace.ID] = true
 		}
 	}
-
-	return judgeRequests, userSuccess, userHasChecks, maxTimeout, maxRetries
+	return requests, success, hasChecks, maxTimeout, maxRetries
 }
 
 func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool) string {
@@ -408,7 +438,11 @@ func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool
 
 func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, userSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) {
 	for _, item := range assignments {
-		html, err, responseTime, attempt := checkProxyWithRetries(proxy, item.judge, item.proxyProtocol, item.transportProtocol, maxTimeout, maxRetries)
+		timeout, retries := item.timeout, item.retries
+		if !item.budgetSet {
+			timeout, retries = maxTimeout, maxRetries
+		}
+		html, err, responseTime, attempt := checkProxyWithRetries(proxy, item.judge, item.proxyProtocol, item.transportProtocol, timeout, retries)
 		truncatedBody := ""
 		if saveResponses {
 			truncatedBody = truncateResponseBody(html)
@@ -416,12 +450,20 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 		responseValidByRegex := make(map[string]bool, len(item.checks))
 		statAlive := false
 		createdAt := time.Now().UTC()
+		evidence := make([]domain.WorkspaceCheckEvidence, 0, len(item.checks))
 
 		for _, check := range item.checks {
-			validResponse, ok := responseValidByRegex[check.regex]
+			validationKey := check.regex
+			if strings.EqualFold(validationKey, "default") {
+				validationKey += check.configKey
+			}
+			validResponse, ok := responseValidByRegex[validationKey]
 			if !ok {
-				validResponse = err == nil && CheckForValidResponse(html, check.regex)
-				responseValidByRegex[check.regex] = validResponse
+				validResponse = err == nil && checkForValidResponseWithHeaders(html, check.regex, check.headers)
+				responseValidByRegex[validationKey] = validResponse
+			}
+			if check.configKey != "" {
+				evidence = append(evidence, domain.WorkspaceCheckEvidence{WorkspaceID: check.userID, ConfigKey: check.configKey, Alive: validResponse})
 			}
 			if validResponse {
 				statAlive = true
@@ -430,6 +472,7 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 		}
 
 		statistic := domain.ProxyStatistic{
+			TransportProtocol: item.transportProtocol, CheckTimeout: timeout, CheckRetries: retries, CheckEvidence: evidence,
 			Alive:        statAlive,
 			ResponseTime: uint16(responseTime),
 			Attempt:      attempt,

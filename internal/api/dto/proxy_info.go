@@ -10,6 +10,7 @@ type ProxyInfo struct {
 	ResponseTime   uint16                  `json:"response_time"`
 	Country        string                  `json:"country"`
 	AnonymityLevel string                  `json:"anonymity_level"`
+	HealthKnown    bool                    `json:"health_known"`
 	Alive          bool                    `json:"alive"`
 	Health         *ProxyHealthSummary     `json:"health,omitempty"`
 	LatestCheck    time.Time               `json:"latest_check"`

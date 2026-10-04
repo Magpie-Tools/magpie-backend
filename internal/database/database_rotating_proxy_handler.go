@@ -423,7 +423,7 @@ func buildAliveProxyQuery(tx *gorm.DB, userID uint, protocolID int, labels []str
 		Model(&domain.Proxy{}).
 		Select("proxies.*").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", userID, domain.ManagedProxyStateActive).
-		Joins("JOIN proxy_latest_statistics pls ON pls.proxy_id = proxies.id AND pls.protocol_id = ? AND pls.alive = ?", protocolID, true)
+		Joins("JOIN ("+currentLatestStatisticsSQL+") pls ON pls.proxy_id = proxies.id AND pls.checking_workspace_id = up.workspace_id AND pls.protocol_id = ? AND pls.alive = ? AND (pls.transport_protocol = 'tcp' OR pls.workspace_id = 0)", protocolID, true)
 
 	query = applyReputationFilter(query, filterLabels)
 	query = applyUptimeFilter(query, tx, protocolID, uptimeFilterType, uptimePercentage)
@@ -486,16 +486,24 @@ func applyUptimeFilter(query *gorm.DB, tx *gorm.DB, protocolID int, uptimeFilter
 		return query
 	}
 
-	uptimeQuery := tx.
-		Table("proxy_statistics psr").
-		Select(
-			"psr.proxy_id AS proxy_id, "+
-				"ROUND(100.0 * SUM(CASE WHEN psr.alive THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS uptime_percentage",
-		).
-		Where("psr.protocol_id = ?", protocolID).
-		Group("psr.proxy_id")
-
-	query = query.Joins("JOIN (?) AS puf ON puf.proxy_id = proxies.id", uptimeQuery)
+	// History records one physical request. Expand its workspace evidence so a
+	// shared request can have different validation outcomes in each workspace.
+	evidenceTable := "jsonb_to_recordset(COALESCE(psr.check_evidence, '[]'::jsonb)) AS e(workspace_id bigint, config_key text, alive boolean)"
+	workspaceExpr, keyExpr, aliveExpr := "e.workspace_id", "e.config_key", "e.alive"
+	if tx.Dialector.Name() == "sqlite" {
+		evidenceTable = "json_each(COALESCE(psr.check_evidence, '[]')) e"
+		workspaceExpr = "json_extract(e.value, '$.workspace_id')"
+		keyExpr = "json_extract(e.value, '$.config_key')"
+		aliveExpr = "json_extract(e.value, '$.alive')"
+	}
+	uptimeSQL := "SELECT psr.proxy_id, " + workspaceExpr + " AS workspace_id, " + keyExpr + " AS config_key, " +
+		"ROUND(100.0 * SUM(CASE WHEN " + aliveExpr + " THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS uptime_percentage " +
+		"FROM proxy_statistics psr CROSS JOIN " + evidenceTable + " WHERE psr.protocol_id = ? AND psr.transport_protocol = 'tcp' " +
+		"GROUP BY psr.proxy_id, " + workspaceExpr + ", " + keyExpr +
+		" UNION ALL SELECT psr.proxy_id, 0 AS workspace_id, '' AS config_key, " +
+		"ROUND(100.0 * SUM(CASE WHEN psr.alive THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS uptime_percentage " +
+		"FROM proxy_statistics psr WHERE psr.protocol_id = ? GROUP BY psr.proxy_id"
+	query = query.Joins("JOIN ("+uptimeSQL+") puf ON puf.proxy_id = proxies.id AND puf.workspace_id = pls.workspace_id AND puf.config_key = pls.config_key", protocolID, protocolID)
 	if normalizedType == uptimeFilterMax {
 		return query.Where("puf.uptime_percentage <= ?", *normalizedPercentage)
 	}

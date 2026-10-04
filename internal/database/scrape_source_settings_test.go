@@ -128,6 +128,8 @@ func TestNewSourceModesAndStatusAreReturnedPerWorkspace(t *testing.T) {
 		"CREATE TABLE proxy_tags (id integer, workspace_id integer, name text, name_key text, color text)",
 		"CREATE TABLE user_proxies (proxy_id integer, workspace_id integer)",
 		"CREATE TABLE proxy_overall_statuses (proxy_id integer, overall_alive boolean, last_checked_at datetime)",
+		"CREATE TABLE proxy_latest_statistics (proxy_id integer, protocol_id integer, workspace_id integer, config_key text, alive boolean, checked_at datetime)",
+		"CREATE TABLE proxy_checker_plans (proxy_id integer, workspace_id integer, protocol_id integer, config_key text)",
 		"CREATE TABLE proxy_reputations (proxy_id integer, kind text, score real, label text)",
 	} {
 		if err := db.Exec(sql).Error; err != nil {

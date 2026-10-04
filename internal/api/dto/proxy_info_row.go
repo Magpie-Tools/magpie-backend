@@ -6,6 +6,7 @@ import (
 )
 
 type ProxyInfoRow struct {
+	CheckerPending bool            `gorm:"column:checker_pending"`
 	Id             int             `gorm:"column:id"`
 	State          string          `gorm:"column:state"`
 	PauseReason    string          `gorm:"column:pause_reason"`

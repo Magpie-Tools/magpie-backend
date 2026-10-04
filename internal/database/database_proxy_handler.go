@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/domain"
 
@@ -84,6 +85,9 @@ func InsertAndGetProxiesWithWorkspace(proxies []domain.Proxy, workspaceIDs ...ui
 		return nil, fmt.Errorf("load imported proxies with workspaces: %w", err)
 	}
 
+	for _, workspaceID := range workspaceIDs {
+		checkerconfig.TagAssignmentsChanged(workspaceID)
+	}
 	return proxiesWithWorkspaces, nil
 }
 
@@ -510,6 +514,10 @@ func GetProxyInfoPage(userId uint, page int) []dto.ProxyInfo {
 }
 
 func GetRecentProxyChecks(userID uint, limit int) []dto.ProxyRecentCheck {
+	version := currentCheckerHealthVersion(userID)
+	if version.Dirty {
+		return []dto.ProxyRecentCheck{}
+	}
 	if limit <= 0 {
 		limit = defaultRecentProxyChecksLimit
 	} else if limit > maxRecentProxyChecksLimit {
@@ -518,13 +526,17 @@ func GetRecentProxyChecks(userID uint, limit int) []dto.ProxyRecentCheck {
 
 	key := dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit}
 	if cached, ok := dashboardRecentChecksCache.Load(key); ok {
-		return cached.([]dto.ProxyRecentCheck)
+		entry := cached.(dashboardHealthCacheEntry[[]dto.ProxyRecentCheck])
+		if entry.version == version {
+			return entry.value
+		}
 	}
 
 	return RefreshRecentProxyChecksCache(userID, limit)
 }
 
 func RefreshRecentProxyChecksCache(userID uint, limit int) []dto.ProxyRecentCheck {
+	version := currentCheckerHealthVersion(userID)
 	if limit <= 0 {
 		limit = defaultRecentProxyChecksLimit
 	} else if limit > maxRecentProxyChecksLimit {
@@ -541,40 +553,38 @@ func RefreshRecentProxyChecksCache(userID uint, limit int) []dto.ProxyRecentChec
 	}
 
 	rows := make([]recentProxyCheckRow, 0, limit)
-	const query = `
-WITH candidates AS (
+	query := `
+WITH candidates AS MATERIALIZED (
 	SELECT
-		p.id,
-			p.host AS ip_address,
-		p.port,
-		COALESCE(pos.overall_alive, FALSE) AS alive,
-		pos.last_checked_at
-	FROM user_proxies up
-	JOIN proxies p ON p.id = up.proxy_id
-	LEFT JOIN proxy_overall_statuses pos ON pos.proxy_id = p.id
-	WHERE up.workspace_id = ? AND up.state = 'active'
-	ORDER BY
-		COALESCE(pos.overall_alive, FALSE) DESC,
-		pos.last_checked_at DESC NULLS LAST,
-		p.id ASC
+		ufi.proxy_id AS id,
+		ufi.workspace_id,
+		ufi.host AS ip_address,
+		ufi.port,
+		ufi.alive,
+		ufi.latest_check AS last_checked_at
+	FROM user_proxy_filter_indexes ufi
+	JOIN workspaces cw ON cw.id = ufi.workspace_id AND NOT cw.checker_dirty
+	WHERE ufi.workspace_id = ? AND ufi.state = 'active'
+	ORDER BY ufi.alive DESC, ufi.latest_check DESC, ufi.proxy_id ASC
 	LIMIT ?
 )
 SELECT
 	c.id,
-		c.ip_address,
+	c.ip_address,
 	c.port,
 	COALESCE(latest.response_time, 0) AS response_time,
-	c.alive,
-	COALESCE(c.last_checked_at, latest.checked_at) AS latest_check
+	COALESCE(pos.overall_alive,FALSE) AS alive,
+	COALESCE(pos.last_checked_at, latest.checked_at) AS latest_check
 FROM candidates c
+LEFT JOIN LATERAL (` + currentOverallStatusForProxySQL("c.workspace_id", "c.id") + `) pos ON TRUE
 LEFT JOIN LATERAL (
 	SELECT pls.response_time, pls.checked_at
-	FROM proxy_latest_statistics pls
-	WHERE pls.proxy_id = c.id
+	FROM (` + currentLatestStatisticsSQL + `) pls
+	WHERE pls.proxy_id = c.id AND pls.checking_workspace_id = c.workspace_id
 	ORDER BY pls.checked_at DESC, pls.statistic_id DESC
 	LIMIT 1
 ) latest ON TRUE
-ORDER BY c.alive DESC, latest_check DESC, c.id ASC
+ORDER BY alive DESC, latest_check DESC NULLS LAST, c.id ASC
 `
 	if err := DB.Raw(query, userID, limit).Scan(&rows).Error; err != nil {
 		return nil
@@ -597,32 +607,43 @@ ORDER BY c.alive DESC, latest_check DESC, c.id ASC
 		})
 	}
 
+	if version.Dirty || currentCheckerHealthVersion(userID) != version {
+		return []dto.ProxyRecentCheck{}
+	}
 	dashboardRecentChecksCache.Store(
 		dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit},
-		result,
+		dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{version: version, value: result},
 	)
 	return result
 }
 
 func GetFastestAliveProxies(userID uint, limit int) []dto.ProxyFastestAlive {
+	version := currentCheckerHealthVersion(userID)
+	if version.Dirty {
+		return []dto.ProxyFastestAlive{}
+	}
 	if limit <= 0 {
 		return []dto.ProxyFastestAlive{}
 	}
 
 	key := dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit}
 	if cached, ok := dashboardFastestAliveCache.Load(key); ok {
-		return cached.([]dto.ProxyFastestAlive)
+		entry := cached.(dashboardHealthCacheEntry[[]dto.ProxyFastestAlive])
+		if entry.version == version {
+			return entry.value
+		}
 	}
 
 	return RefreshFastestAliveProxiesCache(userID, limit)
 }
 
 func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestAlive {
+	version := currentCheckerHealthVersion(userID)
 	if limit <= 0 {
 		return []dto.ProxyFastestAlive{}
 	}
 
-	latestAliveStats := DB.Table("proxy_latest_statistics pls").
+	latestAliveStats := currentLatestStatistics(DB, userID).
 		Select("DISTINCT ON (pls.proxy_id) pls.proxy_id, pls.response_time, pls.checked_at").
 		Where("pls.alive = ?", true).
 		Order("pls.proxy_id, pls.response_time ASC, pls.checked_at DESC, pls.statistic_id DESC")
@@ -678,9 +699,12 @@ func RefreshFastestAliveProxiesCache(userID uint, limit int) []dto.ProxyFastestA
 		})
 	}
 
+	if version.Dirty || currentCheckerHealthVersion(userID) != version {
+		return []dto.ProxyFastestAlive{}
+	}
 	dashboardFastestAliveCache.Store(
 		dashboardProxyListCacheKey{WorkspaceID: userID, Limit: limit},
-		result,
+		dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{version: version, value: result},
 	)
 	return result
 }
@@ -717,17 +741,18 @@ func GetProxyInfoPageWithFiltersAndOptions(
 				"ufi.host AS ip_address, "+
 				"ufi.port AS port, "+
 				"ufi.estimated_type AS estimated_type, "+
-				"ufi.response_time AS response_time, "+
+				"CASE WHEN cw.checker_dirty THEN 0 ELSE ufi.response_time END AS response_time, "+
 				"ufi.country AS country, "+
-				"ufi.anonymity_level AS anonymity_level, "+
-				"ufi.alive AS alive, "+
-				"ufi.health_overall AS health_overall, "+
-				"ufi.health_http AS health_http, "+
-				"ufi.health_https AS health_https, "+
-				"ufi.health_socks4 AS health_socks4, "+
-				"ufi.health_socks5 AS health_socks5, "+
-				"ufi.latest_check AS latest_check",
+				"CASE WHEN cw.checker_dirty THEN 'N/A' ELSE ufi.anonymity_level END AS anonymity_level, "+
+				"CASE WHEN cw.checker_dirty THEN FALSE ELSE ufi.alive END AS alive, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_overall END AS health_overall, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_http END AS health_http, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_https END AS health_https, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_socks4 END AS health_socks4, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_socks5 END AS health_socks5, "+
+				"ufi.latest_check AS latest_check, cw.checker_dirty AS checker_pending",
 		).
+		Joins("JOIN workspaces cw ON cw.id = ufi.workspace_id").
 		Where("ufi.workspace_id = ?", userId)
 
 	query = applyProxyPageSort(query, options)
@@ -1129,6 +1154,10 @@ func buildProxyListFilterQuery(userId uint, filters dto.ProxyListFilters) *gorm.
 		Select("ufi.proxy_id").
 		Where("ufi.workspace_id = ?", userId)
 
+	if filters.Status == "alive" || filters.Status == "dead" || hasProxyHealthFilters(filters) || len(selectedProtocols) > 0 || len(filters.AnonymityLevels) > 0 || filters.MaxTimeout > 0 || filters.MaxRetries > 0 {
+		query = query.Where("EXISTS (SELECT 1 FROM workspaces w WHERE w.id = ufi.workspace_id AND NOT w.checker_dirty)")
+	}
+
 	if states := filters.LifecycleStates(); len(states) > 0 {
 		query = query.Where("ufi.state IN ?", states)
 	}
@@ -1137,7 +1166,7 @@ func buildProxyListFilterQuery(userId uint, filters dto.ProxyListFilters) *gorm.
 		if filters.Status == "alive" {
 			query = query.Where("ufi.alive = ?", true)
 		} else {
-			query = query.Where("ufi.alive = ?", false)
+			query = query.Where("ufi.alive = ? AND ufi.health_overall IS NOT NULL", false)
 		}
 	}
 
@@ -1338,6 +1367,10 @@ func extractProxyFilterValues(rows []proxyFilterValueRow) []string {
 func proxyInfoRowsToDTO(rows []dto.ProxyInfoRow) []dto.ProxyInfo {
 	results := make([]dto.ProxyInfo, 0, len(rows))
 	for _, row := range rows {
+		if row.CheckerPending {
+			row.LatestCheck = time.Time{}
+		}
+
 		results = append(results, dto.ProxyInfo{
 			Id:             row.Id,
 			State:          row.State,
@@ -1348,6 +1381,7 @@ func proxyInfoRowsToDTO(rows []dto.ProxyInfoRow) []dto.ProxyInfo {
 			ResponseTime:   row.ResponseTime,
 			Country:        row.Country,
 			AnonymityLevel: row.AnonymityLevel,
+			HealthKnown:    !row.LatestCheck.IsZero(),
 			Alive:          row.Alive,
 			Health:         buildHealthSummary(row),
 			LatestCheck:    row.LatestCheck,
@@ -1635,14 +1669,6 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 
 	var proxy domain.Proxy
 	err := DB.
-		Preload("Statistics", func(db *gorm.DB) *gorm.DB {
-			return db.
-				Order("created_at DESC").
-				Limit(1).
-				Preload("Protocol").
-				Preload("Level").
-				Preload("Judge")
-		}).
 		Preload("Reputations").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
 		Where("up.workspace_id = ? AND proxies.id = ?", userId, proxyId).
@@ -1659,12 +1685,30 @@ func GetProxyDetail(userId uint, proxyId uint64) (*dto.ProxyDetail, error) {
 
 	var latestStat *dto.ProxyStatistic
 	var latestCheck *time.Time
-	if len(proxy.Statistics) > 0 {
-		latestStat = new(mapProxyStatistic(&proxy.Statistics[0]))
-		latestCheck = &proxy.Statistics[0].CreatedAt
+	var current []domain.ProxyLatestStatistic
+	if err := currentLatestStatistics(DB, userId).Where("pls.proxy_id = ?", proxyId).Order("pls.checked_at DESC, pls.statistic_id DESC").Find(&current).Error; err != nil {
+		return nil, err
+	}
+	var alive *bool
+	if len(current) > 0 {
+		value := false
+		for _, check := range current {
+			value = value || check.Alive
+		}
+		alive = &value
+		latestCheck = &current[0].CheckedAt
+		var stat domain.ProxyStatistic
+		if err := DB.Preload("Protocol").Preload("Level").Preload("Judge").Where("id = ? AND created_at = ?", current[0].StatisticID, current[0].CheckedAt).First(&stat).Error; err == nil {
+			mapped := mapProxyStatistic(&stat)
+			mapped.Alive, mapped.ConfigKey, mapped.Current = current[0].Alive, current[0].ConfigKey, true
+			latestStat = &mapped
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
 	}
 
 	detail := &dto.ProxyDetail{
+		Alive:           alive,
 		Id:              int(proxy.ID),
 		IP:              proxy.GetIp(),
 		Port:            proxy.Port,
@@ -1762,14 +1806,31 @@ func GetProxyStatistics(userId uint, proxyId uint64, limit int) ([]dto.ProxyStat
 		Order("proxy_statistics.created_at DESC").
 		Limit(limit)
 
+	query = filterWorkspaceStatisticEvidence(query, userId)
 	rows := make([]domain.ProxyStatistic, 0, limit)
 	if err := query.Find(&rows).Error; err != nil {
 		return nil, err
 	}
-
-	stats := make([]dto.ProxyStatistic, len(rows))
+	var current []domain.ProxyLatestStatistic
+	if err := currentLatestStatistics(DB, userId).Where("pls.proxy_id = ?", proxyId).Find(&current).Error; err != nil {
+		return nil, err
+	}
+	keys := make(map[int]string, len(current))
+	for _, latest := range current {
+		keys[latest.ProtocolID] = latest.ConfigKey
+	}
+	stats := make([]dto.ProxyStatistic, 0, len(rows))
 	for index := range rows {
-		stats[index] = mapProxyStatistic(&rows[index])
+		stat := mapProxyStatistic(&rows[index])
+		for _, evidence := range rows[index].CheckEvidence {
+			if evidence.WorkspaceID == userId {
+				stat.Alive, stat.ConfigKey = evidence.Alive, evidence.ConfigKey
+				break
+			}
+		}
+		key, checked := keys[rows[index].ProtocolID]
+		stat.Current = checked && key == stat.ConfigKey
+		stats = append(stats, stat)
 	}
 
 	return stats, nil
@@ -1786,12 +1847,13 @@ func GetProxyStatisticResponseBody(userId uint, proxyId uint64, statisticId uint
 	}
 
 	var row proxyStatisticBodyRow
-	err := DB.Table("proxy_statistics").
+	query := DB.Table("proxy_statistics").
 		Select("proxy_statistics.response_body", "user_judges.regex").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
 		Joins("LEFT JOIN user_judges ON user_judges.judge_id = proxy_statistics.judge_id AND user_judges.workspace_id = up.workspace_id").
 		Where("proxy_statistics.id = ? AND proxy_statistics.proxy_id = ? AND up.workspace_id = ?", statisticId, proxyId, userId).
-		First(&row).Error
+		Session(&gorm.Session{})
+	err := filterWorkspaceStatisticEvidence(query, userId).First(&row).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return dto.ProxyStatisticDetail{}, gorm.ErrRecordNotFound
@@ -1820,6 +1882,7 @@ func mapProxyStatistic(stat *domain.ProxyStatistic) dto.ProxyStatistic {
 	judge := normaliseDisplayValue(stat.Judge.FullString, "Unknown")
 
 	return dto.ProxyStatistic{
+		Transport: stat.TransportProtocol, Timeout: stat.CheckTimeout, Retries: stat.CheckRetries,
 		Id:             stat.ID,
 		Alive:          stat.Alive,
 		Attempt:        stat.Attempt,
@@ -1846,6 +1909,7 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 	}
 
 	var totalDeleted int64
+	checkerChanged := false
 	chunkSize := deleteChunkSize
 	if chunkSize > len(proxies) {
 		chunkSize = len(proxies)
@@ -1863,20 +1927,20 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 		}
 
 		chunk := proxies[start:end]
-		result := DB.
-			Where("workspace_id = ?", userId).
-			Where("proxy_id IN ?", chunk).
-			Delete(&domain.ManagedProxy{})
-
-		if result.Error != nil {
-			return totalDeleted, nil, result.Error
-		}
-
 		proxyIDs := make([]uint64, 0, len(chunk))
 		for _, id := range chunk {
 			if id > 0 {
 				proxyIDs = append(proxyIDs, uint64(id))
 			}
+		}
+		var removed int64
+		if err := DB.Transaction(func(tx *gorm.DB) error {
+			count, changed, err := deleteManagedRoutes(tx, userId, proxyIDs, "")
+			removed = count
+			checkerChanged = checkerChanged || changed
+			return err
+		}); err != nil {
+			return totalDeleted, nil, err
 		}
 		if len(proxyIDs) > 0 {
 			if DB.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
@@ -1892,7 +1956,7 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 			}
 		}
 
-		totalDeleted += result.RowsAffected
+		totalDeleted += removed
 
 		orphanIDs, err := collectOrphanProxyIDs(chunk)
 		if err != nil {
@@ -1910,6 +1974,11 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 		return totalDeleted, nil, err
 	}
 
+	if checkerChanged {
+		checkerconfig.Notify(userId)
+	} else {
+		checkerconfig.TagAssignmentsChanged(userId)
+	}
 	if len(orphanSet) == 0 {
 		return totalDeleted, nil, nil
 	}
@@ -2183,13 +2252,15 @@ func DeleteActiveManagedProxy(workspaceID uint, proxyID uint64) (bool, []domain.
 		return false, nil, fmt.Errorf("database not initialised")
 	}
 	deleted := false
+	checkerChanged := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		result := tx.Where("workspace_id = ? AND proxy_id = ? AND state = ?", workspaceID, proxyID, domain.ManagedProxyStateActive).
-			Delete(&domain.ManagedProxy{})
-		if result.Error != nil {
-			return result.Error
+		var err error
+		var removed int64
+		removed, checkerChanged, err = deleteManagedRoutes(tx, workspaceID, []uint64{proxyID}, domain.ManagedProxyStateActive)
+		if err != nil {
+			return err
 		}
-		if result.RowsAffected == 0 {
+		if removed == 0 {
 			return nil
 		}
 		deleted = true
@@ -2204,6 +2275,9 @@ func DeleteActiveManagedProxy(workspaceID uint, proxyID uint64) (bool, []domain.
 		}
 		return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
 	})
+	if err == nil && checkerChanged {
+		checkerconfig.Notify(workspaceID)
+	}
 	if err != nil || !deleted {
 		return false, nil, err
 	}
@@ -2578,11 +2652,10 @@ func loadExportProxyBatch(tx *gorm.DB, userID uint, ids []uint64) ([]domain.Prox
 		ProtocolName string
 		CreatedAt    time.Time
 	}
-	if err := tx.
-		Table("proxy_latest_statistics pls").
+	if err := currentLatestStatistics(tx, userID).
 		Select(
 			"pls.proxy_id AS proxy_id, "+
-				"ps.id AS statistic_id, ps.alive AS alive, ps.attempt AS attempt, "+
+				"ps.id AS statistic_id, pls.alive AS alive, ps.attempt AS attempt, "+
 				"ps.response_time AS response_time, ps.protocol_id AS protocol_id, "+
 				"COALESCE(proto.name, '') AS protocol_name, ps.created_at AS created_at",
 		).

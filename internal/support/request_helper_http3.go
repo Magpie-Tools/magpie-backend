@@ -5,19 +5,17 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"magpie/internal/config"
 	"magpie/internal/domain"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
-func createHTTP3Transport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string) (http.RoundTripper, func(), error) {
+func createHTTP3Transport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeouts ...uint16) (http.RoundTripper, func(), error) {
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "http", "https":
 	default:
@@ -50,7 +48,7 @@ func createHTTP3Transport(proxyToCheck domain.Proxy, judge *domain.Judge, protoc
 		}
 	}
 
-	timeout := time.Duration(config.GetConfig().Checker.Timeout) * time.Millisecond
+	timeout := checkerTransportTimeout(timeouts)
 	enableDatagrams := false
 	insecureUpstreamTLS := AllowInsecureUpstreamTLS()
 	switch NormalizeTransportProtocol(transportProtocol) {

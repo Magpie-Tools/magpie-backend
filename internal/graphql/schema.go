@@ -40,9 +40,12 @@ func NewSchema() (gql.Schema, error) {
 		},
 	})
 
+	checkerSettingsType, checkerSettingsInput := checkerSettingsTypes()
 	userSettingsType := gql.NewObject(gql.ObjectConfig{
 		Name: "UserSettings",
 		Fields: gql.Fields{
+			"checkerSettings":            &gql.Field{Type: checkerSettingsType},
+			"transportProtocol":          &gql.Field{Type: gql.String},
 			"httpProtocol":               &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
 			"httpsProtocol":              &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
 			"socks4Protocol":             &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
@@ -113,6 +116,7 @@ func NewSchema() (gql.Schema, error) {
 			"anonymityLevel": &gql.Field{Type: gql.NewNonNull(gql.String)},
 			"protocol":       &gql.Field{Type: gql.NewNonNull(gql.String)},
 			"alive":          &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"healthKnown":    &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
 			"latestCheck":    &gql.Field{Type: gql.DateTime},
 			"reputation":     &gql.Field{Type: proxyReputationSummaryType},
 			"tags":           &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(proxyTagType)))},
@@ -490,6 +494,8 @@ func NewSchema() (gql.Schema, error) {
 	updateSettingsInput := gql.NewInputObject(gql.InputObjectConfig{
 		Name: "UpdateUserSettingsInput",
 		Fields: gql.InputObjectConfigFieldMap{
+			"checkerSettings":            &gql.InputObjectFieldConfig{Type: checkerSettingsInput},
+			"transportProtocol":          &gql.InputObjectFieldConfig{Type: gql.String},
 			"httpProtocol":               &gql.InputObjectFieldConfig{Type: gql.Boolean},
 			"httpsProtocol":              &gql.InputObjectFieldConfig{Type: gql.Boolean},
 			"socks4Protocol":             &gql.InputObjectFieldConfig{Type: gql.Boolean},
@@ -592,6 +598,8 @@ func buildUserSettings(workspace domain.Workspace, preference domain.WorkspaceMe
 	}
 
 	return map[string]interface{}{
+		"checkerSettings":            checkerSettingsOutput(dtoSettings.CheckerSettings),
+		"transportProtocol":          dtoSettings.TransportProtocol,
 		"httpProtocol":               dtoSettings.HTTPProtocol,
 		"httpsProtocol":              dtoSettings.HTTPSProtocol,
 		"socks4Protocol":             dtoSettings.SOCKS4Protocol,
@@ -732,6 +740,7 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 			"anonymityLevel": proxy.AnonymityLevel,
 			"protocol":       "",
 			"alive":          proxy.Alive,
+			"healthKnown":    proxy.HealthKnown,
 			"latestCheck":    proxy.LatestCheck,
 			"reputation":     buildGraphQLReputationSummary(proxy.Reputation),
 			"tags":           tags,
@@ -887,6 +896,17 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	currentSources := database.GetScrapingSourcesOfUsers(workspaceID)
 	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
 	settings := workspace.ToUserSettings(currentJudges, currentSources, preference)
+	settings.CheckerSettings = nil
+	if raw, ok := input["checkerSettings"].(map[string]interface{}); ok {
+		parsed, err := parseCheckerSettings(raw)
+		if err != nil {
+			return err
+		}
+		settings.CheckerSettings = parsed
+	}
+	if transport, ok := input["transportProtocol"].(string); ok {
+		settings.TransportProtocol = transport
+	}
 
 	if v, ok := input["httpProtocol"].(bool); ok {
 		settings.HTTPProtocol = v

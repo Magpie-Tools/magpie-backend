@@ -16,23 +16,23 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-func CreateTransport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string) (http.RoundTripper, func(), error) {
+func CreateTransport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeouts ...uint16) (http.RoundTripper, func(), error) {
 	if transportProtocol == "" {
 		transportProtocol = TransportTCP
 	}
 
 	switch NormalizeTransportProtocol(transportProtocol) {
 	case TransportTCP:
-		return createTCPTransport(proxyToCheck, judge, protocol)
+		return createTCPTransport(proxyToCheck, judge, protocol, timeouts...)
 	case TransportQUIC, TransportHTTP3:
-		return createHTTP3Transport(proxyToCheck, judge, protocol, transportProtocol)
+		return createHTTP3Transport(proxyToCheck, judge, protocol, transportProtocol, timeouts...)
 	default:
 		return nil, nil, fmt.Errorf("unsupported transport protocol %q", transportProtocol)
 	}
 }
 
-func createTCPTransport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string) (http.RoundTripper, func(), error) {
-	timeout := time.Duration(config.GetConfig().Checker.Timeout) * time.Millisecond
+func createTCPTransport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, timeouts ...uint16) (http.RoundTripper, func(), error) {
+	timeout := checkerTransportTimeout(timeouts)
 
 	// Base configuration tuned for connection reuse under checker load.
 	transport := &http.Transport{
@@ -44,7 +44,7 @@ func createTCPTransport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol
 		MaxIdleConns:          256,
 		MaxIdleConnsPerHost:   64,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   timeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
@@ -86,7 +86,7 @@ func createTCPTransport(proxyToCheck domain.Proxy, judge *domain.Judge, protocol
 			return nil, nil, err
 		}
 		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return socksDialer.Dial(network, addr)
+			return socksDialer.(proxy.ContextDialer).DialContext(ctx, network, addr)
 		}
 
 	case "socks4":
@@ -173,4 +173,12 @@ func dialSOCKS4(ctx context.Context, proxyToCheck domain.Proxy, target string, t
 
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
+}
+
+func checkerTransportTimeout(timeouts []uint16) time.Duration {
+	timeout := config.GetConfig().Checker.Timeout
+	if len(timeouts) > 0 {
+		timeout = uint32(timeouts[0])
+	}
+	return time.Duration(timeout) * time.Millisecond
 }

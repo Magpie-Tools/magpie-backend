@@ -89,6 +89,13 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 	now := time.Now().UTC()
 	start := time.Now()
 	deadline := start.Add(cfg.maxRunDuration)
+	opCtx, cancel := context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
+	_, err := database.PruneDeletedCheckerRoutes(opCtx, now.Add(-24*time.Hour), cfg.batchSize)
+	cancel()
+	if err != nil {
+		log.Error("Failed to prune removed checker routes", "error", err)
+		return
+	}
 
 	var totalPruned int64
 	var totalDeleted int64
@@ -181,6 +188,12 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 }
 
 func runProxyStatisticsRetentionBatch(ctx context.Context, cfg proxyStatisticsRetentionConfig, now time.Time) (int64, int64, error) {
+	opCtx, cancel := context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
+	_, err := database.PruneObsoleteCheckerEvidence(opCtx, cfg.batchSize)
+	cancel()
+	if err != nil {
+		return 0, 0, err
+	}
 	var pruned int64
 	if cfg.responseRetentionDays > 0 {
 		pruneBefore := now.Add(-time.Duration(cfg.responseRetentionDays) * 24 * time.Hour)

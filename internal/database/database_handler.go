@@ -86,6 +86,9 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 	}
 
 	if cfg.AutoMigrate {
+		if err := prepareCheckerSettingsSchema(DB); err != nil {
+			return nil, err
+		}
 		if err := prepareWorkspaceOwnershipMigration(DB); err != nil {
 			return nil, fmt.Errorf("database: prepare workspace ownership migration: %w", err)
 		}
@@ -208,6 +211,8 @@ func defaultMigrations() []any {
 		domain.ProxyReputation{},
 		domain.ProxyTag{},
 		domain.ProxyTagAssignment{},
+		domain.ProxyCheckerPlan{},
+		domain.CheckerProxyChange{},
 		domain.UserProxyFilterIndex{},
 		domain.UserScrapeSourceStat{},
 		domain.ProxyDailyCheck{},
@@ -327,6 +332,7 @@ func ensurePostMigrateSchemas(db *gorm.DB) error {
 	steps := []schemaEnsureStep{
 		{name: "user auth schema", run: ensureUserAuthSchema},
 		{name: "workspace schema", run: ensureWorkspaceSchema},
+		{name: "checker settings schema", run: ensureCheckerSettingsSchema},
 		{name: "proxy access storage schema", run: ensureProxyAccessStorageSchema},
 		{name: "proxy reputation schema", run: ensureProxyReputationSchema},
 		{name: "proxy statistics retention schema", run: ensureProxyStatisticsRetentionSchema},

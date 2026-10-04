@@ -434,7 +434,8 @@ func saveUserSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := settings.SaveWorkspace(workspaceID, userID, userSettings); err != nil {
-		if errors.Is(err, domain.ErrInvalidFailureAction) {
+		var checkerError *domain.CheckerSettingsError
+		if errors.Is(err, domain.ErrInvalidFailureAction) || errors.As(err, &checkerError) || errors.Is(err, database.ErrProxyTagNotFound) {
 			writeError(w, err.Error(), http.StatusBadRequest)
 			return
 		}

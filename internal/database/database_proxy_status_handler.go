@@ -11,8 +11,10 @@ import (
 )
 
 type proxyProtocolKey struct {
-	ProxyID    uint64
-	ProtocolID int
+	WorkspaceID uint
+	ConfigKey   string
+	ProxyID     uint64
+	ProtocolID  int
 }
 
 func updateProxyStatusCaches(tx *gorm.DB, stats []domain.ProxyStatistic) error {
@@ -60,23 +62,35 @@ func latestProxyStatusEntries(stats []domain.ProxyStatistic) ([]domain.ProxyLate
 			ProtocolID: stat.ProtocolID,
 		}
 		entry := domain.ProxyLatestStatistic{
-			ProxyID:      stat.ProxyID,
-			ProtocolID:   stat.ProtocolID,
-			Alive:        stat.Alive,
-			StatisticID:  stat.ID,
-			ResponseTime: stat.ResponseTime,
-			Attempt:      stat.Attempt,
-			LevelID:      stat.LevelID,
-			JudgeID:      stat.JudgeID,
-			CheckedAt:    checkedAt,
+			TransportProtocol: stat.TransportProtocol,
+			ProxyID:           stat.ProxyID,
+			ProtocolID:        stat.ProtocolID,
+			Alive:             stat.Alive,
+			StatisticID:       stat.ID,
+			ResponseTime:      stat.ResponseTime,
+			Attempt:           stat.Attempt,
+			LevelID:           stat.LevelID,
+			JudgeID:           stat.JudgeID,
+			CheckedAt:         checkedAt,
 		}
 
-		if existing, ok := latest[key]; ok && !isNewerLatestStat(entry, existing) {
-			continue
+		if len(stat.CheckEvidence) == 0 {
+			if existing, ok := latest[key]; !ok || isNewerLatestStat(entry, existing) {
+				latest[key] = entry
+			}
+			proxyIDSet[stat.ProxyID] = struct{}{}
 		}
-
-		latest[key] = entry
-		proxyIDSet[stat.ProxyID] = struct{}{}
+		for _, evidence := range stat.CheckEvidence {
+			if evidence.WorkspaceID == 0 || evidence.ConfigKey == "" {
+				continue
+			}
+			scopedKey := proxyProtocolKey{ProxyID: stat.ProxyID, ProtocolID: stat.ProtocolID, WorkspaceID: evidence.WorkspaceID, ConfigKey: evidence.ConfigKey}
+			scoped := entry
+			scoped.WorkspaceID, scoped.ConfigKey, scoped.Alive = evidence.WorkspaceID, evidence.ConfigKey, evidence.Alive
+			if existing, ok := latest[scopedKey]; !ok || isNewerLatestStat(scoped, existing) {
+				latest[scopedKey] = scoped
+			}
+		}
 	}
 
 	if len(latest) == 0 {
@@ -113,18 +127,21 @@ func upsertProxyLatestStatistics(tx *gorm.DB, entries []domain.ProxyLatestStatis
 
 	return tx.Clauses(clause.OnConflict{
 		Columns: []clause.Column{
+			{Name: "workspace_id"},
+			{Name: "config_key"},
 			{Name: "proxy_id"},
 			{Name: "protocol_id"},
 		},
 		DoUpdates: clause.Assignments(map[string]interface{}{
-			"alive":         gorm.Expr("excluded.alive"),
-			"statistic_id":  gorm.Expr("excluded.statistic_id"),
-			"response_time": gorm.Expr("excluded.response_time"),
-			"attempt":       gorm.Expr("excluded.attempt"),
-			"level_id":      gorm.Expr("excluded.level_id"),
-			"judge_id":      gorm.Expr("excluded.judge_id"),
-			"checked_at":    gorm.Expr("excluded.checked_at"),
-			"updated_at":    gorm.Expr("CURRENT_TIMESTAMP"),
+			"transport_protocol": gorm.Expr("excluded.transport_protocol"),
+			"alive":              gorm.Expr("excluded.alive"),
+			"statistic_id":       gorm.Expr("excluded.statistic_id"),
+			"response_time":      gorm.Expr("excluded.response_time"),
+			"attempt":            gorm.Expr("excluded.attempt"),
+			"level_id":           gorm.Expr("excluded.level_id"),
+			"judge_id":           gorm.Expr("excluded.judge_id"),
+			"checked_at":         gorm.Expr("excluded.checked_at"),
+			"updated_at":         gorm.Expr("CURRENT_TIMESTAMP"),
 		}),
 		Where: clause.Where{Exprs: []clause.Expression{
 			clause.Expr{
@@ -133,7 +150,7 @@ func upsertProxyLatestStatistics(tx *gorm.DB, entries []domain.ProxyLatestStatis
 					"excluded.statistic_id > proxy_latest_statistics.statistic_id)",
 			},
 		}},
-	}).Create(&entries).Error
+	}).CreateInBatches(entries, 3000).Error
 }
 
 func upsertProxyOverallStatuses(tx *gorm.DB, proxyIDs []uint64) error {
@@ -150,7 +167,7 @@ SELECT
 	CURRENT_TIMESTAMP,
 	CURRENT_TIMESTAMP
 FROM proxy_latest_statistics pls
-WHERE pls.proxy_id IN ?
+WHERE pls.proxy_id IN ? AND pls.workspace_id = 0
 GROUP BY pls.proxy_id
 ON CONFLICT (proxy_id) DO UPDATE
 SET overall_alive = excluded.overall_alive,

@@ -53,7 +53,7 @@ func setupRotatingProxyTestDBWithDSN(t *testing.T, dsn string) *gorm.DB {
 		&domain.ProxyReputation{},
 		&domain.RotatingProxy{},
 		&domain.ProxyStatistic{},
-		&domain.ProxyLatestStatistic{},
+		&domain.ProxyLatestStatistic{}, &domain.ProxyCheckerPlan{},
 		&domain.ProxyOverallStatus{},
 		&domain.Protocol{},
 		&domain.Judge{},

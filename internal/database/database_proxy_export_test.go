@@ -12,7 +12,7 @@ import (
 
 func TestProxyExportBatchesAndCancellation(t *testing.T) {
 	db := setupProxyTagTestDB(t)
-	if err := db.AutoMigrate(&domain.ProxyLatestStatistic{}, &domain.ProxyStatistic{}, &domain.ProxyReputation{}); err != nil {
+	if err := db.AutoMigrate(&domain.ProxyCheckerPlan{}, &domain.ProxyLatestStatistic{}, &domain.ProxyStatistic{}, &domain.ProxyReputation{}); err != nil {
 		t.Fatal(err)
 	}
 	user := domain.User{Email: "export@example.test", Password: "hash", Role: "user"}

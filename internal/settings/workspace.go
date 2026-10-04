@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -44,6 +45,10 @@ func ValidateCheckerLimits(timeout, retries, failureThreshold int) error {
 // and broadcasts the change to other instances. Scrape sources are managed by
 // the scrape-source API and are read-only in settings responses.
 func SaveWorkspace(workspaceID, userID uint, value dto.UserSettings) error {
+	if err := domain.ValidateCheckerSettings(value.CheckerSettings); err != nil {
+		return err
+	}
+
 	switch value.FailureAction {
 	case "", domain.FailureActionPause, domain.FailureActionDelete:
 	default:
@@ -68,11 +73,15 @@ func SaveWorkspace(workspaceID, userID uint, value dto.UserSettings) error {
 	if err := database.UpdateWorkspaceSettings(workspaceID, userID, value); err != nil {
 		return err
 	}
+	if !value.ChangesWorkspaceSettings() {
+		return nil
+	}
 	loaded, err := database.GetWorkspaceJudgesWithRegex(workspaceID)
 	if err != nil {
 		log.Warn("failed to refresh workspace judge cache after settings update", "workspace_id", workspaceID, "error", err)
 	} else {
 		judges.SetUserJudges(workspaceID, loaded)
 	}
+	checkerconfig.Notify(workspaceID)
 	return nil
 }

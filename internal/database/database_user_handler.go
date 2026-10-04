@@ -2,7 +2,9 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +20,8 @@ import (
 )
 
 type dashboardInfoCacheEntry struct {
-	info dto.DashboardInfo
+	version checkerHealthVersion
+	info    dto.DashboardInfo
 }
 
 var dashboardInfoCache sync.Map
@@ -115,42 +118,180 @@ func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings
 	// Wrap everything in a single transaction so either all changes
 	// happen or none do.
 	return DB.Transaction(func(tx *gorm.DB) error {
-		transportProtocol := support.NormalizeTransportProtocol(settings.TransportProtocol)
-
-		// Operational settings belong to the workspace. Table preferences remain
-		// personal to this membership.
-		updates := map[string]interface{}{
-			"HTTPProtocol":               settings.HTTPProtocol,
-			"HTTPSProtocol":              settings.HTTPSProtocol,
-			"SOCKS4Protocol":             settings.SOCKS4Protocol,
-			"SOCKS5Protocol":             settings.SOCKS5Protocol,
-			"Timeout":                    settings.Timeout,
-			"Retries":                    settings.Retries,
-			"UseHttpsForSocks":           settings.UseHttpsForSocks,
-			"TransportProtocol":          transportProtocol,
-			"AutoRemoveFailingProxies":   settings.AutoRemoveFailingProxies,
-			"AutoRemoveFailureThreshold": settings.AutoRemoveFailureThreshold,
-		}
-		// Older clients omit the action. Preserve the workspace's selection.
-		if settings.FailureAction != "" {
-			updates["FailureAction"] = settings.FailureAction
-		}
-		if err := tx.Model(&domain.Workspace{}).
-			Where("id = ?", workspaceID).
-			Updates(updates).Error; err != nil {
+		var locked domain.Workspace
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, workspaceID).Error; err != nil {
 			return err
+		}
+		if err := domain.ValidateCheckerSettings(settings.CheckerSettings); err != nil {
+			return err
+		}
+		if settings.CheckerSettings != nil {
+			ids := make([]uint64, 0, len(settings.CheckerSettings.Rules))
+			for _, rule := range settings.CheckerSettings.Rules {
+				ids = append(ids, rule.TagID)
+			}
+			if err := requireProxyTags(tx, workspaceID, ids); err != nil {
+				return err
+			}
+		}
+		if settings.ChangesWorkspaceSettings() {
+			if !settings.HasField("http_protocol") {
+				settings.HTTPProtocol = locked.HTTPProtocol
+			}
+			if !settings.HasField("https_protocol") {
+				settings.HTTPSProtocol = locked.HTTPSProtocol
+			}
+			if !settings.HasField("socks4_protocol") {
+				settings.SOCKS4Protocol = locked.SOCKS4Protocol
+			}
+			if !settings.HasField("socks5_protocol") {
+				settings.SOCKS5Protocol = locked.SOCKS5Protocol
+			}
+			if !settings.HasField("timeout") {
+				settings.Timeout = locked.Timeout
+			}
+			if !settings.HasField("retries") {
+				settings.Retries = locked.Retries
+			}
+			if !settings.HasField("UseHttpsForSocks") {
+				settings.UseHttpsForSocks = locked.UseHttpsForSocks
+			}
+			if !settings.HasField("transport_protocol") {
+				settings.TransportProtocol = locked.TransportProtocol
+			}
+			if !settings.HasField("auto_remove_failing_proxies") {
+				settings.AutoRemoveFailingProxies = locked.AutoRemoveFailingProxies
+			}
+			if !settings.HasField("auto_remove_failure_threshold") {
+				settings.AutoRemoveFailureThreshold = locked.AutoRemoveFailureThreshold
+			}
+			transportProtocol := support.NormalizeTransportProtocol(settings.TransportProtocol)
+
+			// Operational settings belong to the workspace. Table preferences remain
+			// personal to this membership.
+			updates := map[string]interface{}{
+				"checker_dirty":              true,
+				"HTTPProtocol":               settings.HTTPProtocol,
+				"HTTPSProtocol":              settings.HTTPSProtocol,
+				"SOCKS4Protocol":             settings.SOCKS4Protocol,
+				"SOCKS5Protocol":             settings.SOCKS5Protocol,
+				"Timeout":                    settings.Timeout,
+				"Retries":                    settings.Retries,
+				"UseHttpsForSocks":           settings.UseHttpsForSocks,
+				"TransportProtocol":          transportProtocol,
+				"AutoRemoveFailingProxies":   settings.AutoRemoveFailingProxies,
+				"AutoRemoveFailureThreshold": settings.AutoRemoveFailureThreshold,
+			}
+			if settings.CheckerSettings != nil {
+				encoded, err := json.Marshal(settings.CheckerSettings)
+				if err != nil {
+					return err
+				}
+				updates["checker_config"] = string(encoded)
+				updates["HTTPProtocol"] = settings.CheckerSettings.Defaults.Enabled("http")
+				updates["HTTPSProtocol"] = settings.CheckerSettings.Defaults.Enabled("https")
+				updates["SOCKS4Protocol"] = settings.CheckerSettings.Defaults.Enabled("socks4")
+				updates["SOCKS5Protocol"] = settings.CheckerSettings.Defaults.Enabled("socks5")
+				updates["Timeout"] = settings.CheckerSettings.Defaults.Timeout
+				updates["Retries"] = settings.CheckerSettings.Defaults.Retries
+				updates["TransportProtocol"] = settings.CheckerSettings.Defaults.Transport
+			} else if settings.ChangesLegacyCheckerDefaults() {
+				var current domain.Workspace
+				if err := tx.First(&current, workspaceID).Error; err != nil {
+					return err
+				}
+				if current.CheckerConfig != nil {
+					current.CheckerConfig = current.DefaultCheckerSettings()
+					defaults := &current.CheckerConfig.Defaults
+					defaults.Protocols = []string{}
+					enabled := [4]bool{settings.HTTPProtocol, settings.HTTPSProtocol, settings.SOCKS4Protocol, settings.SOCKS5Protocol}
+					for i, protocol := range domain.CheckerProtocols {
+						if enabled[i] {
+							defaults.Protocols = append(defaults.Protocols, protocol)
+						}
+					}
+					if current.Timeout != settings.Timeout {
+						defaults.Timeout = settings.Timeout
+					}
+					if current.Retries != settings.Retries {
+						defaults.Retries = settings.Retries
+					}
+					if current.TransportProtocol != transportProtocol {
+						defaults.Transport = transportProtocol
+					}
+
+					if err := domain.ValidateCheckerSettings(current.CheckerConfig); err != nil {
+						return err
+					}
+					encoded, err := json.Marshal(current.CheckerConfig)
+					if err != nil {
+						return err
+					}
+					updates["checker_config"] = string(encoded)
+				}
+			}
+			// Older clients omit the action. Preserve the workspace's selection.
+			if settings.FailureAction != "" {
+				updates["FailureAction"] = settings.FailureAction
+			}
+			locked.CheckerRevision++
+			updates["checker_revision"] = locked.CheckerRevision
+			oldSettings := locked.DefaultCheckerSettings()
+			newSettings := oldSettings
+			if raw, ok := updates["checker_config"].(string); ok {
+				newSettings = &dto.CheckerSettings{}
+				if err := json.Unmarshal([]byte(raw), newSettings); err != nil {
+					return err
+				}
+			} else if locked.CheckerConfig == nil {
+				updatedDefault := locked
+				updatedDefault.HTTPProtocol = settings.HTTPProtocol
+				updatedDefault.HTTPSProtocol = settings.HTTPSProtocol
+				updatedDefault.SOCKS4Protocol = settings.SOCKS4Protocol
+				updatedDefault.SOCKS5Protocol = settings.SOCKS5Protocol
+				updatedDefault.TransportProtocol = transportProtocol
+				updatedDefault.Timeout = settings.Timeout
+				updatedDefault.Retries = settings.Retries
+				newSettings = updatedDefault.DefaultCheckerSettings()
+			}
+			full := !reflect.DeepEqual(oldSettings.Defaults, newSettings.Defaults) || locked.UseHttpsForSocks != settings.UseHttpsForSocks || settings.HasField("judges")
+			if full {
+				updates["checker_full_revision"] = locked.CheckerRevision
+			} else {
+				changedTags := changedCheckerRuleTags(oldSettings.Rules, newSettings.Rules)
+				if err := recordCheckerRuleChanges(tx, workspaceID, locked.CheckerRevision, changedTags); err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(&domain.Workspace{}).
+				Where("id = ?", workspaceID).
+				Updates(updates).Error; err != nil {
+				return err
+			}
+
 		}
 
 		preference := domain.WorkspaceMemberPreference{WorkspaceID: workspaceID, UserID: userID}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "workspace_id"}, {Name: "user_id"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"proxy_list_columns":          domain.StringList(domain.NormalizeProxyListColumns(settings.ProxyListColumns)),
-				"scrape_source_proxy_columns": domain.StringList(domain.NormalizeScrapeSourceProxyColumns(settings.ScrapeSourceProxyColumns)),
-				"scrape_source_list_columns":  domain.StringList(domain.NormalizeScrapeSourceListColumns(settings.ScrapeSourceListColumns)),
-			}),
-		}).Create(&preference).Error; err != nil {
-			return err
+		preferenceUpdates := make(map[string]any)
+		if settings.HasField("proxy_list_columns") {
+			preference.ProxyListColumns = domain.StringList(domain.NormalizeProxyListColumns(settings.ProxyListColumns))
+			preferenceUpdates["proxy_list_columns"] = preference.ProxyListColumns
+		}
+		if settings.HasField("scrape_source_proxy_columns") {
+			preference.ScrapeSourceProxyColumns = domain.StringList(domain.NormalizeScrapeSourceProxyColumns(settings.ScrapeSourceProxyColumns))
+			preferenceUpdates["scrape_source_proxy_columns"] = preference.ScrapeSourceProxyColumns
+		}
+		if settings.HasField("scrape_source_list_columns") {
+			preference.ScrapeSourceListColumns = domain.StringList(domain.NormalizeScrapeSourceListColumns(settings.ScrapeSourceListColumns))
+			preferenceUpdates["scrape_source_list_columns"] = preference.ScrapeSourceListColumns
+		}
+		if len(preferenceUpdates) > 0 {
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "workspace_id"}, {Name: "user_id"}}, DoUpdates: clause.Assignments(preferenceUpdates)}).Create(&preference).Error; err != nil {
+				return err
+			}
+		}
+		if !settings.HasField("judges") {
+			return nil
 		}
 
 		desiredByURL := make(map[string]string, len(settings.SimpleUserJudges))
@@ -327,18 +468,24 @@ func GetUserJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
 }
 
 func GetDashboardInfo(userid uint) dto.DashboardInfo {
+	version := currentCheckerHealthVersion(userid)
 	if cached, ok := dashboardInfoCache.Load(userid); ok {
-		return cached.(dashboardInfoCacheEntry).info
+		entry := cached.(dashboardInfoCacheEntry)
+		if !version.Dirty && entry.version == version {
+			return entry.info
+		}
 	}
-
 	return RefreshDashboardInfoCache(userid)
 }
 
 func RefreshDashboardInfoCache(userid uint) dto.DashboardInfo {
+	version := currentCheckerHealthVersion(userid)
 	info := loadDashboardInfo(userid)
-	dashboardInfoCache.Store(userid, dashboardInfoCacheEntry{
-		info: info,
-	})
+	if version.Dirty || currentCheckerHealthVersion(userid) != version {
+		info.JudgeValidProxies = nil
+		return info
+	}
+	dashboardInfoCache.Store(userid, dashboardInfoCacheEntry{version: version, info: info})
 	return info
 }
 
@@ -440,7 +587,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 
 	go func() {
 		defer wg.Done()
-		DB.Table("proxy_latest_statistics pls").
+		currentLatestStatistics(DB, userid).
 			Select(
 				"j.full_string AS judge_url, "+
 					"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+
@@ -560,4 +707,27 @@ func ChangePasswordIfCurrent(userID uint, expectedPassword string, newPassword s
 		return false, result.Error
 	}
 	return result.RowsAffected > 0, nil
+}
+
+func changedCheckerRuleTags(before, after []dto.TagCheckerRule) []uint64 {
+	type indexedRule struct {
+		index int
+		rule  dto.TagCheckerRule
+	}
+	old := make(map[uint64]indexedRule, len(before))
+	for i, rule := range before {
+		old[rule.TagID] = indexedRule{i, rule}
+	}
+	ids := make([]uint64, 0)
+	for i, rule := range after {
+		prior, exists := old[rule.TagID]
+		if !exists || prior.index != i || !reflect.DeepEqual(prior.rule, rule) {
+			ids = append(ids, rule.TagID)
+		}
+		delete(old, rule.TagID)
+	}
+	for id := range old {
+		ids = append(ids, id)
+	}
+	return ids
 }

@@ -29,6 +29,7 @@ type checkerHTTPClientCacheKey struct {
 	judgeIP           string
 	protocol          string
 	transportProtocol string
+	timeout           uint32
 }
 
 type cachedCheckerHTTPClient struct {
@@ -45,12 +46,17 @@ var (
 	checkerTransportFactory = support.CreateTransport
 )
 
-func getCheckerHTTPClient(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string) (*http.Client, error) {
+func getCheckerHTTPClient(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeouts ...uint16) (*http.Client, error) {
 	if transportProtocol == "" {
 		transportProtocol = support.TransportTCP
 	}
 
+	timeout := config.GetConfig().Checker.Timeout
+	if len(timeouts) > 0 {
+		timeout = uint32(timeouts[0])
+	}
 	key := checkerHTTPClientCacheKey{
+		timeout:           timeout,
 		proxyAddr:         proxyToCheck.GetFullProxy(),
 		proxyUsername:     proxyToCheck.Username,
 		proxyPassword:     proxyToCheck.Password,
@@ -75,7 +81,7 @@ func getCheckerHTTPClient(proxyToCheck domain.Proxy, judge *domain.Judge, protoc
 	checkerHTTPClientCacheMu.Unlock()
 	closeCheckerClients(closeFns)
 
-	transport, closeFn, err := checkerTransportFactory(proxyToCheck, judge, protocol, transportProtocol)
+	transport, closeFn, err := checkerTransportFactory(proxyToCheck, judge, protocol, transportProtocol, timeouts...)
 	if err != nil {
 		return nil, err
 	}

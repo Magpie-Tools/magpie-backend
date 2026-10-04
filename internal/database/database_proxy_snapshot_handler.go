@@ -126,7 +126,7 @@ func aliveProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]int6
 
 	if err := tx.Table("user_proxies AS up").
 		Select("up.workspace_id AS workspace_id, COUNT(DISTINCT up.proxy_id) AS alive_count").
-		Joins("JOIN proxy_overall_statuses pos ON pos.proxy_id = up.proxy_id").
+		Joins(currentOverallStatusJoin(DB, "INNER", "up.workspace_id", "up.proxy_id")).
 		Where("up.workspace_id IN ? AND up.state = ?", workspaceIDs, domain.ManagedProxyStateActive).
 		Where("pos.overall_alive = ?", true).
 		Group("up.workspace_id").

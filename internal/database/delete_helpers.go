@@ -24,7 +24,7 @@ func collectProxyIDsForDeletion(userID uint, settings dto.DeleteSettings) ([]uin
 
 	if !settings.Filter && (settings.ProxyStatus == "alive" || settings.ProxyStatus == "dead") {
 		isAlive := settings.ProxyStatus == "alive"
-		query = query.Joins("JOIN proxy_overall_statuses pos ON pos.proxy_id = proxies.id").
+		query = query.Joins(currentOverallStatusJoin(query, "INNER", "user_proxies.workspace_id", "proxies.id")).
 			Where("pos.overall_alive = ?", isAlive)
 	}
 

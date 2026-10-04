@@ -45,7 +45,7 @@ func ProxyCheckRequest(proxyToCheck domain.Proxy, judge *domain.Judge, protocol 
 		return "Blocked judge website", fmt.Errorf("judge website is blocked: %s", judge.FullString)
 	}
 
-	client, err := getCheckerHTTPClient(proxyToCheck, judge, protocol, transportProtocol)
+	client, err := getCheckerHTTPClient(proxyToCheck, judge, protocol, transportProtocol, timeout)
 	if err != nil {
 		return "Failed to create transport", err
 	}
@@ -83,11 +83,17 @@ func ProxyCheckRequest(proxyToCheck domain.Proxy, judge *domain.Judge, protocol 
 }
 
 func CheckForValidResponse(html string, regex string) bool {
+	return checkForValidResponseWithHeaders(html, regex, nil)
+}
+func checkForValidResponseWithHeaders(html string, regex string, headers []string) bool {
 	if strings.EqualFold(regex, "default") {
 		html = strings.ReplaceAll(html, "_", "-")
 		html = strings.ToUpper(html)
 
-		for _, header := range config.GetConfig().Checker.StandardHeader {
+		if headers == nil {
+			headers = config.GetConfig().Checker.StandardHeader
+		}
+		for _, header := range headers {
 			if !strings.Contains(html, header) {
 
 				return false

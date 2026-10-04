@@ -3,11 +3,15 @@ package domain
 import "time"
 
 type ProxyStatistic struct {
-	ID           uint64 `gorm:"primaryKey;autoIncrement;index:idx_proxy_statistics_proxy_created_id,sort:desc,priority:3"`
-	Alive        bool   `gorm:"not null"`
-	Attempt      uint8  `gorm:"not null"`
-	ResponseTime uint16 `gorm:"not null"` // Milliseconds
-	ResponseBody string `gorm:"type:text"`
+	ID                uint64                   `gorm:"primaryKey;autoIncrement;index:idx_proxy_statistics_proxy_created_id,sort:desc,priority:3"`
+	Alive             bool                     `gorm:"not null"`
+	Attempt           uint8                    `gorm:"not null"`
+	ResponseTime      uint16                   `gorm:"not null"` // Milliseconds
+	ResponseBody      string                   `gorm:"type:text"`
+	TransportProtocol string                   `gorm:"size:8;not null;default:''"`
+	CheckTimeout      uint16                   `gorm:"not null;default:0"`
+	CheckRetries      uint8                    `gorm:"not null;default:0"`
+	CheckEvidence     []WorkspaceCheckEvidence `gorm:"serializer:json;type:jsonb" json:"CheckEvidence,omitempty"`
 
 	// Relationships
 	ProtocolID int      `gorm:"index"`
@@ -27,6 +31,12 @@ type ProxyStatistic struct {
 	WorkspaceIDs []uint `gorm:"-" json:"WorkspaceIDs,omitempty"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime;index:idx_proxy_statistics_proxy_created_id,sort:desc,priority:2"`
+}
+
+type WorkspaceCheckEvidence struct {
+	WorkspaceID uint   `json:"workspace_id"`
+	ConfigKey   string `json:"config_key"`
+	Alive       bool   `json:"alive"`
 }
 type AnonymityLevel struct {
 	ID   int    `gorm:"primaryKey;autoIncrement"`

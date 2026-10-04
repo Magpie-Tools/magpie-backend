@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/blacklist"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -66,6 +67,10 @@ func Setup(ctx context.Context) error {
 	}
 
 	judgeSetup()
+	redisClient, _ := support.GetRedisClient()
+	if err := checkerconfig.Initialize(ctx, redisClient, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
+		return fmt.Errorf("load checker settings snapshots: %w", err)
+	}
 
 	pausedForFailure, inactiveProxies, refreshProxies, cleanupErr := database.CleanupAutoRemovalViolations(ctx)
 	if cleanupErr != nil {

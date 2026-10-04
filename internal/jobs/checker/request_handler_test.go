@@ -32,7 +32,7 @@ func TestProxyCheckRequest_ReusesTransportForSameRequestShape(t *testing.T) {
 	})
 
 	var createCalls atomic.Int32
-	checkerTransportFactory = func(domain.Proxy, *domain.Judge, string, string) (http.RoundTripper, func(), error) {
+	checkerTransportFactory = func(domain.Proxy, *domain.Judge, string, string, ...uint16) (http.RoundTripper, func(), error) {
 		createCalls.Add(1)
 		return roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -72,7 +72,7 @@ func TestProxyCheckRequest_DoesNotForceConnectionClose(t *testing.T) {
 	var connectionHeader atomic.Value
 	connectionHeader.Store("")
 
-	checkerTransportFactory = func(domain.Proxy, *domain.Judge, string, string) (http.RoundTripper, func(), error) {
+	checkerTransportFactory = func(domain.Proxy, *domain.Judge, string, string, ...uint16) (http.RoundTripper, func(), error) {
 		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			connectionHeader.Store(req.Header.Get("Connection"))
 			return &http.Response{

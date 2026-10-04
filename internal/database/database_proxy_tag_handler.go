@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
@@ -127,14 +128,56 @@ func DeleteProxyTag(userID uint, tagID uint64) error {
 		return ErrProxyTagNotFound
 	}
 
-	result := DB.Where("id = ? AND workspace_id = ?", tagID, userID).Delete(&domain.ProxyTag{})
-	if result.Error != nil {
-		return result.Error
+	checkerChanged := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var locked domain.Workspace
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, userID).Error; err != nil {
+			return err
+		}
+		for _, rule := range locked.DefaultCheckerSettings().Rules {
+			if rule.TagID == tagID {
+				locked.CheckerRevision++
+				if err := recordCheckerRuleChanges(tx, userID, locked.CheckerRevision, []uint64{tagID}); err != nil {
+					return err
+				}
+				if err := tx.Model(&domain.Workspace{}).Where("id = ?", userID).UpdateColumns(map[string]any{"checker_revision": locked.CheckerRevision, "checker_dirty": true}).Error; err != nil {
+					return err
+				}
+				break
+			}
+		}
+		result := tx.Where("id = ? AND workspace_id = ?", tagID, userID).Delete(&domain.ProxyTag{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrProxyTagNotFound
+		}
+		var workspace domain.Workspace
+		if err := tx.First(&workspace, userID).Error; err != nil {
+			return err
+		}
+		if workspace.CheckerConfig != nil {
+			rules := make([]dto.TagCheckerRule, 0, len(workspace.CheckerConfig.Rules))
+			for _, rule := range workspace.CheckerConfig.Rules {
+				if rule.TagID != tagID {
+					rules = append(rules, rule)
+				}
+			}
+			if len(rules) == len(workspace.CheckerConfig.Rules) {
+				return nil
+			}
+			workspace.CheckerConfig.Rules = rules
+			workspace.CheckerDirty = true
+			checkerChanged = true
+			return tx.Model(&workspace).Select("CheckerConfig", "CheckerDirty").Updates(workspace).Error
+		}
+		return nil
+	})
+	if err == nil && checkerChanged {
+		checkerconfig.Notify(userID)
 	}
-	if result.RowsAffected == 0 {
-		return ErrProxyTagNotFound
-	}
-	return nil
+	return err
 }
 
 func ReplaceProxyTags(userID uint, proxyID uint64, tagIDs []uint64) ([]dto.ProxyTag, error) {
@@ -146,6 +189,7 @@ func ReplaceProxyTags(userID uint, proxyID uint64, tagIDs []uint64) ([]dto.Proxy
 	}
 
 	normalizedTagIDs := normalizeUint64IDs(tagIDs)
+	checkerChanged := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := requireProxyAccess(tx, userID, []uint64{proxyID}); err != nil {
 			return err
@@ -154,16 +198,28 @@ func ReplaceProxyTags(userID uint, proxyID uint64, tagIDs []uint64) ([]dto.Proxy
 			return err
 		}
 
+		var oldTagIDs []uint64
+		if err := tx.Model(&domain.ProxyTagAssignment{}).Where("workspace_id = ? AND proxy_id = ?", userID, proxyID).Pluck("proxy_tag_id", &oldTagIDs).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("workspace_id = ? AND proxy_id = ?", userID, proxyID).
 			Delete(&domain.ProxyTagAssignment{}).Error; err != nil {
 			return err
 		}
-		return createProxyTagAssignments(tx, userID, []uint64{proxyID}, normalizedTagIDs)
+		if err := createProxyTagAssignments(tx, userID, []uint64{proxyID}, normalizedTagIDs); err != nil {
+			return err
+		}
+		var err error
+		checkerChanged, err = markCheckerAssignmentsDirty(tx, userID, changedProxyTagIDs(oldTagIDs, normalizedTagIDs), []uint64{proxyID})
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	if checkerChanged {
+		checkerconfig.TagAssignmentsChanged(userID)
+	}
 	return getProxyTagsForProxy(userID, proxyID)
 }
 
@@ -180,15 +236,27 @@ func AddProxyTagsToProxies(userID uint, proxyIDs, tagIDs []uint64) error {
 		return nil
 	}
 
-	return DB.Transaction(func(tx *gorm.DB) error {
+	checkerChanged := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := requireProxyAccess(tx, userID, normalizedProxyIDs); err != nil {
 			return err
 		}
 		if err := requireProxyTags(tx, userID, normalizedTagIDs); err != nil {
 			return err
 		}
-		return createProxyTagAssignments(tx, userID, normalizedProxyIDs, normalizedTagIDs)
+		if err := createProxyTagAssignments(tx, userID, normalizedProxyIDs, normalizedTagIDs); err != nil {
+			return err
+		}
+		var err error
+		checkerChanged, err = markCheckerAssignmentsDirty(tx, userID, normalizedTagIDs, normalizedProxyIDs)
+		return err
 	})
+	if err == nil {
+		if checkerChanged {
+			checkerconfig.TagAssignmentsChanged(userID)
+		}
+	}
+	return err
 }
 
 func AttachProxyTagsToInfos(userID uint, proxies []dto.ProxyInfo) error {
@@ -341,4 +409,22 @@ func proxyTagsToDTO(tags []domain.ProxyTag) []dto.ProxyTag {
 
 func proxyTagToDTO(tag domain.ProxyTag) dto.ProxyTag {
 	return dto.ProxyTag{ID: tag.ID, Name: tag.Name, Color: tag.Color}
+}
+
+// Classification edits that retain the same checker tags need no refresh.
+func changedProxyTagIDs(before, after []uint64) []uint64 {
+	membership := make(map[uint64]bool, len(before)+len(after))
+	for _, id := range before {
+		membership[id] = true
+	}
+	for _, id := range after {
+		membership[id] = !membership[id]
+	}
+	changed := make([]uint64, 0)
+	for id, differs := range membership {
+		if differs {
+			changed = append(changed, id)
+		}
+	}
+	return changed
 }

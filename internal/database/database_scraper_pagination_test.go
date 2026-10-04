@@ -47,6 +47,12 @@ func TestScrapeSourceSortingAcrossPages(t *testing.T) {
 	if err := db.AutoMigrate(&domain.WorkspaceScrapeSourceStat{}, &domain.WorkspaceScrapeSite{}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Exec("CREATE TABLE workspaces (id integer PRIMARY KEY, checker_dirty boolean NOT NULL DEFAULT false)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO workspaces(id) VALUES (1),(2)").Error; err != nil {
+		t.Fatal(err)
+	}
 	added := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	sources := []domain.WorkspaceScrapeSourceStat{
 		{WorkspaceID: 1, ScrapeSiteID: 1, URL: "https://z.example", ProxyCount: 10, AliveCount: 2, AddedAt: added, ProtocolKey: "https"},

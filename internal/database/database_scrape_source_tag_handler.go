@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
@@ -131,7 +132,8 @@ func ApplyScrapeSourceTags(ctx context.Context, siteID uint64, mode string, work
 		ids = append(ids, proxy.ID)
 	}
 	ids = normalizeUint64IDs(ids)
-	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	checkerChanged := make(map[uint]bool)
+	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for w := 0; w < len(workspaceIDs); w += scrapeTagBatchSize {
 			workspaces := workspaceIDs[w:min(w+scrapeTagBatchSize, len(workspaceIDs))]
 			for p := 0; p < len(ids); p += scrapeTagBatchSize {
@@ -151,6 +153,25 @@ func ApplyScrapeSourceTags(ctx context.Context, siteID uint64, mode string, work
 				}
 			}
 		}
+		for _, workspaceID := range workspaceIDs {
+			var tagIDs []uint64
+			if err := tx.Model(&domain.ScrapeSourceTag{}).Where("workspace_id = ? AND scrape_site_id = ?", workspaceID, siteID).Pluck("proxy_tag_id", &tagIDs).Error; err != nil {
+				return err
+			}
+			changed, err := markCheckerAssignmentsDirty(tx, workspaceID, tagIDs, ids)
+			if err != nil {
+				return err
+			}
+			checkerChanged[workspaceID] = changed
+		}
 		return nil
 	})
+	if err == nil {
+		for _, workspaceID := range workspaceIDs {
+			if checkerChanged[workspaceID] {
+				checkerconfig.TagAssignmentsChanged(workspaceID)
+			}
+		}
+	}
+	return err
 }

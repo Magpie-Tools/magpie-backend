@@ -44,17 +44,27 @@ type Workspace struct {
 	Name     string `gorm:"not null;size:120"`
 	Personal bool   `gorm:"not null;default:false;index"`
 
-	HTTPProtocol               bool   `gorm:"not null;default:false"`
-	HTTPSProtocol              bool   `gorm:"not null;default:true"`
-	SOCKS4Protocol             bool   `gorm:"not null;default:false"`
-	SOCKS5Protocol             bool   `gorm:"not null;default:false"`
-	Timeout                    uint16 `gorm:"not null;default:7500"`
-	Retries                    uint8  `gorm:"not null;default:2"`
-	UseHttpsForSocks           bool   `gorm:"not null;default:true"`
-	TransportProtocol          string `gorm:"not null;default:'tcp'"`
-	AutoRemoveFailingProxies   bool   `gorm:"not null;default:false"`
-	AutoRemoveFailureThreshold uint8  `gorm:"not null;default:3"`
-	FailureAction              string `gorm:"not null;size:16;default:'pause'"`
+	HTTPProtocol               bool                 `gorm:"not null;default:false"`
+	HTTPSProtocol              bool                 `gorm:"not null;default:true"`
+	SOCKS4Protocol             bool                 `gorm:"not null;default:false"`
+	SOCKS5Protocol             bool                 `gorm:"not null;default:false"`
+	Timeout                    uint16               `gorm:"not null;default:7500"`
+	Retries                    uint8                `gorm:"not null;default:2"`
+	UseHttpsForSocks           bool                 `gorm:"not null;default:true"`
+	TransportProtocol          string               `gorm:"not null;default:'tcp'"`
+	AutoRemoveFailingProxies   bool                 `gorm:"not null;default:false"`
+	AutoRemoveFailureThreshold uint8                `gorm:"not null;default:3"`
+	FailureAction              string               `gorm:"not null;size:16;default:'pause'"`
+	CheckerConfig              *dto.CheckerSettings `gorm:"serializer:json;type:jsonb" json:"-"`
+	CheckerDirty               bool                 `gorm:"not null;default:false" json:"-"`
+	CheckerRevision            uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerFullRevision        uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerProjectedRevision   uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerGeneration          uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerHTTPKey             string               `gorm:"column:checker_http_key;size:64;not null;default:''" json:"-"`
+	CheckerHTTPSKey            string               `gorm:"column:checker_https_key;size:64;not null;default:''" json:"-"`
+	CheckerSOCKS4Key           string               `gorm:"column:checker_socks4_key;size:64;not null;default:''" json:"-"`
+	CheckerSOCKS5Key           string               `gorm:"column:checker_socks5_key;size:64;not null;default:''" json:"-"`
 
 	Memberships  []WorkspaceMembership `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 	Subscription WorkspaceSubscription `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
@@ -84,15 +94,17 @@ func (workspace Workspace) GetProtocolMap() map[string]int {
 }
 
 func (workspace Workspace) ToUserSettings(judges []dto.SimpleUserJudge, sources []string, preference WorkspaceMemberPreference) dto.UserSettings {
+	checker := workspace.DefaultCheckerSettings()
 	return dto.UserSettings{
-		HTTPProtocol:               workspace.HTTPProtocol,
-		HTTPSProtocol:              workspace.HTTPSProtocol,
-		SOCKS4Protocol:             workspace.SOCKS4Protocol,
-		SOCKS5Protocol:             workspace.SOCKS5Protocol,
-		Timeout:                    workspace.Timeout,
-		Retries:                    workspace.Retries,
+		CheckerSettings:            checker,
+		HTTPProtocol:               checker.Defaults.Enabled("http"),
+		HTTPSProtocol:              checker.Defaults.Enabled("https"),
+		SOCKS4Protocol:             checker.Defaults.Enabled("socks4"),
+		SOCKS5Protocol:             checker.Defaults.Enabled("socks5"),
+		Timeout:                    checker.Defaults.Timeout,
+		Retries:                    checker.Defaults.Retries,
 		UseHttpsForSocks:           workspace.UseHttpsForSocks,
-		TransportProtocol:          workspace.TransportProtocol,
+		TransportProtocol:          checker.Defaults.Transport,
 		AutoRemoveFailingProxies:   workspace.AutoRemoveFailingProxies,
 		AutoRemoveFailureThreshold: workspace.AutoRemoveFailureThreshold,
 		FailureAction:              workspace.EffectiveFailureAction(),

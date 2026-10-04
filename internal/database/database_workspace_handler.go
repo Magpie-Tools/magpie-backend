@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
@@ -176,6 +177,9 @@ func CreateWorkspace(userID uint, name string) (dto.Workspace, error) {
 		result = workspaceDTO(workspace, membership, 0, 0)
 		return nil
 	})
+	if err == nil {
+		checkerconfig.Notify(result.ID)
+	}
 	return result, err
 }
 

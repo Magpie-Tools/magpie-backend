@@ -3,6 +3,7 @@ package dto
 import "time"
 
 type ProxyDetail struct {
+	Alive           *bool                     `json:"alive"`
 	Id              int                       `json:"id"`
 	IP              string                    `json:"ip"`
 	Port            uint16                    `json:"port"`

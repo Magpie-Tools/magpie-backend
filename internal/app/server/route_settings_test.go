@@ -221,3 +221,46 @@ func TestSettingsAPIsRejectBlockedJudges(t *testing.T) {
 		})
 	}
 }
+
+func TestSettingsAPIsPersistCheckerProfilesAndPreserveOmittedFields(t *testing.T) {
+	for _, api := range []string{"REST", "GraphQL"} {
+		t.Run(api, func(t *testing.T) {
+			userID, workspaceID := setupSettingsAPITest(t)
+			if err := database.DB.AutoMigrate(&domain.ProxyTag{}, &domain.ProxyTagAssignment{}); err != nil {
+				t.Fatal(err)
+			}
+			tag, err := database.CreateProxyTag(workspaceID, "HTTP extra", "#22C55E")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defaults := map[string]any{"protocols": []any{"socks5"}, "transport": "tcp", "timeout": 3000, "retries": 0}
+			rule := map[string]any{"mode": "add", "protocols": []any{"http"}, "timeout": 1000, "retries": 0}
+			var input map[string]any
+			if api == "REST" {
+				rule["tag_id"] = tag.ID
+				input = map[string]any{"checker_settings": map[string]any{"defaults": defaults, "rules": []any{rule}}}
+			} else {
+				rule["tagId"] = fmt.Sprint(tag.ID)
+				input = map[string]any{"checkerSettings": map[string]any{"defaults": defaults, "rules": []any{rule}}}
+			}
+
+			if err := submitSettings(t, api, userID, workspaceID, input); err != nil {
+				t.Fatal(err)
+			}
+			before := database.GetWorkspaceByID(workspaceID)
+			if before.CheckerConfig == nil || len(before.CheckerConfig.Rules) != 1 || before.CheckerConfig.Rules[0].Retries == nil {
+				t.Fatal(before.CheckerConfig)
+			}
+			// Partial legacy settings saves keep all profile selections and overrides.
+			if err := submitSettings(t, api, userID, workspaceID, map[string]any{}); err != nil {
+				t.Fatal(err)
+			}
+			after := database.GetWorkspaceByID(workspaceID)
+			encodedBefore, _ := json.Marshal(before.CheckerConfig)
+			encodedAfter, _ := json.Marshal(after.CheckerConfig)
+			if !bytes.Equal(encodedBefore, encodedAfter) {
+				t.Fatal("omitted profiles changed", string(encodedAfter))
+			}
+		})
+	}
+}

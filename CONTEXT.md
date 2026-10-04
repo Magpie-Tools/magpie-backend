@@ -33,7 +33,7 @@ The maximum number of managed proxies that may be active in a workspace. Capacit
 _Avoid_: Space, member allowance, donated slots
 
 **Proxy route**:
-A host and port combined with one exact credential pair. The host may be an IP address or DNS hostname, and DNS changes do not create a new route. Health and reputation belong to this identity.
+A host and port combined with one exact credential pair. The host may be an IP address or DNS hostname, and DNS changes do not create a new route. Check measurements and reputation belong to this identity.
 _Avoid_: Proxy endpoint, proxy record
 
 **Managed proxy**:
@@ -63,6 +63,30 @@ _Avoid_: Global proxy label, route tag
 **Tag assignment**:
 The association between one proxy tag and one managed proxy. A managed proxy may have several tag assignments.
 _Avoid_: Proxy category
+
+**Default checker settings**:
+A workspace's baseline checker settings for every managed proxy in that workspace.
+_Avoid_: Global checker settings, personal checker settings
+
+**Tag checker rule**:
+A workspace's adjustment to checker settings for managed proxies assigned one particular proxy tag.
+_Avoid_: Tag default, proxy checker category
+
+**Checker profile**:
+The selected proxy protocols and shared transport, timeout, and retry choices in a workspace's Default settings or one tag checker rule.
+_Avoid_: Per-protocol budget, protocol profile
+
+**Effective checker settings**:
+The checker settings applicable to one managed proxy after combining its workspace's defaults with every matching tag checker rule.
+_Avoid_: Global tag settings, selected editor settings
+
+**Managed proxy health**:
+A workspace's assessment of a managed proxy based on results for its effective checker settings. Results from other workspaces or obsolete settings do not determine this assessment.
+_Avoid_: Global proxy health, shared workspace health
+
+**Checker rule priority**:
+The relative precedence of tag checker rules that match the same managed proxy. Higher-priority rules apply after lower-priority rules.
+_Avoid_: Tag creation order, tag name order
 
 **Scrape source**:
 A webpage URL from which Magpie extracts proxy routes.

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,6 +142,7 @@ func ensureReadModelSchema(db *gorm.DB) error {
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS reputation_score real`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP`,
 		`ALTER TABLE user_proxy_filter_indexes ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_recent_active ON user_proxy_filter_indexes (workspace_id, alive DESC, latest_check DESC, proxy_id ASC) WHERE state = 'active'`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_alive_latest ON user_proxy_filter_indexes (workspace_id, alive, latest_check DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_country ON user_proxy_filter_indexes (workspace_id, country_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_proxy_filter_user_type ON user_proxy_filter_indexes (workspace_id, type_key)`,
@@ -377,22 +379,24 @@ WITH scope AS (
 	` + where + `
 ),
 latest AS (
-	SELECT proxy_id, level_id, response_time, attempt, checked_at
+	SELECT checking_workspace_id, proxy_id, level_id, response_time, attempt, checked_at
 	FROM (
 		SELECT
+			pls.checking_workspace_id,
 			pls.proxy_id,
 			pls.level_id,
 			COALESCE(pls.response_time, 0) AS response_time,
 			COALESCE(pls.attempt, 0) AS attempt,
 			pls.checked_at,
-			ROW_NUMBER() OVER (PARTITION BY pls.proxy_id ORDER BY pls.checked_at DESC, pls.statistic_id DESC) AS row_num
-		FROM proxy_latest_statistics pls
-		WHERE EXISTS (SELECT 1 FROM scope s WHERE s.proxy_id = pls.proxy_id)
+			ROW_NUMBER() OVER (PARTITION BY pls.checking_workspace_id, pls.proxy_id ORDER BY pls.checked_at DESC, pls.statistic_id DESC) AS row_num
+		FROM (` + currentLatestStatisticsSQL + `) pls
+		WHERE EXISTS (SELECT 1 FROM scope s WHERE s.proxy_id = pls.proxy_id AND s.workspace_id = pls.checking_workspace_id)
 	) ranked
 	WHERE row_num = 1
 ),
 health AS (
 	SELECT
+		pls.checking_workspace_id,
 		pls.proxy_id,
 		ROUND(100.0 * AVG(CASE WHEN pls.alive THEN 1 ELSE 0 END)::numeric, 1) AS health_overall,
 		MAX(CASE WHEN LOWER(proto.name) = 'http' THEN CASE WHEN pls.alive THEN 100.0 ELSE 0.0 END END) AS health_http,
@@ -403,10 +407,10 @@ health AS (
 		BOOL_OR(pls.alive AND LOWER(proto.name) = 'https') AS alive_https,
 		BOOL_OR(pls.alive AND LOWER(proto.name) = 'socks4') AS alive_socks4,
 		BOOL_OR(pls.alive AND LOWER(proto.name) = 'socks5') AS alive_socks5
-	FROM proxy_latest_statistics pls
+	FROM (` + currentLatestStatisticsSQL + `) pls
 	JOIN protocols proto ON proto.id = pls.protocol_id
-	WHERE EXISTS (SELECT 1 FROM scope s WHERE s.proxy_id = pls.proxy_id)
-	GROUP BY pls.proxy_id
+	WHERE EXISTS (SELECT 1 FROM scope s WHERE s.proxy_id = pls.proxy_id AND s.workspace_id = pls.checking_workspace_id)
+	GROUP BY pls.checking_workspace_id, pls.proxy_id
 ),
 rows AS (
 	SELECT
@@ -423,8 +427,8 @@ rows AS (
 		LOWER(COALESCE(NULLIF(TRIM(p.estimated_type), ''), 'n/a')) AS type_key,
 		COALESCE(al.name, 'N/A') AS anonymity_level,
 		LOWER(COALESCE(al.name, 'n/a')) AS anonymity_key,
-		COALESCE(pos.overall_alive, FALSE) AS alive,
-		COALESCE(pos.last_checked_at, latest.checked_at, '0001-01-01 00:00:00'::timestamp) AS latest_check,
+		COALESCE(health.health_overall, 0) > 0 AS alive,
+		COALESCE(latest.checked_at, '0001-01-01 00:00:00'::timestamp) AS latest_check,
 		COALESCE(latest.response_time, 0) AS response_time,
 		COALESCE(latest.attempt, 0) AS attempt,
 		health.health_overall,
@@ -440,10 +444,9 @@ rows AS (
 		pr.score AS reputation_score
 	FROM scope up
 	JOIN proxies p ON p.id = up.proxy_id
-	LEFT JOIN latest ON latest.proxy_id = p.id
-	LEFT JOIN proxy_overall_statuses pos ON pos.proxy_id = p.id
+	LEFT JOIN latest ON latest.proxy_id = p.id AND latest.checking_workspace_id = up.workspace_id
 	LEFT JOIN anonymity_levels al ON al.id = latest.level_id
-	LEFT JOIN health ON health.proxy_id = p.id
+	LEFT JOIN health ON health.proxy_id = p.id AND health.checking_workspace_id = up.workspace_id
 	LEFT JOIN proxy_reputations pr ON pr.proxy_id = p.id AND pr.kind = 'overall'
 )
 INSERT INTO user_proxy_filter_indexes (
@@ -491,6 +494,11 @@ ON CONFLICT (workspace_id, proxy_id) DO UPDATE SET
 	reputation_score = EXCLUDED.reputation_score,
 	updated_at = CURRENT_TIMESTAMP
 `
+	// Index the committed key projection even while a newer edit is pending.
+	// Public readers mask pending health. This preserves unchanged routes so
+	// clearing the pending flag requires rewriting only actual plan deltas.
+	query = strings.ReplaceAll(query, "NOT w.checker_dirty AND ", "")
+	query = strings.ReplaceAll(query, " AND NOT w.checker_dirty", "")
 	if err := tx.Exec(query, args...).Error; err != nil {
 		return fmt.Errorf("read model: refresh proxy filter index: %w", err)
 	}
@@ -605,7 +613,7 @@ WITH rows AS (
 	JOIN scrape_sites ss ON ss.id = uss.scrape_site_id
 	LEFT JOIN proxy_scrape_site pss ON pss.scrape_site_id = ss.id
 	LEFT JOIN user_proxies up ON up.workspace_id = uss.workspace_id AND up.proxy_id = pss.proxy_id
-	LEFT JOIN proxy_overall_statuses pos ON pos.proxy_id = up.proxy_id
+	LEFT JOIN LATERAL (` + currentOverallStatusForProxySQL("up.workspace_id", "up.proxy_id") + `) pos ON TRUE
 	` + where + `
 	GROUP BY uss.workspace_id, ss.id, ss.url, uss.created_at
 )
@@ -629,6 +637,11 @@ ON CONFLICT (workspace_id, scrape_site_id) DO UPDATE SET
 	added_at = EXCLUDED.added_at,
 	updated_at = CURRENT_TIMESTAMP
 `
+	// Index the committed key projection even while a newer edit is pending.
+	// Public readers mask pending health. This preserves unchanged routes so
+	// clearing the pending flag requires rewriting only actual plan deltas.
+	query = strings.ReplaceAll(query, "NOT w.checker_dirty AND ", "")
+	query = strings.ReplaceAll(query, " AND NOT w.checker_dirty", "")
 	if err := tx.Exec(query, args...).Error; err != nil {
 		return fmt.Errorf("read model: refresh scrape-source stats: %w", err)
 	}

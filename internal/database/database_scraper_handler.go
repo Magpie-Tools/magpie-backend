@@ -259,9 +259,9 @@ func GetScrapeSiteInfoPageWithOptions(userId uint, page int, pageSize int, searc
 		"usss.scrape_site_id AS id, " +
 			"usss.url AS url, " +
 			"usss.proxy_count AS proxy_count, " +
-			"usss.alive_count AS alive_count, " +
-			"usss.dead_count AS dead_count, " +
-			"usss.unknown_count AS unknown_count, " +
+			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END AS alive_count, " +
+			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.dead_count END AS dead_count, " +
+			"CASE WHEN cw.checker_dirty THEN usss.proxy_count ELSE usss.unknown_count END AS unknown_count, " +
 			"usss.added_at AS added_at, uss.fetch_mode, uss.last_scraped_at, uss.last_scrape_status, uss.last_scrape_error, uss.last_scrape_proxy_count",
 	)
 
@@ -284,10 +284,10 @@ func applyScrapeSourcePageSort(query *gorm.DB, options ScrapeSourcePageQueryOpti
 	case "proxy_count":
 		expression = "usss.proxy_count"
 	case "alive_count":
-		expression = "usss.alive_count"
+		expression = "CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END"
 	case "health":
 		// Keep sources without data below zero health, and avoid integer division.
-		expression = "CASE WHEN usss.proxy_count > 0 THEN 1.0 * usss.alive_count / usss.proxy_count ELSE -1 END"
+		expression = "CASE WHEN cw.checker_dirty THEN -1 WHEN usss.proxy_count > 0 THEN 1.0 * usss.alive_count / usss.proxy_count ELSE -1 END"
 	}
 	direction := strings.ToLower(strings.TrimSpace(options.SortOrder))
 	if expression == "" || (direction != "asc" && direction != "desc") {
@@ -315,9 +315,9 @@ func GetScrapeSiteInfoForExport(userId uint, settings dto.ScrapeSourceExportSett
 		"usss.scrape_site_id AS id, " +
 			"usss.url AS url, " +
 			"usss.proxy_count AS proxy_count, " +
-			"usss.alive_count AS alive_count, " +
-			"usss.dead_count AS dead_count, " +
-			"usss.unknown_count AS unknown_count, " +
+			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END AS alive_count, " +
+			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.dead_count END AS dead_count, " +
+			"CASE WHEN cw.checker_dirty THEN usss.proxy_count ELSE usss.unknown_count END AS unknown_count, " +
 			"usss.added_at AS added_at, uss.fetch_mode, uss.last_scraped_at, uss.last_scrape_status, uss.last_scrape_error, uss.last_scrape_proxy_count",
 	)
 
@@ -347,9 +347,9 @@ func GetScrapeSiteInfoForExport(userId uint, settings dto.ScrapeSourceExportSett
 		}
 		if aliveCount > 0 {
 			if exportCountOperator(settings.AliveCountOperator, "") == "<" {
-				query = query.Where("usss.alive_count < ?", aliveCount)
+				query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END < ?", aliveCount)
 			} else {
-				query = query.Where("usss.alive_count > ?", aliveCount)
+				query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END > ?", aliveCount)
 			}
 		}
 	}
@@ -399,9 +399,9 @@ func applyScrapeSiteListFilters(query *gorm.DB, filters dto.ScrapeSourceListFilt
 
 	if filters.AliveCount > 0 {
 		if exportCountOperator(filters.AliveCountOperator, "") == "<" {
-			query = query.Where("usss.alive_count < ?", filters.AliveCount)
+			query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END < ?", filters.AliveCount)
 		} else {
-			query = query.Where("usss.alive_count > ?", filters.AliveCount)
+			query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END > ?", filters.AliveCount)
 		}
 	}
 
@@ -443,6 +443,7 @@ func exportCountOperator(operator string, legacyMode string) string {
 func buildScrapeSiteInfoQuery(userId uint) *gorm.DB {
 	return DB.Table("user_scrape_source_stats usss").
 		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = usss.scrape_site_id AND uss.workspace_id = usss.workspace_id").
+		Joins("JOIN workspaces cw ON cw.id = usss.workspace_id").
 		Where("usss.workspace_id = ?", userId)
 }
 
@@ -503,7 +504,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 				"MAX(pos.last_checked_at) AS last_checked_at",
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.workspace_id = ?", userId).
-		Joins("LEFT JOIN proxy_overall_statuses pos ON pos.proxy_id = pss.proxy_id").
+		Joins(currentOverallStatusJoin(DB, "LEFT", "up.workspace_id", "pss.proxy_id")).
 		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = pss.proxy_id AND pr.kind = ?", domain.ProxyReputationKindOverall).
 		Where("pss.scrape_site_id = ?", scrapeSiteId).
 		Scan(&stats)
@@ -612,17 +613,18 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 				"ufi.host AS ip_address, "+
 				"ufi.port AS port, "+
 				"ufi.estimated_type AS estimated_type, "+
-				"ufi.response_time AS response_time, "+
+				"CASE WHEN cw.checker_dirty THEN 0 ELSE ufi.response_time END AS response_time, "+
 				"ufi.country AS country, "+
-				"ufi.anonymity_level AS anonymity_level, "+
-				"ufi.alive AS alive, "+
-				"ufi.health_overall AS health_overall, "+
-				"ufi.health_http AS health_http, "+
-				"ufi.health_https AS health_https, "+
-				"ufi.health_socks4 AS health_socks4, "+
-				"ufi.health_socks5 AS health_socks5, "+
-				"ufi.latest_check AS latest_check",
+				"CASE WHEN cw.checker_dirty THEN 'N/A' ELSE ufi.anonymity_level END AS anonymity_level, "+
+				"CASE WHEN cw.checker_dirty THEN FALSE ELSE ufi.alive END AS alive, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_overall END AS health_overall, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_http END AS health_http, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_https END AS health_https, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_socks4 END AS health_socks4, "+
+				"CASE WHEN cw.checker_dirty THEN NULL ELSE ufi.health_socks5 END AS health_socks5, "+
+				"ufi.latest_check AS latest_check, cw.checker_dirty AS checker_pending",
 		).
+		Joins("JOIN workspaces cw ON cw.id = ufi.workspace_id").
 		Where("ufi.workspace_id = ?", userId).
 		Joins("JOIN proxy_scrape_site pss ON pss.proxy_id = ufi.proxy_id AND pss.scrape_site_id = ?", scrapeSiteId).
 		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.workspace_id = ?", userId)
