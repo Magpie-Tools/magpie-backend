@@ -203,7 +203,12 @@ func work(parent context.Context) {
 
 		judgeRequests, userSuccess, userHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy)
 		saveResponses := config.GetConfig().Checker.SaveResponses
-		processJudgeAssignments(proxy, judgeRequests, userSuccess, maxTimeout, maxRetries, saveResponses)
+		if err := processJudgeAssignments(proxy, judgeRequests, userSuccess, maxTimeout, maxRetries, saveResponses); err != nil {
+			continue
+		}
+		if err := proxyqueue.PublicProxyQueue.RenewLeaseIfNeeded(ctx, proxy); err != nil {
+			continue
+		}
 
 		removedUsers, orphaned := handleFailureTracking(proxy, userSuccess, userHasChecks)
 		payloadChanged = payloadChanged || len(removedUsers) > 0
@@ -212,6 +217,11 @@ func work(parent context.Context) {
 		}
 
 		if len(orphaned) > 0 {
+			for i := range orphaned {
+				if orphaned[i].ID == proxy.ID {
+					orphaned[i].QueueLease = proxy.QueueLease
+				}
+			}
 			if err := proxyqueue.PublicProxyQueue.RemoveFromQueue(orphaned); err != nil {
 				log.Error("failed to remove orphaned proxies from queue", "error", err)
 			}
@@ -436,13 +446,19 @@ func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool
 	return "http"
 }
 
-func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, userSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) {
+func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, userSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
 	for _, item := range assignments {
 		timeout, retries := item.timeout, item.retries
 		if !item.budgetSet {
 			timeout, retries = maxTimeout, maxRetries
 		}
 		html, err, responseTime, attempt := checkProxyWithRetries(proxy, item.judge, item.proxyProtocol, item.transportProtocol, timeout, retries)
+		if errors.Is(err, proxyqueue.ErrProxyLeaseLost) {
+			return err
+		}
+		if ctxErr := proxyCheckContext(proxy).Err(); ctxErr != nil {
+			return ctxErr
+		}
 		truncatedBody := ""
 		if saveResponses {
 			truncatedBody = truncateResponseBody(html)
@@ -489,6 +505,7 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 		tenantUserIDs := collectCheckUserIDs(item.checks)
 		enqueueProxyStatistic(statistic, tenantUserIDs)
 	}
+	return nil
 }
 
 func collectCheckUserIDs(checks []userCheck) []uint {
@@ -566,8 +583,12 @@ func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol str
 	)
 
 	for i := uint16(0); i <= uint16(retries); i++ {
+		ctx := proxyCheckContext(proxy)
+		if err := proxyqueue.PublicProxyQueue.RenewLeaseIfNeeded(ctx, proxy); err != nil {
+			return html, errors.Join(proxyqueue.ErrProxyLeaseLost, err), responseTime, uint8(i)
+		}
 		timeStart := time.Now()
-		html, err = ProxyCheckRequest(proxy, judge, protocol, transportProtocol, timeout)
+		html, err = proxyCheckRequestContext(ctx, proxy, judge, protocol, transportProtocol, timeout)
 		responseTime = time.Since(timeStart).Milliseconds()
 
 		if err == nil {
@@ -576,6 +597,13 @@ func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol str
 	}
 
 	return html, err, responseTime, retries
+}
+
+func proxyCheckContext(proxy domain.Proxy) context.Context {
+	if proxy.QueueLease != nil && proxy.QueueLease.Context != nil {
+		return proxy.QueueLease.Context
+	}
+	return context.Background()
 }
 
 func truncateResponseBody(body string) string {

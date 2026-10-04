@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"container/list"
 	"math/bits"
 	"net/http"
 	"strings"
@@ -13,11 +14,10 @@ import (
 )
 
 const (
-	checkerHTTPClientCacheTTL             = 5 * time.Minute
-	checkerHTTPClientCacheCleanupInterval = 1 * time.Minute
-	checkerHTTPClientCacheMinEntries      = 2048
-	checkerHTTPClientCacheMaxCap          = 16384
-	checkerHTTPClientCacheDefaultEntries  = 12288
+	checkerHTTPClientCacheTTL            = 5 * time.Minute
+	checkerHTTPClientCacheMinEntries     = 2048
+	checkerHTTPClientCacheMaxCap         = 16384
+	checkerHTTPClientCacheDefaultEntries = 12288
 )
 
 type checkerHTTPClientCacheKey struct {
@@ -36,12 +36,13 @@ type cachedCheckerHTTPClient struct {
 	client   *http.Client
 	closeFn  func()
 	lastUsed time.Time
+	position *list.Element
 }
 
 var (
 	checkerHTTPClientCacheMu sync.Mutex
 	checkerHTTPClientCache   = make(map[checkerHTTPClientCacheKey]*cachedCheckerHTTPClient)
-	nextCheckerCacheCleanup  = time.Now().Add(checkerHTTPClientCacheCleanupInterval)
+	checkerHTTPClientLRU     = list.New()
 
 	checkerTransportFactory = support.CreateTransport
 )
@@ -70,16 +71,15 @@ func getCheckerHTTPClient(proxyToCheck domain.Proxy, judge *domain.Judge, protoc
 	now := time.Now()
 
 	checkerHTTPClientCacheMu.Lock()
-	closeFns := runCheckerHTTPClientCacheMaintenanceLocked(now)
-	if entry, ok := checkerHTTPClientCache[key]; ok {
+	now = time.Now()
+	if entry, ok := checkerHTTPClientCache[key]; ok && now.Sub(entry.lastUsed) <= checkerHTTPClientCacheTTL {
 		entry.lastUsed = now
+		checkerHTTPClientLRU.MoveToBack(entry.position)
 		client := entry.client
 		checkerHTTPClientCacheMu.Unlock()
-		closeCheckerClients(closeFns)
 		return client, nil
 	}
 	checkerHTTPClientCacheMu.Unlock()
-	closeCheckerClients(closeFns)
 
 	transport, closeFn, err := checkerTransportFactory(proxyToCheck, judge, protocol, transportProtocol, timeouts...)
 	if err != nil {
@@ -88,23 +88,25 @@ func getCheckerHTTPClient(proxyToCheck domain.Proxy, judge *domain.Judge, protoc
 	client := &http.Client{Transport: transport}
 
 	checkerHTTPClientCacheMu.Lock()
-	closeFns = runCheckerHTTPClientCacheMaintenanceLocked(now)
-	if existing, ok := checkerHTTPClientCache[key]; ok {
+	now = time.Now()
+	if existing, ok := checkerHTTPClientCache[key]; ok && now.Sub(existing.lastUsed) <= checkerHTTPClientCacheTTL {
 		existing.lastUsed = now
+		checkerHTTPClientLRU.MoveToBack(existing.position)
 		client = existing.client
 		checkerHTTPClientCacheMu.Unlock()
-
 		if closeFn != nil {
 			closeFn()
 		}
-		closeCheckerClients(closeFns)
 		return client, nil
 	}
-
+	var closeFns []func()
+	if existing := checkerHTTPClientCache[key]; existing != nil {
+		closeFns = append(closeFns, removeCheckerHTTPClientLocked(key))
+	}
+	closeFns = append(closeFns, runCheckerHTTPClientCacheMaintenanceLocked(now)...)
 	checkerHTTPClientCache[key] = &cachedCheckerHTTPClient{
-		client:   client,
-		closeFn:  closeFn,
-		lastUsed: now,
+		client: client, closeFn: closeFn, lastUsed: now,
+		position: checkerHTTPClientLRU.PushBack(key),
 	}
 	checkerHTTPClientCacheMu.Unlock()
 	closeCheckerClients(closeFns)
@@ -112,35 +114,35 @@ func getCheckerHTTPClient(proxyToCheck domain.Proxy, judge *domain.Judge, protoc
 	return client, nil
 }
 
+func removeCheckerHTTPClientLocked(key checkerHTTPClientCacheKey) func() {
+	entry := checkerHTTPClientCache[key]
+	delete(checkerHTTPClientCache, key)
+	if entry == nil {
+		return nil
+	}
+	checkerHTTPClientLRU.Remove(entry.position)
+	return entry.closeFn
+}
+
 func runCheckerHTTPClientCacheMaintenanceLocked(now time.Time) []func() {
 	var closeFns []func()
-
-	if now.After(nextCheckerCacheCleanup) {
-		for key, entry := range checkerHTTPClientCache {
-			if now.Sub(entry.lastUsed) <= checkerHTTPClientCacheTTL {
-				continue
-			}
-			delete(checkerHTTPClientCache, key)
-			if entry.closeFn != nil {
-				closeFns = append(closeFns, entry.closeFn)
-			}
+	// Expiration follows LRU order. Limit cleanup so one insertion never
+	// scans the entire cache while other checker workers wait for the lock.
+	for removed := 0; removed < 16; removed++ {
+		key, ok := oldestCheckerHTTPClientCacheKeyLocked()
+		if !ok || now.Sub(checkerHTTPClientCache[key].lastUsed) <= checkerHTTPClientCacheTTL {
+			break
 		}
-		nextCheckerCacheCleanup = now.Add(checkerHTTPClientCacheCleanupInterval)
+		closeFns = append(closeFns, removeCheckerHTTPClientLocked(key))
 	}
-
 	maxEntries := checkerHTTPClientCacheMaxEntries()
 	for len(checkerHTTPClientCache) >= maxEntries {
-		evictedKey, ok := oldestCheckerHTTPClientCacheKeyLocked()
+		key, ok := oldestCheckerHTTPClientCacheKeyLocked()
 		if !ok {
 			break
 		}
-		entry := checkerHTTPClientCache[evictedKey]
-		delete(checkerHTTPClientCache, evictedKey)
-		if entry != nil && entry.closeFn != nil {
-			closeFns = append(closeFns, entry.closeFn)
-		}
+		closeFns = append(closeFns, removeCheckerHTTPClientLocked(key))
 	}
-
 	return closeFns
 }
 
@@ -174,24 +176,11 @@ func nextPow2(value uint64) uint64 {
 }
 
 func oldestCheckerHTTPClientCacheKeyLocked() (checkerHTTPClientCacheKey, bool) {
-	var (
-		oldestKey checkerHTTPClientCacheKey
-		oldest    time.Time
-		found     bool
-	)
-
-	for key, entry := range checkerHTTPClientCache {
-		if entry == nil {
-			continue
-		}
-		if !found || entry.lastUsed.Before(oldest) {
-			oldestKey = key
-			oldest = entry.lastUsed
-			found = true
-		}
+	oldest := checkerHTTPClientLRU.Front()
+	if oldest == nil {
+		return checkerHTTPClientCacheKey{}, false
 	}
-
-	return oldestKey, found
+	return oldest.Value.(checkerHTTPClientCacheKey), true
 }
 
 func closeCheckerClients(closeFns []func()) {
@@ -211,7 +200,7 @@ func resetCheckerHTTPClientCacheForTests() {
 		}
 	}
 	checkerHTTPClientCache = make(map[checkerHTTPClientCacheKey]*cachedCheckerHTTPClient)
-	nextCheckerCacheCleanup = time.Now().Add(checkerHTTPClientCacheCleanupInterval)
+	checkerHTTPClientLRU.Init()
 	checkerHTTPClientCacheMu.Unlock()
 
 	closeCheckerClients(closeFns)

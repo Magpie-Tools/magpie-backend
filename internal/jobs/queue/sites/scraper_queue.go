@@ -14,6 +14,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	queueutil "magpie/internal/jobs/queue"
 	"magpie/internal/jobs/runtime"
 	"magpie/internal/support"
 
@@ -200,29 +201,7 @@ func (rssq *RedisScrapeSiteQueue) refreshQueueHeads() error {
 	if err != nil {
 		return err
 	}
-	ctx := rssq.baseContext()
-
-	pipe := client.Pipeline()
-	pipe.Del(ctx, scrapesiteQueueHeadKey)
-
-	for _, key := range rssq.popKeys() {
-		entries, err := client.ZRangeWithScores(ctx, key, 0, 0).Result()
-		if err != nil {
-			return err
-		}
-		if len(entries) == 0 {
-			continue
-		}
-		pipe.ZAdd(ctx, scrapesiteQueueHeadKey, redis.Z{
-			Score:  entries[0].Score,
-			Member: key,
-		})
-	}
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return err
-	}
-	return nil
+	return queueutil.RefreshHeads(rssq.baseContext(), client, scrapesiteQueueHeadKey, rssq.popKeys())
 }
 
 func (rssq *RedisScrapeSiteQueue) AddToQueue(sites []domain.ScrapeSite) error {

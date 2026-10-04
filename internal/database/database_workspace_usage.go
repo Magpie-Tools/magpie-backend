@@ -23,7 +23,6 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 	}
 
 	usageByPeriod := make(map[workspaceUsageKey]*domain.WorkspaceUsagePeriod)
-	workspaceSet := make(map[uint]struct{})
 	for _, statistic := range statistics {
 		if len(statistic.WorkspaceIDs) == 0 {
 			continue
@@ -42,7 +41,6 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 				continue
 			}
 			seen[workspaceID] = struct{}{}
-			workspaceSet[workspaceID] = struct{}{}
 			key := workspaceUsageKey{WorkspaceID: workspaceID, PeriodStart: periodStart}
 			usage := usageByPeriod[key]
 			if usage == nil {
@@ -61,30 +59,8 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 		return nil
 	}
 
-	workspaceIDs := make([]uint, 0, len(workspaceSet))
-	for workspaceID := range workspaceSet {
-		workspaceIDs = append(workspaceIDs, workspaceID)
-	}
-	var activeRows []struct {
-		WorkspaceID uint
-		Count       uint64
-	}
-	if err := tx.Model(&domain.ManagedProxy{}).
-		Select("workspace_id, COUNT(*) AS count").
-		Where("workspace_id IN ? AND state = ?", workspaceIDs, domain.ManagedProxyStateActive).
-		Group("workspace_id").
-		Scan(&activeRows).Error; err != nil {
-		return err
-	}
-	activeByWorkspace := make(map[uint]uint64, len(activeRows))
-	for _, row := range activeRows {
-		activeByWorkspace[row.WorkspaceID] = row.Count
-	}
-
 	periods := make([]domain.WorkspaceUsagePeriod, 0, len(usageByPeriod))
 	for _, usage := range usageByPeriod {
-		usage.ActiveRoutes = activeByWorkspace[usage.WorkspaceID]
-		usage.PeakActiveRoutes = usage.ActiveRoutes
 		periods = append(periods, *usage)
 	}
 	sort.Slice(periods, func(i, j int) bool {
@@ -94,16 +70,15 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 		return periods[i].PeriodStart.Before(periods[j].PeriodStart)
 	})
 
-	return tx.Clauses(clause.OnConflict{
+	rows := workspaceUsageDeltaRows(periods)
+	return tx.Model(&domain.WorkspaceUsagePeriod{}).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "workspace_id"}, {Name: "period_start"}},
 		DoUpdates: clause.Assignments(map[string]any{
-			"period_end":         gorm.Expr("EXCLUDED.period_end"),
-			"active_routes":      gorm.Expr("EXCLUDED.active_routes"),
-			"peak_active_routes": gorm.Expr("CASE WHEN workspace_usage_periods.peak_active_routes > EXCLUDED.peak_active_routes THEN workspace_usage_periods.peak_active_routes ELSE EXCLUDED.peak_active_routes END"),
-			"check_attempts":     gorm.Expr("workspace_usage_periods.check_attempts + EXCLUDED.check_attempts"),
-			"updated_at":         gorm.Expr("CURRENT_TIMESTAMP"),
+			"period_end":     gorm.Expr("EXCLUDED.period_end"),
+			"check_attempts": gorm.Expr("workspace_usage_periods.check_attempts + EXCLUDED.check_attempts"),
+			"updated_at":     gorm.Expr("CURRENT_TIMESTAMP"),
 		}),
-	}).Create(&periods).Error
+	}).CreateInBatches(&rows, 1000).Error
 }
 
 func UpdateWorkspaceUsageActiveRoutes(tx *gorm.DB, workspaceID uint, active uint64) error {
@@ -226,7 +201,8 @@ func recordWorkspaceManagedTrafficBatch(tx *gorm.DB, samples []WorkspaceManagedT
 		}
 		return periods[i].PeriodStart.Before(periods[j].PeriodStart)
 	})
-	return tx.Clauses(clause.OnConflict{
+	rows := workspaceUsageDeltaRows(periods)
+	return tx.Model(&domain.WorkspaceUsagePeriod{}).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "workspace_id"}, {Name: "period_start"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"period_end":       gorm.Expr("EXCLUDED.period_end"),
@@ -234,7 +210,26 @@ func recordWorkspaceManagedTrafficBatch(tx *gorm.DB, samples []WorkspaceManagedT
 			"managed_bytes":    gorm.Expr("workspace_usage_periods.managed_bytes + EXCLUDED.managed_bytes"),
 			"updated_at":       gorm.Expr("CURRENT_TIMESTAMP"),
 		}),
-	}).Create(&periods).Error
+	}).CreateInBatches(&rows, 1000).Error
+}
+
+// On the first write of a new month, carry the last recorded capacity into
+// the new period. Both checks and traffic can create a period. Existing rows
+// only receive deltas, and lifecycle writes remain authoritative for capacity.
+func workspaceUsageDeltaRows(periods []domain.WorkspaceUsagePeriod) []map[string]any {
+	rows := make([]map[string]any, 0, len(periods))
+	now := time.Now().UTC()
+	for _, period := range periods {
+		capacity := gorm.Expr(`COALESCE((SELECT active_routes FROM workspace_usage_periods
+			WHERE workspace_id = ? AND period_start < ? ORDER BY period_start DESC LIMIT 1), 0)`, period.WorkspaceID, period.PeriodStart)
+		rows = append(rows, map[string]any{
+			"workspace_id": period.WorkspaceID, "period_start": period.PeriodStart, "period_end": period.PeriodEnd,
+			"active_routes": capacity, "peak_active_routes": capacity,
+			"check_attempts": period.CheckAttempts, "managed_requests": period.ManagedRequests, "managed_bytes": period.ManagedBytes,
+			"created_at": now, "updated_at": now,
+		})
+	}
+	return rows
 }
 
 func workspaceUsageMonth(value time.Time) (time.Time, time.Time) {

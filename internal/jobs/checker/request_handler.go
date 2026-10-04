@@ -38,6 +38,10 @@ var (
 
 // ProxyCheckRequest makes a request to the provided siteUrl with the provided proxy
 func ProxyCheckRequest(proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeout uint16) (string, error) {
+	return proxyCheckRequestContext(context.Background(), proxyToCheck, judge, protocol, transportProtocol, timeout)
+}
+
+func proxyCheckRequestContext(ctx context.Context, proxyToCheck domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeout uint16) (string, error) {
 	if judge == nil {
 		return "Invalid judge", fmt.Errorf("judge is required")
 	}
@@ -50,7 +54,7 @@ func ProxyCheckRequest(proxyToCheck domain.Proxy, judge *domain.Judge, protocol 
 		return "Failed to create transport", err
 	}
 
-	reqCtx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
+	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, "GET", judge.FullString, nil)

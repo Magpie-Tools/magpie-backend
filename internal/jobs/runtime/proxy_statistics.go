@@ -24,13 +24,8 @@ const (
 	statisticsFlushInterval           = 15 * time.Second
 	statisticsBatchThreshold          = 5000
 	statisticsQueueCapacity           = 20_000
-	statisticsDirtyProxyQueueCapacity = 1024
 	statisticsBackpressureLogEvery    = 15 * time.Second
 	statisticsInsertTimeout           = 30 * time.Second
-	reputationRecalcTimeout           = 10 * time.Second
-	reputationRecalcInterval          = 1 * time.Minute
-	reputationRecalcBatch             = 5000
-	reputationRecalcPerTick           = 4
 	statisticsProducerRetryDelay      = 250 * time.Millisecond
 	defaultStatisticsProducerMaxBlock = 500 * time.Millisecond
 	defaultStatisticsIngestWorkers    = 4
@@ -238,13 +233,12 @@ func StartProxyStatisticsRoutine(ctx context.Context) {
 
 	workerCount := resolveStatisticsIngestWorkers()
 	initializeProxyStatisticStream(ctx)
-	dirtyProxyIDsQueue := make(chan []uint64, statisticsDirtyProxyQueueCapacity)
 
 	var reputationWG sync.WaitGroup
 	reputationWG.Add(1)
 	go func() {
 		defer reputationWG.Done()
-		runProxyReputationCoordinator(ctx, dirtyProxyIDsQueue)
+		runProxyReputationCoordinator(ctx)
 	}()
 
 	var workerWG sync.WaitGroup
@@ -260,7 +254,7 @@ func StartProxyStatisticsRoutine(ctx context.Context) {
 		workerWG.Add(1)
 		go func(name string) {
 			defer workerWG.Done()
-			runProxyStatisticsStreamWorker(ctx, dirtyProxyIDsQueue, name)
+			runProxyStatisticsStreamWorker(ctx, name)
 		}(consumerName)
 	}
 
@@ -268,13 +262,12 @@ func StartProxyStatisticsRoutine(ctx context.Context) {
 		workerWG.Add(1)
 		go func() {
 			defer workerWG.Done()
-			runProxyStatisticsWorker(ctx, dirtyProxyIDsQueue)
+			runProxyStatisticsWorker(ctx)
 		}()
 	}
 
 	<-ctx.Done()
 	workerWG.Wait()
-	close(dirtyProxyIDsQueue)
 	reputationWG.Wait()
 }
 
@@ -430,15 +423,26 @@ func isBusyGroupError(err error) bool {
 	return strings.Contains(strings.ToUpper(err.Error()), "BUSYGROUP")
 }
 
-func runProxyStatisticsWorker(ctx context.Context, dirtyProxyIDsQueue chan<- []uint64) {
+func runProxyStatisticsWorker(ctx context.Context) {
 	var buffer []domain.ProxyStatistic
 	flushTimer := time.NewTimer(statisticsFlushInterval)
 	defer flushTimer.Stop()
+	defer func() {
+		drainProxyStatisticQueue(&buffer)
+		// The volatile fallback gets one final attempt, bounded by the normal
+		// database insert timeout. A failed attempt must not restart the loop.
+		_ = flushStatisticsBuffer(&buffer)
+	}()
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		if len(buffer) >= statisticsBatchThreshold {
-			if !flushStatisticsBuffer(&buffer, dirtyProxyIDsQueue) {
-				time.Sleep(statisticsStreamErrorDelay)
+			if _, flushed := flushProxyStatisticsContext(ctx, &buffer); !flushed {
+				if !waitForStatisticsRetry(ctx) {
+					return
+				}
 				continue
 			}
 			resetTimer(flushTimer)
@@ -446,19 +450,17 @@ func runProxyStatisticsWorker(ctx context.Context, dirtyProxyIDsQueue chan<- []u
 
 		select {
 		case <-ctx.Done():
-			drainProxyStatisticQueue(&buffer)
-			_ = flushStatisticsBuffer(&buffer, dirtyProxyIDsQueue)
 			return
 		case stat := <-proxyStatisticQueue:
 			buffer = append(buffer, stat)
 		case <-flushTimer.C:
-			_ = flushStatisticsBuffer(&buffer, dirtyProxyIDsQueue)
+			_, _ = flushProxyStatisticsContext(ctx, &buffer)
 			flushTimer.Reset(statisticsFlushInterval)
 		}
 	}
 }
 
-func runProxyStatisticsStreamWorker(ctx context.Context, dirtyProxyIDsQueue chan<- []uint64, consumerName string) {
+func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 	client := proxyStatisticStreamClient
 	cfg := proxyStatisticStreamCfg
 	if client == nil || !cfg.enabled {
@@ -476,16 +478,26 @@ func runProxyStatisticsStreamWorker(ctx context.Context, dirtyProxyIDsQueue chan
 	defer flushTimer.Stop()
 
 	for {
+		// Buffered and committed-but-unacknowledged stream entries remain
+		// pending. A later consumer safely replays them through the event ledger.
+		// Check before retrying, including when cancellation interrupted XACK.
+		if ctx.Err() != nil {
+			return
+		}
 		if len(messageIDs) > 0 && len(buffer) == 0 {
-			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, dirtyProxyIDsQueue, client, cfg) {
-				time.Sleep(statisticsStreamErrorDelay)
+			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
+				if !waitForStatisticsRetry(ctx) {
+					return
+				}
 				continue
 			}
 		}
 
 		if len(buffer) >= statisticsBatchThreshold {
-			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, dirtyProxyIDsQueue, client, cfg) {
-				time.Sleep(statisticsStreamErrorDelay)
+			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
+				if !waitForStatisticsRetry(ctx) {
+					return
+				}
 				continue
 			}
 			resetTimer(flushTimer)
@@ -498,7 +510,9 @@ func runProxyStatisticsStreamWorker(ctx context.Context, dirtyProxyIDsQueue chan
 					return
 				}
 				log.Error("Failed to claim stale proxy statistics stream messages", "error", err, "consumer", consumerName)
-				time.Sleep(statisticsStreamErrorDelay)
+				if !waitForStatisticsRetry(ctx) {
+					return
+				}
 				continue
 			}
 			lastClaim = time.Now()
@@ -510,13 +524,14 @@ func runProxyStatisticsStreamWorker(ctx context.Context, dirtyProxyIDsQueue chan
 
 		select {
 		case <-ctx.Done():
-			_ = flushStreamStatisticsBuffer(context.Background(), &buffer, &messageIDs, dirtyProxyIDsQueue, client, cfg)
 			return
 		case <-flushTimer.C:
-			if flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, dirtyProxyIDsQueue, client, cfg) {
+			if flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
 				flushTimer.Reset(statisticsFlushInterval)
 			} else {
-				time.Sleep(statisticsStreamErrorDelay)
+				if !waitForStatisticsRetry(ctx) {
+					return
+				}
 				flushTimer.Reset(statisticsFlushInterval)
 			}
 		default:
@@ -531,7 +546,7 @@ func runProxyStatisticsStreamWorker(ctx context.Context, dirtyProxyIDsQueue chan
 			NoAck:    false,
 		}).Result()
 		if errors.Is(err, redis.Nil) {
-			if streamID == "0" {
+			if streamID != ">" {
 				streamID = ">"
 			}
 			continue
@@ -541,17 +556,40 @@ func runProxyStatisticsStreamWorker(ctx context.Context, dirtyProxyIDsQueue chan
 				return
 			}
 			log.Error("Failed reading proxy statistics stream", "error", err, "consumer", consumerName)
-			time.Sleep(statisticsStreamErrorDelay)
+			if !waitForStatisticsRetry(ctx) {
+				return
+			}
 			continue
 		}
 
-		appendedMessages := 0
+		readMessages := 0
 		for _, stream := range streams {
-			appendedMessages += appendStreamMessagesToBuffer(ctx, stream.Messages, &buffer, &messageIDs, client, cfg)
+			readMessages += len(stream.Messages)
+			appendStreamMessagesToBuffer(ctx, stream.Messages, &buffer, &messageIDs, client, cfg)
+			if streamID != ">" && len(stream.Messages) > 0 {
+				streamID = stream.Messages[len(stream.Messages)-1].ID
+			}
 		}
-		if streamID == "0" && appendedMessages == 0 {
+		if streamID != ">" && readMessages == 0 {
 			streamID = ">"
+			// Finish a partial recovery page before waiting for new traffic.
+			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
+				if !waitForStatisticsRetry(ctx) {
+					return
+				}
+			}
 		}
+	}
+}
+
+func waitForStatisticsRetry(ctx context.Context) bool {
+	timer := time.NewTimer(statisticsStreamErrorDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -586,6 +624,10 @@ func appendStreamMessagesToBuffer(ctx context.Context, messages []redis.XMessage
 	}
 
 	appended := 0
+	seen := make(map[string]struct{}, len(*messageIDs)+len(messages))
+	for _, id := range *messageIDs {
+		seen[id] = struct{}{}
+	}
 	for _, msg := range messages {
 		stat, err := decodeProxyStatisticStreamMessage(msg)
 		if err != nil {
@@ -595,6 +637,13 @@ func appendStreamMessagesToBuffer(ctx context.Context, messages []redis.XMessage
 			continue
 		}
 
+		stat.EventStream = cfg.streamKey
+		stat.EventID = msg.ID
+		// XAUTOCLAIM and pending recovery may overlap within the same buffer.
+		if _, duplicate := seen[msg.ID]; duplicate {
+			continue
+		}
+		seen[msg.ID] = struct{}{}
 		*buffer = append(*buffer, stat)
 		*messageIDs = append(*messageIDs, msg.ID)
 		appended++
@@ -624,9 +673,11 @@ func decodeProxyStatisticStreamMessage(msg redis.XMessage) (domain.ProxyStatisti
 	return stat, nil
 }
 
-func flushStreamStatisticsBuffer(ctx context.Context, buffer *[]domain.ProxyStatistic, messageIDs *[]string, dirtyProxyIDsQueue chan<- []uint64, client *redis.Client, cfg proxyStatisticStreamConfig) bool {
-	if len(*buffer) > 0 && !flushStatisticsBuffer(buffer, dirtyProxyIDsQueue) {
-		return false
+func flushStreamStatisticsBuffer(ctx context.Context, buffer *[]domain.ProxyStatistic, messageIDs *[]string, client *redis.Client, cfg proxyStatisticStreamConfig) bool {
+	if len(*buffer) > 0 {
+		if _, flushed := flushProxyStatisticsContext(ctx, buffer); !flushed {
+			return false
+		}
 	}
 
 	ackedCount, err := ackAndDeleteStreamMessageIDs(ctx, *messageIDs, client, cfg)
@@ -667,37 +718,9 @@ func ackAndDeleteStreamMessageIDs(ctx context.Context, messageIDs []string, clie
 	return ackedCount, nil
 }
 
-func flushStatisticsBuffer(buffer *[]domain.ProxyStatistic, dirtyProxyIDsQueue chan<- []uint64) bool {
-	proxyIDs, flushed := flushProxyStatistics(buffer)
-	if !flushed {
-		return false
-	}
-	publishDirtyProxyIDs(dirtyProxyIDsQueue, proxyIDs)
-	return true
-}
-
-func runProxyReputationCoordinator(ctx context.Context, dirtyProxyIDsQueue <-chan []uint64) {
-	dirtyProxyIDs := make(map[uint64]struct{})
-	reputationTimer := time.NewTimer(reputationRecalcInterval)
-	defer reputationTimer.Stop()
-
-	ctxDone := ctx.Done()
-	for {
-		select {
-		case proxyIDs, ok := <-dirtyProxyIDsQueue:
-			if !ok {
-				flushDirtyProxyReputations(dirtyProxyIDs, true)
-				return
-			}
-			mergeProxyIDs(dirtyProxyIDs, proxyIDs)
-		case <-reputationTimer.C:
-			flushDirtyProxyReputations(dirtyProxyIDs, false)
-			reputationTimer.Reset(reputationRecalcInterval)
-		case <-ctxDone:
-			// Keep draining worker updates until the channel is closed.
-			ctxDone = nil
-		}
-	}
+func flushStatisticsBuffer(buffer *[]domain.ProxyStatistic) bool {
+	_, flushed := flushProxyStatistics(buffer)
+	return flushed
 }
 
 func resolveStatisticsIngestWorkers() int {
@@ -719,14 +742,11 @@ func resolveStatisticsProducerMaxBlock() time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-func publishDirtyProxyIDs(ch chan<- []uint64, proxyIDs []uint64) {
-	if len(proxyIDs) == 0 {
-		return
-	}
-	ch <- proxyIDs
+func flushProxyStatistics(buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
+	return flushProxyStatisticsContext(context.Background(), buffer)
 }
 
-func flushProxyStatistics(buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
+func flushProxyStatisticsContext(ctx context.Context, buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
 	if len(*buffer) == 0 {
 		return nil, true
 	}
@@ -734,7 +754,7 @@ func flushProxyStatistics(buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
 	toInsert := *buffer
 
 	start := time.Now()
-	dbCtx, cancel := context.WithTimeout(context.Background(), statisticsInsertTimeout)
+	dbCtx, cancel := context.WithTimeout(ctx, statisticsInsertTimeout)
 	defer cancel()
 
 	preparedStats, proxyIDs, err := prepareProxyStatistics(dbCtx, toInsert)
@@ -777,71 +797,6 @@ func resetTimer(timer *time.Timer) {
 		}
 	}
 	timer.Reset(statisticsFlushInterval)
-}
-
-func mergeProxyIDs(target map[uint64]struct{}, proxyIDs []uint64) {
-	if len(proxyIDs) == 0 {
-		return
-	}
-	for _, id := range proxyIDs {
-		if id == 0 {
-			continue
-		}
-		target[id] = struct{}{}
-	}
-}
-
-func flushDirtyProxyReputations(dirty map[uint64]struct{}, drainAll bool) {
-	if len(dirty) == 0 {
-		return
-	}
-
-	remaining := reputationRecalcPerTick
-	if drainAll {
-		remaining = len(dirty)
-	}
-
-	for len(dirty) > 0 && remaining > 0 {
-		proxyIDs := popProxyIDBatch(dirty, reputationRecalcBatch)
-		if len(proxyIDs) == 0 {
-			return
-		}
-
-		repCtx, cancel := context.WithTimeout(context.Background(), reputationRecalcTimeout)
-		err := database.RecalculateProxyReputations(repCtx, proxyIDs)
-		cancel()
-
-		if err != nil {
-			for _, id := range proxyIDs {
-				dirty[id] = struct{}{}
-			}
-			log.Error("Failed to update proxy reputations", "error", err, "proxy_ids", proxyIDs)
-			return
-		}
-
-		remaining--
-	}
-}
-
-func popProxyIDBatch(dirty map[uint64]struct{}, limit int) []uint64 {
-	if len(dirty) == 0 || limit <= 0 {
-		return nil
-	}
-
-	if limit > len(dirty) {
-		limit = len(dirty)
-	}
-
-	out := make([]uint64, 0, limit)
-	for id := range dirty {
-		out = append(out, id)
-		delete(dirty, id)
-		if len(out) >= limit {
-			break
-		}
-	}
-
-	return out
 }
 
 func collectProxyIDs(stats []domain.ProxyStatistic) []uint64 {

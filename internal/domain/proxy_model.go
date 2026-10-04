@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/netip"
@@ -32,8 +33,20 @@ type Proxy struct {
 
 	Workspaces []Workspace `gorm:"many2many:user_proxies;joinForeignKey:ProxyID;joinReferences:WorkspaceID;"`
 
+	// QueueLease belongs to a dequeued worker. It is never stored in PostgreSQL
+	// or serialized into the queue payload.
+	QueueLease *ProxyQueueLease `gorm:"-" json:"-"`
+
 	Hash      []byte    `gorm:"type:bytea;uniqueIndex;size:32"` // Keyed fingerprint of exact Host|Port|Username|Password
 	CreatedAt time.Time `gorm:"autoCreateTime"`
+}
+
+type ProxyQueueLease struct {
+	// ScoreMS is the whole-millisecond expiry; Redis adds 0.5 to mark a lease.
+	ScoreMS  int64
+	QueueKey string
+	Payload  string
+	Context  context.Context
 }
 
 func (proxy *Proxy) BeforeSave(_ *gorm.DB) error {

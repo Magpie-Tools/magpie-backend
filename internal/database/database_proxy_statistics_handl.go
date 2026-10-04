@@ -3,11 +3,15 @@ package database
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync/atomic"
+	"time"
 
 	"magpie/internal/domain"
 
 	"github.com/charmbracelet/log"
+	"gorm.io/gorm"
 )
 
 var proxyStatisticFieldCount atomic.Int32
@@ -72,46 +76,93 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 		db = db.WithContext(ctx)
 	}
 
-	tx := db.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-			log.Errorf("Transaction rolled back due to panic: %v", r)
+	var proxyIDs []uint64
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		accepted, err := acceptProxyStatisticEvents(tx, statistics)
+		if err != nil || len(accepted) == 0 {
+			return err
 		}
-	}()
-
-	proxyIDs := collectProxyIDsFromStatistics(statistics)
-
-	if err := tx.CreateInBatches(statistics, batchSize).Error; err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	if err := incrementProxyDailyChecks(tx, statistics); err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	if err := recordWorkspaceCheckUsage(tx, statistics); err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	if err := updateProxyStatusCaches(tx, statistics); err != nil {
-		tx.Rollback()
-		return err
-	}
-
-	if err := tx.Commit().Error; err != nil {
+		if batchSize <= 0 {
+			batchSize = CalculateProxyStatisticBatchSize(len(accepted))
+		}
+		if err := tx.CreateInBatches(&accepted, batchSize).Error; err != nil {
+			return err
+		}
+		if err := incrementProxyDailyChecks(tx, accepted); err != nil {
+			return err
+		}
+		if err := recordWorkspaceCheckUsage(tx, accepted); err != nil {
+			return err
+		}
+		if err := updateProxyStatusCaches(tx, accepted); err != nil {
+			return err
+		}
+		proxyIDs = collectProxyIDsFromStatistics(accepted)
+		return queueProxyReputationRefresh(tx, proxyIDs)
+	}); err != nil {
 		return err
 	}
 
 	QueueReadModelRefreshForProxyIDs(proxyIDs)
 	return nil
+}
+
+func acceptProxyStatisticEvents(tx *gorm.DB, statistics []domain.ProxyStatistic) ([]domain.ProxyStatistic, error) {
+	type eventKey struct{ stream, id string }
+	events := make([]domain.ProxyStatisticEvent, 0, len(statistics))
+	seen := make(map[eventKey]struct{}, len(statistics))
+	for _, stat := range statistics {
+		if stat.EventID == "" {
+			continue // The in-memory fallback has no replayable stream identity.
+		}
+		key := eventKey{stat.EventStream, stat.EventID}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		events = append(events, domain.ProxyStatisticEvent{Stream: key.stream, EventID: key.id})
+	}
+	if len(events) == 0 {
+		return statistics, nil
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Stream != events[j].Stream {
+			return events[i].Stream < events[j].Stream
+		}
+		return events[i].EventID < events[j].EventID
+	})
+
+	acceptedKeys := make(map[eventKey]struct{}, len(events))
+	for start := 0; start < len(events); start += 1000 {
+		chunk := events[start:min(start+1000, len(events))]
+		values := make([]string, len(chunk))
+		args := make([]any, 0, len(chunk)*3)
+		for i, event := range chunk {
+			values[i] = "(?, ?, ?)"
+			args = append(args, event.Stream, event.EventID, time.Now().UTC())
+		}
+		var inserted []domain.ProxyStatisticEvent
+		query := "INSERT INTO proxy_statistic_events (stream, event_id, created_at) VALUES " + strings.Join(values, ",") +
+			" ON CONFLICT (stream, event_id) DO NOTHING RETURNING stream, event_id, created_at"
+		if err := tx.Raw(query, args...).Scan(&inserted).Error; err != nil {
+			return nil, err
+		}
+		for _, event := range inserted {
+			acceptedKeys[eventKey{event.Stream, event.EventID}] = struct{}{}
+		}
+	}
+	accepted := make([]domain.ProxyStatistic, 0, len(statistics))
+	for _, stat := range statistics {
+		key := eventKey{stat.EventStream, stat.EventID}
+		if stat.EventID != "" {
+			if _, exists := acceptedKeys[key]; !exists {
+				continue
+			}
+			delete(acceptedKeys, key)
+		}
+		accepted = append(accepted, stat)
+	}
+	return accepted, nil
 }
 
 func collectProxyIDsFromStatistics(statistics []domain.ProxyStatistic) []uint64 {

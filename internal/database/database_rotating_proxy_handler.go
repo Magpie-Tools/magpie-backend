@@ -164,7 +164,7 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 			return err
 		}
 
-		aliveProxies, err := aliveProxiesForProtocol(tx, workspaceID, proxyProtocol.ID, filters, uptimeFilterType, uptimePercentage)
+		aliveCount, err := countAliveProxiesForProtocol(tx, workspaceID, proxyProtocol.ID, filters, uptimeFilterType, uptimePercentage)
 		if err != nil {
 			return err
 		}
@@ -181,7 +181,7 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 			ListenTransportProtocol: listenTransportProtocol,
 			UptimeFilterType:        uptimeFilterType,
 			UptimePercentage:        cloneFloat64Ptr(uptimePercentage),
-			AliveProxyCount:         len(aliveProxies),
+			AliveProxyCount:         aliveCount,
 			ListenPort:              entity.ListenPort,
 			AuthRequired:            entity.AuthRequired,
 			AuthUsername:            entity.AuthUsername,
@@ -221,7 +221,7 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 		return []dto.RotatingProxy{}, nil
 	}
 
-	protocolCache := make(map[string][]domain.Proxy)
+	protocolCache := make(map[string]int)
 	lastProxyCache := make(map[uint64]string)
 	result := make([]dto.RotatingProxy, 0, len(rows))
 
@@ -248,7 +248,7 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 		if instanceRegion == "" {
 			instanceRegion = defaultInstanceRegion
 		}
-		proxies, err := getAliveProxiesCached(userID, row.ProtocolID, labels, uptimeFilterType, uptimePercentage, protocolCache)
+		aliveCount, err := getAliveProxyCountCached(userID, row.ProtocolID, labels, uptimeFilterType, uptimePercentage, protocolCache)
 		if err != nil {
 			return nil, err
 		}
@@ -273,7 +273,7 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 			ListenTransportProtocol: listenTransportProtocol,
 			UptimeFilterType:        uptimeFilterType,
 			UptimePercentage:        cloneFloat64Ptr(uptimePercentage),
-			AliveProxyCount:         len(proxies),
+			AliveProxyCount:         aliveCount,
 			ListenPort:              row.ListenPort,
 			AuthRequired:            row.AuthRequired,
 			AuthUsername:            row.AuthUsername,
@@ -363,21 +363,25 @@ func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingPro
 	return result, nil
 }
 
-func getAliveProxiesCached(userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, cache map[string][]domain.Proxy) ([]domain.Proxy, error) {
+func getAliveProxyCountCached(userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, cache map[string]int) (int, error) {
 	normLabels := sanitizeRotatorReputationLabels(labels)
 	cacheKey := buildAliveProxyCacheKey(protocolID, normLabels, uptimeFilterType, uptimePercentage)
-
-	if proxies, ok := cache[cacheKey]; ok {
-		return proxies, nil
+	if count, ok := cache[cacheKey]; ok {
+		return count, nil
 	}
-
-	proxies, err := aliveProxiesForProtocol(DB, userID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
+	count, err := countAliveProxiesForProtocol(DB, userID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
+	cache[cacheKey] = count
+	return count, nil
+}
 
-	cache[cacheKey] = proxies
-	return proxies, nil
+func countAliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) (int, error) {
+	var count int64
+	err := buildAliveProxyQuery(tx, userID, protocolID, labels, uptimeFilterType, uptimePercentage).
+		Select("COUNT(DISTINCT proxies.id)").Scan(&count).Error
+	return int(count), err
 }
 
 func getProxyAddressCached(userID uint, proxyID uint64, cache map[uint64]string) (string, error) {
@@ -496,18 +500,20 @@ func applyUptimeFilter(query *gorm.DB, tx *gorm.DB, protocolID int, uptimeFilter
 		keyExpr = "json_extract(e.value, '$.config_key')"
 		aliveExpr = "json_extract(e.value, '$.alive')"
 	}
-	uptimeSQL := "SELECT psr.proxy_id, " + workspaceExpr + " AS workspace_id, " + keyExpr + " AS config_key, " +
-		"ROUND(100.0 * SUM(CASE WHEN " + aliveExpr + " THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS uptime_percentage " +
-		"FROM proxy_statistics psr CROSS JOIN " + evidenceTable + " WHERE psr.protocol_id = ? AND psr.transport_protocol = 'tcp' " +
-		"GROUP BY psr.proxy_id, " + workspaceExpr + ", " + keyExpr +
-		" UNION ALL SELECT psr.proxy_id, 0 AS workspace_id, '' AS config_key, " +
-		"ROUND(100.0 * SUM(CASE WHEN psr.alive THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) AS uptime_percentage " +
-		"FROM proxy_statistics psr WHERE psr.protocol_id = ? GROUP BY psr.proxy_id"
-	query = query.Joins("JOIN ("+uptimeSQL+") puf ON puf.proxy_id = proxies.id AND puf.workspace_id = pls.workspace_id AND puf.config_key = pls.config_key", protocolID, protocolID)
+	// Correlate history before expanding evidence. A candidate cannot scan
+	// retained history belonging to unrelated routes or workspaces.
+	evidenceUptime := "SELECT ROUND(100.0 * SUM(CASE WHEN " + aliveExpr + " THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) " +
+		"FROM proxy_statistics psr CROSS JOIN " + evidenceTable +
+		" WHERE psr.proxy_id = proxies.id AND psr.protocol_id = ? AND psr.transport_protocol = 'tcp' " +
+		"AND " + workspaceExpr + " = pls.workspace_id AND " + keyExpr + " = pls.config_key"
+	legacyUptime := "SELECT ROUND(100.0 * SUM(CASE WHEN psr.alive THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) " +
+		"FROM proxy_statistics psr WHERE psr.proxy_id = proxies.id AND psr.protocol_id = ?"
+	comparison := ">="
 	if normalizedType == uptimeFilterMax {
-		return query.Where("puf.uptime_percentage <= ?", *normalizedPercentage)
+		comparison = "<="
 	}
-	return query.Where("puf.uptime_percentage >= ?", *normalizedPercentage)
+	return query.Where("(CASE WHEN pls.workspace_id = 0 THEN ("+legacyUptime+") ELSE ("+evidenceUptime+") END) "+comparison+" ?",
+		protocolID, protocolID, *normalizedPercentage)
 }
 
 func shouldApplyReputationFilter(labels []string) bool {

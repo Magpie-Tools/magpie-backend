@@ -34,7 +34,7 @@ for _ = 1, 8 do
     if score ~= indexed_score then
       redis.call('ZADD', queue_heads_key, score, queue_key)
     elseif score > current_time then
-      return {0, "", "", score, -1}
+      return {0, "", "", math.floor(score), -1}
     else
       local proxy_key = proxy_key_prefix .. member
       local proxy_data = redis.call('GET', proxy_key)
@@ -43,10 +43,12 @@ for _ = 1, 8 do
         redis.call('ZREM', queue_key, member)
         refresh_head(queue_key)
       else
-        local lease_score = current_time + lease_milliseconds
+        -- Whole milliseconds are due times; the exact half marks a lease so
+        -- administrative scheduling can preserve it without a separate key.
+        local lease_score = current_time + lease_milliseconds + 0.5
         redis.call('ZADD', queue_key, lease_score, member)
         refresh_head(queue_key)
-        return {1, member, proxy_data, score, queue_key}
+        return {1, member, proxy_data, math.floor(score), queue_key}
       end
     end
   end

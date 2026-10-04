@@ -14,6 +14,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	queueutil "magpie/internal/jobs/queue"
 	"magpie/internal/jobs/runtime"
 	"magpie/internal/security"
 	"magpie/internal/support"
@@ -27,21 +28,49 @@ const (
 	queuedProxyVersion         = 3
 	envEncryptQueueCredentials = "PROXY_QUEUE_ENCRYPT_CREDENTIALS"
 
-	legacyQueueKey          = "proxy_queue"
-	proxyQueueHeadKey       = "proxy_queue_heads"
-	queueShardKeyPrefix     = "proxy_queue:"
-	defaultQueueShards      = 16
-	maxQueueShards          = 128
-	minDequeueSleep         = 10 * time.Millisecond
-	idleQueueSleep          = 250 * time.Millisecond
-	maxDequeueSleep         = 2 * time.Second
-	processingLease         = 5 * time.Minute
+	legacyQueueKey      = "proxy_queue"
+	proxyQueueHeadKey   = "proxy_queue_heads"
+	queueShardKeyPrefix = "proxy_queue:"
+	defaultQueueShards  = 16
+	maxQueueShards      = 128
+	minDequeueSleep     = 10 * time.Millisecond
+	idleQueueSleep      = 250 * time.Millisecond
+	maxDequeueSleep     = 2 * time.Second
+	processingLease     = 5 * time.Minute
+	// Due scores are whole Unix milliseconds. The exactly representable half
+	// millisecond marks worker leases without another key or Redis operation.
+	leaseScoreMarker        = 0.5
 	queueRescheduleLockKey  = "magpie:leader:proxy_queue_reschedule"
 	queueRescheduleStateKey = "magpie:queue:proxy:interval_ms"
 )
 
 //go:embed pop.lua
 var luaPopScript string
+
+//go:embed complete.lua
+var luaCompleteScript string
+
+//go:embed renew.lua
+var luaRenewScript string
+
+//go:embed remove.lua
+var luaRemoveScript string
+
+//go:embed add.lua
+var luaAddScript string
+
+//go:embed requeue_all.lua
+var luaRequeueAllScript string
+
+//go:embed migrate.lua
+var luaMigrateScript string
+
+var completeScript = redis.NewScript(luaCompleteScript)
+var renewScript = redis.NewScript(luaRenewScript)
+var removeScript = redis.NewScript(luaRemoveScript)
+var requeueAllScript = redis.NewScript(luaRequeueAllScript)
+var migrateScript = redis.NewScript(luaMigrateScript)
+var ErrProxyLeaseLost = errors.New("proxy processing lease lost")
 
 type RedisProxyQueue struct {
 	client         *redis.Client
@@ -191,29 +220,7 @@ func (rpq *RedisProxyQueue) refreshQueueHeads() error {
 	if err != nil {
 		return err
 	}
-	ctx := rpq.baseContext()
-
-	pipe := client.Pipeline()
-	pipe.Del(ctx, proxyQueueHeadKey)
-
-	for _, key := range rpq.popKeys() {
-		entries, err := client.ZRangeWithScores(ctx, key, 0, 0).Result()
-		if err != nil {
-			return err
-		}
-		if len(entries) == 0 {
-			continue
-		}
-		pipe.ZAdd(ctx, proxyQueueHeadKey, redis.Z{
-			Score:  entries[0].Score,
-			Member: key,
-		})
-	}
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return err
-	}
-	return nil
+	return queueutil.RefreshHeads(rpq.baseContext(), client, proxyQueueHeadKey, rpq.popKeys())
 }
 
 func buildQueueShardKeys(shards int) []string {
@@ -288,24 +295,10 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 			return fmt.Errorf("failed to marshal proxy: %w", err)
 		}
 
-		pipe.Set(ctx, proxyKey, proxyJSON, 0)
-		pipe.ZAddArgs(ctx, queueKey, redis.ZAddArgs{
-			NX: true,
-			Members: []redis.Z{{
-				Score:  float64(nextCheck.UnixMilli()),
-				Member: hashKey,
-			}},
-		})
-		if queueKey != legacyQueueKey {
-			pipe.ZRem(ctx, legacyQueueKey, hashKey)
-		}
-		pipe.ZAddArgs(ctx, proxyQueueHeadKey, redis.ZAddArgs{
-			LT: true,
-			Members: []redis.Z{{
-				Score:  float64(nextCheck.UnixMilli()),
-				Member: queueKey,
-			}},
-		})
+		// Imports may update ownership while a worker holds a lease in a legacy
+		// or different configured shard. Keep that member in its owned shard.
+		keys := append([]string{proxyQueueHeadKey, proxyKey, queueKey}, rpq.popKeys()...)
+		pipe.Eval(ctx, luaAddScript, keys, hashKey, nextCheck.UnixMilli(), proxyJSON)
 
 		// Execute in batches to prevent oversized pipelines
 		if i%batchSize == 0 && i > 0 {
@@ -370,6 +363,17 @@ func (rpq *RedisProxyQueue) RemoveFromQueue(proxies []domain.Proxy) error {
 		hashKey := string(proxy.Hash)
 		proxyKey := proxyKeyPrefix + hashKey
 		queueKey := rpq.queueKeyForMember(hashKey)
+		if proxy.QueueLease != nil {
+			removed, err := removeScript.Run(ctx, client,
+				[]string{proxyKey, proxy.QueueLease.QueueKey, legacyQueueKey}, hashKey, proxy.QueueLease.ScoreMS, proxy.QueueLease.Payload).Int64()
+			if err != nil {
+				return err
+			}
+			if removed == 0 {
+				return ErrProxyLeaseLost
+			}
+			continue
+		}
 
 		pipe.Del(ctx, proxyKey)
 		opCount++
@@ -453,10 +457,20 @@ func (rpq *RedisProxyQueue) GetNextProxyContext(ctx context.Context) (domain.Pro
 			return domain.Proxy{}, time.Time{}, errors.New("queued proxy hash does not match its sorted-set member")
 		}
 		leaseScoreMs := currentTimeMs + int64(processingLease/time.Millisecond)
-		if err := rpq.migrateDequeuedProxyMember(ctx, client, popResult, &proxy, leaseScoreMs, rewritePayload); err != nil {
+		claimed, err := rpq.migrateDequeuedProxyMember(ctx, client, &popResult, &proxy, leaseScoreMs, rewritePayload)
+		if err != nil {
 			return domain.Proxy{}, time.Time{}, fmt.Errorf("migrate queued proxy member: %w", err)
 		}
+		if !claimed {
+			// Another worker already owns the canonical route, or this candidate
+			// changed during decoding. Migration must not return a second check.
+			continue
+		}
 
+		proxy.QueueLease = &domain.ProxyQueueLease{
+			ScoreMS: leaseScoreMs, QueueKey: popResult.QueueKey,
+			Payload: popResult.ProxyJSON, Context: ctx,
+		}
 		return proxy, time.UnixMilli(popResult.ScoreMs), nil
 	}
 }
@@ -464,111 +478,70 @@ func (rpq *RedisProxyQueue) GetNextProxyContext(ctx context.Context) (domain.Pro
 func (rpq *RedisProxyQueue) migrateDequeuedProxyMember(
 	ctx context.Context,
 	client *redis.Client,
-	popResult proxyPopResult,
+	popResult *proxyPopResult,
 	proxy *domain.Proxy,
 	leaseScoreMs int64,
 	rewritePayload bool,
-) error {
-	if client == nil || proxy == nil {
-		return errors.New("queue member migration requires a client and proxy")
+) (bool, error) {
+	if client == nil || popResult == nil || proxy == nil {
+		return false, errors.New("queue member migration requires a client, pop result and proxy")
 	}
 
 	oldMember := popResult.Member
 	newMember := string(proxy.Hash)
 	if oldMember == "" || newMember == "" {
-		return nil
+		return false, errors.New("queue member migration requires nonempty hashes")
 	}
-	sameMember := oldMember == newMember
-	if sameMember && !rewritePayload {
-		return nil
-	}
-
-	newProxyKey := proxyKeyPrefix + newMember
-	if !sameMember {
-		if existingJSON, err := client.Get(ctx, newProxyKey).Result(); err == nil {
-			var existingPayload queuedProxy
-			if decodeErr := json.Unmarshal([]byte(existingJSON), &existingPayload); decodeErr == nil {
-				if existingProxy, domainErr := existingPayload.toDomainProxy(); domainErr == nil {
-					proxy.Workspaces = mergeQueuedProxyWorkspaces(proxy.Workspaces, existingProxy.Workspaces)
-				}
-			}
-		} else if !errors.Is(err, redis.Nil) {
-			return err
-		}
+	if oldMember == newMember && !rewritePayload {
+		return true, nil
 	}
 
 	payload, err := marshalQueuedProxy(*proxy)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	newQueueKey := rpq.queueKeyForMember(newMember)
-
-	pipe := client.TxPipeline()
-	pipe.Set(ctx, newProxyKey, payload, 0)
-	if !sameMember {
-		oldQueueKeys := uniqueQueueKeys(popResult.QueueKey, legacyQueueKey, rpq.queueKeyForMember(oldMember))
-		pipe.Del(ctx, proxyKeyPrefix+oldMember)
-		for _, queueKey := range oldQueueKeys {
-			pipe.ZRem(ctx, queueKey, oldMember)
-		}
-		pipe.ZAddArgs(ctx, newQueueKey, redis.ZAddArgs{
-			GT: true,
-			Members: []redis.Z{{
-				Score:  float64(leaseScoreMs),
-				Member: newMember,
-			}},
-		})
-		pipe.ZAddArgs(ctx, proxyQueueHeadKey, redis.ZAddArgs{
-			LT: true,
-			Members: []redis.Z{{
-				Score:  float64(leaseScoreMs),
-				Member: newQueueKey,
-			}},
-		})
+	keys := append([]string{proxyQueueHeadKey, proxyKeyPrefix + oldMember, proxyKeyPrefix + newMember, popResult.QueueKey, newQueueKey}, rpq.popKeys()...)
+	result, err := migrateScript.Run(ctx, client, keys,
+		oldMember, newMember, leaseScoreMs, time.Now().UnixMilli(), payload, popResult.ProxyJSON,
+		strconv.FormatBool(encryptProxyQueueCredentials())).Slice()
+	if err != nil {
+		return false, err
 	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		return err
+	if len(result) != 3 {
+		return false, fmt.Errorf("unexpected migration response length %d", len(result))
 	}
-
-	return nil
-}
-
-func uniqueQueueKeys(keys ...string) []string {
-	result := make([]string, 0, len(keys))
-	seen := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		if key == "" {
-			continue
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, key)
+	claimed, err := coerceLuaInt64(result[0])
+	if err != nil || claimed == 0 {
+		return false, err
 	}
-	return result
-}
-
-func mergeQueuedProxyWorkspaces(primary, additional []domain.Workspace) []domain.Workspace {
-	result := append([]domain.Workspace(nil), primary...)
-	seen := make(map[uint]struct{}, len(primary)+len(additional))
-	for _, user := range primary {
-		if user.ID != 0 {
-			seen[user.ID] = struct{}{}
-		}
+	current, err := coerceLuaString(result[1])
+	if err != nil {
+		return false, err
 	}
-	for _, user := range additional {
-		if user.ID == 0 {
-			continue
-		}
-		if _, exists := seen[user.ID]; exists {
-			continue
-		}
-		seen[user.ID] = struct{}{}
-		result = append(result, user)
+	queueKey, err := coerceLuaString(result[2])
+	if err != nil {
+		return false, err
 	}
-	return result
+	if current != string(payload) {
+		var merged queuedProxy
+		if err := json.Unmarshal([]byte(current), &merged); err != nil {
+			return false, err
+		}
+		decoded, err := merged.toDomainProxy()
+		if err != nil {
+			return false, err
+		}
+		if string(decoded.Hash) != newMember {
+			return false, errors.New("migrated proxy hash does not match canonical member")
+		}
+		*proxy = decoded
+	}
+	// The script returns the exact payload written with the acquired lease.
+	// A later import must not become this worker's pre-check snapshot.
+	popResult.Member, popResult.ProxyJSON, popResult.QueueKey = newMember, current, queueKey
+	return true, nil
 }
 
 func dequeueWaitDuration(nextReadyMs int64, currentMs int64) time.Duration {
@@ -681,31 +654,67 @@ func (rpq *RedisProxyQueue) requeueProxy(proxy domain.Proxy, lastCheckTime time.
 	hashKey := string(proxy.Hash)
 	queueKey := rpq.queueKeyForMember(hashKey)
 
-	pipe := client.Pipeline()
+	payload, snapshot := "", ""
+	expected := int64(0)
+	oldQueue := queueKey
+	if proxy.QueueLease != nil {
+		expected = proxy.QueueLease.ScoreMS
+		oldQueue = proxy.QueueLease.QueueKey
+		if persistPayload {
+			snapshot = proxy.QueueLease.Payload
+		}
+	}
 	if persistPayload {
-		proxyJSON, err := marshalQueuedProxy(proxy)
+		raw, err := marshalQueuedProxy(proxy)
 		if err != nil {
 			return fmt.Errorf("failed to marshal proxy: %w", err)
 		}
-		pipe.Set(ctx, proxyKeyPrefix+hashKey, proxyJSON, 0)
+		payload = string(raw)
 	}
-	if queueKey != legacyQueueKey {
-		pipe.ZRem(ctx, legacyQueueKey, hashKey)
+	completed, err := completeScript.Run(ctx, client,
+		[]string{proxyQueueHeadKey, queueKey, legacyQueueKey, proxyKeyPrefix + hashKey, oldQueue},
+		hashKey, expected, nextCheck.UnixMilli(), payload, snapshot).Int64()
+	if err != nil {
+		return err
 	}
-	pipe.ZAdd(ctx, queueKey, redis.Z{
-		Score:  float64(nextCheck.UnixMilli()),
-		Member: hashKey,
-	})
-	pipe.ZAddArgs(ctx, proxyQueueHeadKey, redis.ZAddArgs{
-		LT: true,
-		Members: []redis.Z{{
-			Score:  float64(nextCheck.UnixMilli()),
-			Member: queueKey,
-		}},
-	})
+	if completed == 0 {
+		return ErrProxyLeaseLost
+	}
+	return nil
+}
 
-	_, err = pipe.Exec(ctx)
-	return err
+// RenewLeaseIfNeeded is called between outbound attempts. Supported requests
+// last at most 65.535 seconds, so a two-minute margin covers the next request.
+// Short checks issue no renewal commands.
+func (rpq *RedisProxyQueue) RenewLeaseIfNeeded(ctx context.Context, proxy domain.Proxy) error {
+	lease := proxy.QueueLease
+	if lease == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = rpq.baseContext()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	now := time.Now().UnixMilli()
+	if lease.ScoreMS-now > int64(2*time.Minute/time.Millisecond) {
+		return nil
+	}
+	client, err := rpq.clientOrErr()
+	if err != nil {
+		return err
+	}
+	renewed, err := renewScript.Run(ctx, client, []string{lease.QueueKey},
+		string(proxy.Hash), lease.ScoreMS, now, now+int64(processingLease/time.Millisecond)).Int64()
+	if err != nil {
+		return err
+	}
+	if renewed == 0 {
+		return ErrProxyLeaseLost
+	}
+	lease.ScoreMS = renewed
+	return nil
 }
 
 func (rpq *RedisProxyQueue) getEffectiveCheckInterval() time.Duration {
@@ -933,7 +942,6 @@ func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {
 			continue
 		}
 
-		total += count
 		members, err := client.ZRange(ctx, key, 0, count-1).Result()
 		if err != nil {
 			return total, fmt.Errorf("requeue all: list queue %s: %w", key, err)
@@ -945,20 +953,20 @@ func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {
 				end = len(members)
 			}
 
-			pipe := client.Pipeline()
+			args := make([]interface{}, 0, 2*(end-start))
 			for index, member := range members[start:end] {
 				position := int64(start + index)
 				offset := (interval * time.Duration(position)) / time.Duration(count)
-				nextCheck := now.Add(offset)
-				pipe.ZAddXX(ctx, key, redis.Z{
-					Score:  float64(nextCheck.UnixMilli()),
-					Member: member,
-				})
+				args = append(args, member, now.Add(offset).UnixMilli())
 			}
 
-			if _, err := pipe.Exec(ctx); err != nil {
+			// Compare and update together: a dequeue after ZRANGE must also be
+			// protected. Even expired marked leases stay available for recovery.
+			updated, err := requeueAllScript.Run(ctx, client, []string{key, proxyQueueHeadKey}, args...).Int64()
+			if err != nil {
 				return total, fmt.Errorf("requeue all: update queue %s: %w", key, err)
 			}
+			total += updated
 		}
 	}
 

@@ -26,7 +26,14 @@ const (
 var (
 	readModelDirtyMu       sync.Mutex
 	readModelDirtyProxyIDs = make(map[uint64]struct{})
+	sourceStatsDirtyMu     sync.Mutex
+	sourceStatsDirty       = make(map[sourceStatsKey]struct{})
 )
+
+type sourceStatsKey struct {
+	WorkspaceID  uint
+	ScrapeSiteID uint64
+}
 
 func ensureReadModelBackfill(db *gorm.DB) error {
 	if db == nil || !isPostgresDialect(db) {
@@ -209,6 +216,13 @@ func StartReadModelRefreshRoutine(ctx context.Context) {
 	interval := readModelRefreshInterval()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var sourcesWG sync.WaitGroup
+	sourcesWG.Add(1)
+	go func() {
+		defer sourcesWG.Done()
+		runSourceStatsRefresh(ctx)
+	}()
+	defer sourcesWG.Wait()
 
 	for {
 		select {
@@ -552,18 +566,73 @@ func refreshUserScrapeSourceStatsForProxyIDs(tx *gorm.DB, proxyIDs []uint64) err
 			end = len(proxyIDs)
 		}
 
-		var siteIDs []uint64
-		if err := tx.Table("proxy_scrape_site").
-			Distinct("scrape_site_id").
-			Where("proxy_id IN ?", proxyIDs[start:end]).
-			Pluck("scrape_site_id", &siteIDs).Error; err != nil {
+		var pairs []sourceStatsKey
+		if err := tx.Table("proxy_scrape_site pss").
+			Distinct("uss.workspace_id, pss.scrape_site_id").
+			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id").
+			Joins("JOIN user_proxies up ON up.workspace_id = uss.workspace_id AND up.proxy_id = pss.proxy_id").
+			Where("pss.proxy_id IN ?", proxyIDs[start:end]).
+			Scan(&pairs).Error; err != nil {
 			return fmt.Errorf("read model: load scrape-source ids for proxies: %w", err)
 		}
-		if err := refreshUserScrapeSourceStatsForSites(tx, siteIDs); err != nil {
-			return err
+		sourceStatsDirtyMu.Lock()
+		for _, pair := range pairs {
+			sourceStatsDirty[pair] = struct{}{}
 		}
+		sourceStatsDirtyMu.Unlock()
 	}
 	return nil
+}
+
+// Source health aggregation has its own coalescing queue so repeated checks
+// from a large source cannot delay proxy-list projection updates.
+func runSourceStatsRefresh(ctx context.Context) {
+	seconds := max(1, support.GetEnvInt("SCRAPE_SOURCE_STATS_REFRESH_INTERVAL_SECONDS", 30))
+	ticker := time.NewTicker(time.Duration(seconds) * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			flushDirtySourceStats(ctx)
+		}
+	}
+}
+
+func flushDirtySourceStats(ctx context.Context) {
+	if DB == nil {
+		return
+	}
+	limit := max(1, min(1000, support.GetEnvInt("SCRAPE_SOURCE_STATS_REFRESH_BATCH_SIZE", 100)))
+	sourceStatsDirtyMu.Lock()
+	pairs := make([]sourceStatsKey, 0, min(limit, len(sourceStatsDirty)))
+	for pair := range sourceStatsDirty {
+		pairs = append(pairs, pair)
+		delete(sourceStatsDirty, pair)
+		if len(pairs) >= limit {
+			break
+		}
+	}
+	sourceStatsDirtyMu.Unlock()
+	if len(pairs) == 0 {
+		return
+	}
+	values := make([][]any, len(pairs))
+	for i, pair := range pairs {
+		values[i] = []any{pair.WorkspaceID, pair.ScrapeSiteID}
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err := refreshUserScrapeSourceStats(DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
+	cancel()
+	if err != nil {
+		sourceStatsDirtyMu.Lock()
+		for _, pair := range pairs {
+			sourceStatsDirty[pair] = struct{}{}
+		}
+		sourceStatsDirtyMu.Unlock()
+		log.Warn("read model: coalesced source stats refresh failed", "error", err, "pairs", len(pairs))
+	}
 }
 
 func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxyIDs []uint64) error {

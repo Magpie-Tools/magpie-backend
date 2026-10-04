@@ -30,7 +30,19 @@ type ProxyStatistic struct {
 	// can be attributed without querying ownership in the checker hot path.
 	WorkspaceIDs []uint `gorm:"-" json:"WorkspaceIDs,omitempty"`
 
+	// Stream identity is assigned by the consumer, never by the producer.
+	EventStream string `gorm:"-" json:"-"`
+	EventID     string `gorm:"-" json:"-"`
+
 	CreatedAt time.Time `gorm:"autoCreateTime;index:idx_proxy_statistics_proxy_created_id,sort:desc,priority:2"`
+}
+
+// ProxyStatisticEvent survives history retention so a committed stream event
+// cannot increment usage again after a delayed replay.
+type ProxyStatisticEvent struct {
+	Stream    string    `gorm:"primaryKey;size:255"`
+	EventID   string    `gorm:"primaryKey;size:64"`
+	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
 type WorkspaceCheckEvidence struct {
