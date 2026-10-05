@@ -117,20 +117,30 @@ func init() {
 		log.Warn("Redis unavailable during proxy queue init; continuing in degraded mode", "error", err)
 	}
 	PublicProxyQueue = *NewRedisProxyQueue(client)
+}
 
-	go func() {
-		updates := config.CheckIntervalUpdates()
-		for interval := range updates {
+// StartIntervalUpdates runs after settings load. Package initialization must
+// not publish the one-second placeholder to a shared queue.
+func (rpq *RedisProxyQueue) StartIntervalUpdates(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	updates := config.CheckIntervalUpdates()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case interval := <-updates:
 			err := applyIntervalUpdateAsLeader(
 				queueRescheduleLockKey,
 				interval,
-				PublicProxyQueue.Reschedule,
+				rpq.Reschedule,
 			)
 			if err != nil {
 				log.Error("Failed to reschedule proxy queue after interval update", "error", err)
 			}
 		}
-	}()
+	}
 }
 
 func applyIntervalUpdateAsLeader(lockKey string, interval time.Duration, reschedule func(time.Duration) error) error {

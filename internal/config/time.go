@@ -71,10 +71,9 @@ func GetTimeBetweenChecks() time.Duration {
 func CheckIntervalUpdates() <-chan time.Duration {
 	ch := make(chan time.Duration, 1)
 	listenersMu.Lock()
-	checkIntervalListeners = append(checkIntervalListeners, ch)
-	listenersMu.Unlock()
-
+	defer listenersMu.Unlock()
 	ch <- GetTimeBetweenChecks()
+	checkIntervalListeners = append(checkIntervalListeners, ch)
 	return ch
 }
 
@@ -82,6 +81,8 @@ func setTimeBetweenChecks(interval time.Duration) {
 	if interval <= 0 {
 		interval = time.Second
 	}
+	listenersMu.Lock()
+	defer listenersMu.Unlock()
 
 	current := GetTimeBetweenChecks()
 	if current == interval {
@@ -90,20 +91,27 @@ func setTimeBetweenChecks(interval time.Duration) {
 
 	timeBetweenChecks.Store(interval)
 
-	listenersMu.Lock()
-	defer listenersMu.Unlock()
 	for _, ch := range checkIntervalListeners {
-		select {
-		case ch <- interval:
-		default:
-		}
+		sendLatestInterval(ch, interval)
 	}
+}
+
+// Called with listenersMu held so an unread update can be replaced without
+// another sender filling the channel between the drain and send.
+func sendLatestInterval(ch chan time.Duration, interval time.Duration) {
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- interval
 }
 
 func setTimeBetweenScrapes(interval time.Duration) {
 	if interval <= 0 {
 		interval = time.Second
 	}
+	listenersMu.Lock()
+	defer listenersMu.Unlock()
 
 	current := GetTimeBetweenScrapes()
 	if current == interval {
@@ -112,13 +120,8 @@ func setTimeBetweenScrapes(interval time.Duration) {
 
 	timeBetweenScrapes.Store(interval)
 
-	listenersMu.Lock()
-	defer listenersMu.Unlock()
 	for _, ch := range scrapeIntervalListeners {
-		select {
-		case ch <- interval:
-		default:
-		}
+		sendLatestInterval(ch, interval)
 	}
 }
 
@@ -129,10 +132,9 @@ func GetTimeBetweenScrapes() time.Duration {
 func ScrapeIntervalUpdates() <-chan time.Duration {
 	ch := make(chan time.Duration, 1)
 	listenersMu.Lock()
-	scrapeIntervalListeners = append(scrapeIntervalListeners, ch)
-	listenersMu.Unlock()
-
+	defer listenersMu.Unlock()
 	ch <- GetTimeBetweenScrapes()
+	scrapeIntervalListeners = append(scrapeIntervalListeners, ch)
 	return ch
 }
 

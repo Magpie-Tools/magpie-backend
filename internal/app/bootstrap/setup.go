@@ -55,6 +55,8 @@ func Setup(ctx context.Context) error {
 		return fmt.Errorf("failed to set up database: %w", err)
 	}
 	config.SetBetweenTime()
+	go proxyqueue.PublicProxyQueue.StartIntervalUpdates(ctx)
+	go sitequeue.PublicScrapeSiteQueue.StartIntervalUpdates(ctx)
 
 	if err := blacklist.Initialize(ctx); err != nil {
 		log.Warn("Blacklist initialisation failed", "error", err)

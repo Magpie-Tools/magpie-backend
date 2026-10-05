@@ -65,20 +65,30 @@ func init() {
 		log.Warn("Redis unavailable during scrape queue init; continuing in degraded mode", "error", err)
 	}
 	PublicScrapeSiteQueue = *NewRedisScrapeSiteQueue(client)
+}
 
-	go func() {
-		updates := config.ScrapeIntervalUpdates()
-		for interval := range updates {
+// StartIntervalUpdates runs after settings load, keeping tests, migrations,
+// and starting replicas from publishing the one-second placeholder.
+func (rsq *RedisScrapeSiteQueue) StartIntervalUpdates(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	updates := config.ScrapeIntervalUpdates()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case interval := <-updates:
 			err := applyIntervalUpdateAsLeader(
 				scrapeQueueRescheduleLockKey,
 				interval,
-				PublicScrapeSiteQueue.Reschedule,
+				rsq.Reschedule,
 			)
 			if err != nil {
 				log.Error("Failed to reschedule scrape queue after interval update", "error", err)
 			}
 		}
-	}()
+	}
 }
 
 func applyIntervalUpdateAsLeader(lockKey string, interval time.Duration, reschedule func(time.Duration) error) error {
