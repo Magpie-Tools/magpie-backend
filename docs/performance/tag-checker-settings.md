@@ -5,6 +5,47 @@ Go 1.27.1, and local PostgreSQL 17. They isolate configuration lookup and
 statistics persistence. They do not estimate network-check throughput or
 replace the distribution's load and soak gate.
 
+## Bulk proxy deletion
+
+Measurements on 2026-10-05 use the same Linux amd64 host and an isolated local
+PostgreSQL 17 database. The fixture has 70,000 managed routes, 41 overlapping
+scrape sources with 105,000 route/source associations, four checker rules,
+52,500 tagged overrides, current health evidence, filter indexes, usage records,
+and a route also managed by another workspace. It calls the production
+`DeleteProxiesWithSettings` function with `scope=all`.
+
+The previous code recalculated affected source health after every 5,000-route
+deletion batch. Fourteen health aggregates took 13.255 seconds of the 15.829-second
+operation. The final unbatched orphan lookup then exceeded PostgreSQL's
+65,535-parameter limit, returning an error after membership deletion committed.
+
+The revised code deduplicates affected sources across committed batches and
+refreshes their counts and health once. Source health joins source associations
+to remaining managed routes before looking up current evidence. Orphan lookups
+also use 5,000-ID batches. The same deletion completed successfully in 3.855
+seconds; its single health aggregate took 0.522 seconds. These timings include
+ID selection, ownership and tag/plan cascades, checker tombstones, filter cleanup,
+source and usage refresh, and loading orphan routes. They exclude Redis queue
+removal, an initialized checker snapshot refresh, and concurrent checker load.
+They are component measurements, not an endpoint latency guarantee.
+
+Regression tests also fail a later deletion batch and verify that source counts,
+usage, and checker tombstones still reflect the earlier committed batches.
+Other workspaces retain their ownership, health, and filter rows. The full-size
+case exercises the real extended-protocol parameter limit.
+
+This change adds zero cryptographic operations, JSON encodes, Redis commands,
+or database queries per proxy check. Deletion remains mutation-side work; the
+checker loop and queue payload/requeue behavior are unchanged.
+
+Reproduce with an isolated PostgreSQL database:
+
+```sh
+MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
+MAGPIE_TEST_BULK_DELETE_ROUTES=70000 \
+  go test ./internal/database -run '^TestBulkProxyDeletion' -count=1 -v -timeout=10m
+```
+
 ## Shared profile revision
 
 Default and tag rules now share transport, timeout, and retries across enabled

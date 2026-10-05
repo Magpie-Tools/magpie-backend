@@ -1903,13 +1903,30 @@ func normaliseDisplayValue(value string, fallback string) string {
 	return trimmed
 }
 
-func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, error) {
+func DeleteProxyRelation(userId uint, proxies []int) (totalDeleted int64, orphans []domain.Proxy, err error) {
 	if len(proxies) == 0 {
 		return 0, nil, nil
 	}
 
-	var totalDeleted int64
 	checkerChanged := false
+	var committedProxyIDs []uint64
+	// Refresh once after all committed batches, including when a later batch
+	// fails. Recounting overlapping sources after each chunk repeats the same
+	// health lookups while the user waits for the bulk deletion to finish.
+	defer func() {
+		if totalDeleted == 0 {
+			return
+		}
+		err = errors.Join(err,
+			refreshUserScrapeSourceStatsForUserProxyIDs(DB, userId, committedProxyIDs),
+			refreshWorkspaceUsageActiveRoutes(DB, userId))
+		if checkerChanged {
+			checkerconfig.Notify(userId)
+		} else {
+			checkerconfig.TagAssignmentsChanged(userId)
+		}
+	}()
+	hasFilterIndex := DB.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{})
 	chunkSize := deleteChunkSize
 	if chunkSize > len(proxies) {
 		chunkSize = len(proxies)
@@ -1934,16 +1951,19 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 			}
 		}
 		var removed int64
+		var changed bool
 		if err := DB.Transaction(func(tx *gorm.DB) error {
-			count, changed, err := deleteManagedRoutes(tx, userId, proxyIDs, "")
-			removed = count
-			checkerChanged = checkerChanged || changed
-			return err
+			var deleteErr error
+			removed, changed, deleteErr = deleteManagedRoutes(tx, userId, proxyIDs, "")
+			return deleteErr
 		}); err != nil {
 			return totalDeleted, nil, err
 		}
+		totalDeleted += removed
+		checkerChanged = checkerChanged || changed
+		committedProxyIDs = append(committedProxyIDs, proxyIDs...)
 		if len(proxyIDs) > 0 {
-			if DB.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
+			if hasFilterIndex {
 				if err := DB.
 					Where("workspace_id = ?", userId).
 					Where("proxy_id IN ?", proxyIDs).
@@ -1951,12 +1971,7 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 					return totalDeleted, nil, err
 				}
 			}
-			if err := refreshUserScrapeSourceStatsForUserProxyIDs(DB, userId, proxyIDs); err != nil {
-				return totalDeleted, nil, err
-			}
 		}
-
-		totalDeleted += removed
 
 		orphanIDs, err := collectOrphanProxyIDs(chunk)
 		if err != nil {
@@ -1970,15 +1985,6 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 			orphanSet[id] = struct{}{}
 		}
 	}
-	if err := refreshWorkspaceUsageActiveRoutes(DB, userId); err != nil {
-		return totalDeleted, nil, err
-	}
-
-	if checkerChanged {
-		checkerconfig.Notify(userId)
-	} else {
-		checkerconfig.TagAssignmentsChanged(userId)
-	}
 	if len(orphanSet) == 0 {
 		return totalDeleted, nil, nil
 	}
@@ -1988,9 +1994,12 @@ func DeleteProxyRelation(userId uint, proxies []int) (int64, []domain.Proxy, err
 		uniqueIDs = append(uniqueIDs, id)
 	}
 
-	var orphans []domain.Proxy
-	if err := DB.Where("id IN ?", uniqueIDs).Find(&orphans).Error; err != nil {
-		return totalDeleted, nil, err
+	for start := 0; start < len(uniqueIDs); start += deleteChunkSize {
+		var batch []domain.Proxy
+		if err := DB.Where("id IN ?", uniqueIDs[start:min(start+deleteChunkSize, len(uniqueIDs))]).Find(&batch).Error; err != nil {
+			return totalDeleted, nil, err
+		}
+		orphans = append(orphans, batch...)
 	}
 
 	return totalDeleted, orphans, nil

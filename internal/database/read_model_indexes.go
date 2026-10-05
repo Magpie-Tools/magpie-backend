@@ -640,6 +640,8 @@ func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxy
 		return nil
 	}
 
+	affectedSiteIDs := make([]uint64, 0)
+	seenSites := make(map[uint64]struct{})
 	for start := 0; start < len(proxyIDs); start += deleteChunkSize {
 		end := start + deleteChunkSize
 		if end > len(proxyIDs) {
@@ -654,11 +656,14 @@ func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxy
 			Pluck("pss.scrape_site_id", &siteIDs).Error; err != nil {
 			return fmt.Errorf("read model: load user scrape-source ids for proxies: %w", err)
 		}
-		if err := refreshUserScrapeSourceStatsForUserSites(tx, userID, siteIDs); err != nil {
-			return err
+		for _, siteID := range siteIDs {
+			if _, seen := seenSites[siteID]; !seen {
+				seenSites[siteID] = struct{}{}
+				affectedSiteIDs = append(affectedSiteIDs, siteID)
+			}
 		}
 	}
-	return nil
+	return refreshUserScrapeSourceStatsForUserSites(tx, userID, affectedSiteIDs)
 }
 
 func refreshUserScrapeSourceStats(tx *gorm.DB, where string, args ...interface{}) error {
@@ -680,8 +685,8 @@ WITH rows AS (
 		uss.created_at AS added_at
 	FROM user_scrape_site uss
 	JOIN scrape_sites ss ON ss.id = uss.scrape_site_id
-	LEFT JOIN proxy_scrape_site pss ON pss.scrape_site_id = ss.id
-	LEFT JOIN user_proxies up ON up.workspace_id = uss.workspace_id AND up.proxy_id = pss.proxy_id
+	LEFT JOIN (proxy_scrape_site pss JOIN user_proxies up ON up.proxy_id = pss.proxy_id)
+		ON pss.scrape_site_id = ss.id AND up.workspace_id = uss.workspace_id
 	LEFT JOIN LATERAL (` + currentOverallStatusForProxySQL("up.workspace_id", "up.proxy_id") + `) pos ON TRUE
 	` + where + `
 	GROUP BY uss.workspace_id, ss.id, ss.url, uss.created_at
