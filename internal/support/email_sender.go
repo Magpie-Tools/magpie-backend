@@ -2,6 +2,7 @@ package support
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	stdhtml "html"
@@ -15,6 +16,14 @@ import (
 )
 
 func SendEmail(cfg EmailConfig, toAddress, subject, body string) error {
+	return SendEmailContext(context.Background(), cfg, toAddress, subject, body)
+}
+
+// Bound the entire SMTP conversation, including greeting and DATA, rather than
+// only connection establishment. Cancellation closes a stalled socket.
+func SendEmailContext(ctx context.Context, cfg EmailConfig, toAddress, subject, body string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -34,7 +43,7 @@ func SendEmail(cfg EmailConfig, toAddress, subject, body string) error {
 		auth = smtp.PlainAuth("", cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPHost)
 	}
 
-	client, err := dialSMTPClient(cfg)
+	client, err := dialSMTPClient(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("connect smtp: %w", err)
 	}
@@ -215,24 +224,28 @@ func htmlNodeAttr(node *xhtml.Node, key string) string {
 	return ""
 }
 
-func dialSMTPClient(cfg EmailConfig) (*smtp.Client, error) {
+func dialSMTPClient(ctx context.Context, cfg EmailConfig) (*smtp.Client, error) {
 	timeout := 15 * time.Second
 	dialer := net.Dialer{Timeout: timeout}
-
-	if cfg.SMTPImplicitTLS() {
-		conn, err := tls.DialWithDialer(&dialer, "tcp", cfg.SMTPAddress(), &tls.Config{
-			ServerName: cfg.SMTPHost,
-			MinVersion: tls.VersionTLS12,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return smtp.NewClient(conn, cfg.SMTPHost)
-	}
-
-	conn, err := dialer.Dial("tcp", cfg.SMTPAddress())
+	conn, err := dialer.DialContext(ctx, "tcp", cfg.SMTPAddress())
 	if err != nil {
 		return nil, err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	context.AfterFunc(ctx, func() { _ = conn.Close() })
+	if cfg.SMTPImplicitTLS() {
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: cfg.SMTPHost, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		client, err := smtp.NewClient(tlsConn, cfg.SMTPHost)
+		if err != nil {
+			_ = conn.Close()
+		}
+		return client, err
 	}
 
 	client, err := smtp.NewClient(conn, cfg.SMTPHost)

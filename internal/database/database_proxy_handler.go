@@ -2462,6 +2462,9 @@ func DeleteOrphanProxies(ctx context.Context) (int64, error) {
 
 	result := db.
 		Where("NOT EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id)").
+		// Ownership deletion removes a managed proxy immediately, but retain
+		// the route's recent check history for the rolling alert window.
+		Where("NOT EXISTS (SELECT 1 FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id AND ps.created_at >= ?)", time.Now().UTC().Add(-AlertWindow)).
 		Delete(&domain.Proxy{})
 	if result.Error != nil {
 		return 0, result.Error

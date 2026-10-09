@@ -202,6 +202,8 @@ func Setup(ctx context.Context) error {
 	go jobruntime.StartGeoLiteUpdateRoutine(ctx)
 	go jobruntime.StartAbuseIPDBRoutine(ctx)
 	go jobruntime.StartEmailDeliveryRoutine(ctx)
+	go jobruntime.StartAlertEvaluationRoutine(ctx)
+	go jobruntime.StartAlertDeliveryRoutine(ctx)
 	go jobruntime.StartEmailDeliveryMaintenanceRoutine(ctx)
 	go blacklist.StartRefreshRoutine(ctx)
 	go checker.ThreadDispatcher(ctx)

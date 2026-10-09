@@ -293,14 +293,32 @@ func DeleteRotatingProxy(userID uint, rotatingProxyID uint64) error {
 		return fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
-	res := DB.Where("workspace_id = ? AND id = ?", userID, rotatingProxyID).Delete(&domain.RotatingProxy{})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrRotatingProxyNotFound
-	}
-	return nil
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var workspace domain.Workspace
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, userID).Error; err != nil {
+			return err
+		}
+		var rules []domain.AlertRule
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("workspace_id = ? AND rotator_id = ?", userID, rotatingProxyID).Find(&rules).Error; err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			if err := closeAlertForConfiguration(tx, &rule, time.Now().UTC()); err != nil {
+				return err
+			}
+			if err := tx.Model(&rule).Updates(map[string]any{"enabled": false, "status": "disabled", "unknown_reason": "Rotator deleted", "active_incident_id": nil, "breach_since": nil, "recovery_since": nil, "revision": gorm.Expr("revision + 1")}).Error; err != nil {
+				return err
+			}
+		}
+		res := tx.Where("workspace_id = ? AND id = ?", userID, rotatingProxyID).Delete(&domain.RotatingProxy{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrRotatingProxyNotFound
+		}
+		return nil
+	})
 }
 
 func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingProxyNext, error) {

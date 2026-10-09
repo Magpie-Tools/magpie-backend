@@ -70,6 +70,7 @@ func OpenRoutes(ctx context.Context, port int) error {
 	}
 
 	apiMux := http.NewServeMux()
+	registerAlertRoutes(apiMux)
 	apiMux.Handle("/graphql", applyRequestBodyLimit(auth.RequireAuth(withWorkspaceViewer(withGraphQLGuard(gqlHandler))), resolveJSONMaxBodyBytes()))
 	apiMux.Handle("POST /register", withRegisterRateLimit(http.HandlerFunc(registerUser)))
 	apiMux.Handle("POST /login", withLoginRateLimit(http.HandlerFunc(loginUser)))

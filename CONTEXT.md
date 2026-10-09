@@ -84,6 +84,30 @@ _Avoid_: Global tag settings, selected editor settings
 A workspace's assessment of a managed proxy based on results for its effective checker settings. Results from other workspaces or obsolete settings do not determine this assessment.
 _Avoid_: Global proxy health, shared workspace health
 
+**Rotating proxy**:
+A named, workspace-owned listener that selects upstream proxy routes according to its routing policy.
+_Avoid_: Proxy route, upstream connection
+
+**Rotator pool**:
+The upstream proxy routes governed by one rotating proxy's routing policy. Its usable routes are those that currently qualify for selection.
+_Avoid_: Workspace, proxy tag, separate pool resource
+
+**Alert rule**:
+A workspace-owned threshold condition for a rotator pool or the whole workspace, with selected delivery destinations.
+_Avoid_: Alert message, individual-proxy alert
+
+**Alert incident**:
+A sustained breach of one alert rule, tracked until sustained recovery or a configuration change closes it.
+_Avoid_: Failed proxy, notification, check result
+
+**Alert destination**:
+A workspace's shared recipient or integration channel for incident messages.
+_Avoid_: Member preference, workspace member
+
+**Checker success rate**:
+The proportion of historical checker attempts that passed that workspace's validation in the observation window. A rotator's measurement covers workspace attempts for its upstream protocol over TCP, including failures outside its currently usable pool.
+_Avoid_: Customer-traffic success rate, usable-route percentage
+
 **Checker rule priority**:
 The relative precedence of tag checker rules that match the same managed proxy. Higher-priority rules apply after lower-priority rules.
 _Avoid_: Tag creation order, tag name order

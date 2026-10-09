@@ -201,6 +201,10 @@ func defaultMigrations() []any {
 		domain.WorkspaceUsagePeriod{},
 		domain.PasswordResetToken{},
 		domain.EmailOutbox{},
+		domain.AlertRule{},
+		domain.AlertDestination{},
+		domain.AlertIncident{},
+		domain.AlertDelivery{},
 		// Register the full managed-proxy join schema before Proxy/Workspace
 		// relationships can ask GORM to create a two-column join table.
 		domain.ManagedProxy{},
