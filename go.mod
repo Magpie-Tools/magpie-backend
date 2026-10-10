@@ -1,6 +1,6 @@
 module magpie
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/PuerkitoBio/goquery v1.13.0
@@ -19,7 +19,7 @@ require (
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/temoto/robotstxt v1.1.2
 	golang.org/x/crypto v0.57.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.23.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/driver/sqlite v1.6.0

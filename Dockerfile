@@ -1,5 +1,5 @@
 ###############  Stage 1 – Go build  ###############
-FROM golang:1.27.1-alpine AS backend-build
+FROM golang:1.27.2-alpine AS backend-build
 
 ARG BUILD_VERSION=dev
 ARG BUILD_TIME=unknown
