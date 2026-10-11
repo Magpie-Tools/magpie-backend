@@ -38,6 +38,10 @@ func Setup(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	fixtures, err := config.DevelopmentFixturesEnabled()
+	if err != nil {
+		return err
+	}
 
 	if err := config.ReadSettings(); err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
@@ -53,6 +57,20 @@ func Setup(ctx context.Context) error {
 
 	if _, err := database.SetupDB(); err != nil {
 		return fmt.Errorf("failed to set up database: %w", err)
+	}
+	if fixtures {
+		redisClient, _ := support.GetRedisClient()
+		if err := checkerconfig.Initialize(ctx, redisClient, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
+			return fmt.Errorf("load fixture checker settings: %w", err)
+		}
+		if err := database.RefreshDashboardCaches(ctx); err != nil {
+			return fmt.Errorf("prewarm fixture dashboard: %w", err)
+		}
+		go database.StartReadModelRefreshRoutine(ctx)
+		go jobruntime.StartDashboardCacheRoutine(ctx)
+		startupQueueBootstrapCompleted.Store(true)
+		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
+		return nil
 	}
 	config.SetBetweenTime()
 	go proxyqueue.PublicProxyQueue.StartIntervalUpdates(ctx)

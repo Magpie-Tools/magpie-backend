@@ -15,6 +15,7 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 
+	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/support"
@@ -107,6 +108,14 @@ func (m *Manager) StartSyncLoop(ctx context.Context, interval time.Duration) {
 }
 
 func (m *Manager) startServer(rotator domain.RotatingProxy) error {
+	fixtures, err := config.DevelopmentFixturesEnabled()
+	if err != nil {
+		return err
+	}
+	if fixtures {
+		return nil
+	}
+
 	start, end := support.GetRotatingProxyPortRange()
 	if rotator.ListenPort == 0 || int(rotator.ListenPort) < start || int(rotator.ListenPort) > end {
 		return fmt.Errorf("invalid listen port %d for rotator %d", rotator.ListenPort, rotator.ID)

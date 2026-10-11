@@ -20,6 +20,42 @@ go run ./cmd/magpie
 
 The API listens on `http://localhost:5656` by default.
 
+## Development test data
+
+Stop all backends connected to the development database, then preview or reset
+three test accounts:
+
+```bash
+go run ./cmd/seed-dev-data --dry-run
+go run ./cmd/seed-dev-data --reset
+DEVELOPMENT_FIXTURES=true go run ./cmd/magpie
+```
+
+The default accounts are `username@gmx.at`, `username2@gmx.at`, and
+`username3@gmx.at`. Existing IDs, password hashes, and administrator roles are
+preserved. For a fresh database, migrate first and set `MAGPIE_DEV_PASSWORD` to
+the password for the new accounts. Use `--accounts` to supply three other email
+addresses. A workspace shared with any unselected user blocks the reset.
+
+The default dataset has five workspaces, 5,000 routes, 30 days of check history,
+tags and checker rules, source health, rotating proxy configurations, alerts,
+incidents, usage, and pending invitations. Set `--proxies-per-workspace`,
+`--history-days`, and `--seed` to change its size or deterministic values.
+Rerun `--reset` to restore the dataset with dates relative to today. Each reset
+uses one PostgreSQL transaction and reconciles only affected Redis queue
+entries. It never flushes Redis. Back up data you want to keep before resetting.
+
+Fixtures use documentation IP ranges and `.invalid` URLs. Alert destinations
+are disabled. `DEVELOPMENT_FIXTURES=true` keeps the API and dashboard cache
+running while skipping background jobs and rotating listeners, so synthetic
+results survive restarts. Set it in the backend's local `.env` to keep using
+fixtures. API-created rotators are saved without opening TCP or UDP listeners.
+Restart with fixture mode disabled to activate them. Production mode rejects
+both seeding and fixture startup.
+
+See the [local development guide](https://magpie.tools/docs/getting-started/local-development)
+for the reset workflow and account permissions.
+
 ## Database migrations
 
 Run migrations as a one-off command before starting a new production backend:
