@@ -83,6 +83,12 @@ func newFailureTracker() *failureTracker {
 	}
 }
 
+// Submit waits for batched failure-streak updates and any threshold action.
+// Only eligible check cycles affect streaks. The returned map contains workspace
+// IDs whose active management ended; orphaned routes have no active management
+// left and can leave the queue. These results can accompany an error when some
+// actions already committed, so callers must still apply them. Cancellation
+// stops waiting but cannot roll back database work already started by the batch.
 func (ft *failureTracker) Submit(ctx context.Context, proxyID uint64, users []failureEvent) (map[uint]struct{}, []domain.Proxy, error) {
 	if len(users) == 0 {
 		return nil, nil, nil

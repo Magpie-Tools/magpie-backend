@@ -63,6 +63,11 @@ func proxyStatisticColumnCount() int {
 	return numFields
 }
 
+// InsertProxyStatistics commits accepted history, replay identities, check/usage
+// counters, latest evidence and reputation-refresh requests in one transaction.
+// Stream replays are filtered before any of those side effects. Nil means the
+// transaction succeeded or there was nothing new to write. Filter/source read
+// models are notified after commit and may still lag when this call returns.
 func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatistic, batchSize int) error {
 	if len(statistics) == 0 {
 		return nil
@@ -108,6 +113,11 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 	return nil
 }
 
+// acceptProxyStatisticEvents returns only newly accepted stream events and
+// identity-free memory results. The caller must use the same transaction for
+// acceptance and every result side effect; otherwise a failed write could make
+// a replay look committed. Stream floors also reject old events after individual
+// ledger rows have been retired, so pruning cannot re-enable historical replay.
 func acceptProxyStatisticEvents(tx *gorm.DB, statistics []domain.ProxyStatistic) ([]domain.ProxyStatistic, error) {
 	type eventKey struct{ stream, id string }
 	events := make([]domain.ProxyStatisticEvent, 0, len(statistics))

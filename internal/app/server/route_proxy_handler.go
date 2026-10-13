@@ -99,6 +99,12 @@ func ingestProxyUploadMultipart(w http.ResponseWriter, r *http.Request, userID u
 	return ingestProxyUploadMultipartWithTags(w, r, userID, nil, maxBodyBytes)
 }
 
+// ingestProxyUploadMultipartWithTags parses and commits bounded batches for the
+// selected workspace; userID is the historical parameter name for that ID.
+// Route storage, tag assignment and Redis publication are separate operations.
+// A later error does not undo earlier batches or a committed route import.
+// On success, counts describe imported routes, parse outcomes and exclusions;
+// queue failures are logged and do not fail an otherwise successful upload.
 func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, userID uint, tagIDs []uint64, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
 	if r == nil || r.Body == nil {
 		return 0, support.ProxyParseStats{}, 0, errMissingProxyUploadContent

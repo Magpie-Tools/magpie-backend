@@ -74,6 +74,12 @@ func InsertAndGetProxiesWithUser(proxies []domain.Proxy, userIDs ...uint) ([]dom
 	return InsertAndGetProxiesWithWorkspace(proxies, workspaceIDs...)
 }
 
+// InsertAndGetProxiesWithWorkspace deduplicates exact routes and commits their
+// workspace management in one transaction. Existing lifecycle state survives
+// reimport; new routes beyond capacity are retained as paused managed proxies.
+// Results include all active workspaces for queue publication, but this function
+// does not enqueue them. Loading those results happens after commit, so a load
+// error does not imply the import rolled back.
 func InsertAndGetProxiesWithWorkspace(proxies []domain.Proxy, workspaceIDs ...uint) ([]domain.Proxy, error) {
 	inserted, err := insertAndAssociateProxies(proxies, workspaceIDs)
 	if err != nil || len(inserted) == 0 {

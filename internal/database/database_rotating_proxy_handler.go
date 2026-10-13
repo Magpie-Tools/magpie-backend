@@ -321,6 +321,11 @@ func DeleteRotatingProxy(userID uint, rotatingProxyID uint64) error {
 	})
 }
 
+// GetNextRotatingProxy selects a qualifying route for the workspace identified
+// by userID. Locking the rotator row serializes concurrent cursor updates.
+// Selection uses committed health evidence and advances the cursor before the
+// listener connects upstream; a failed connection does not undo the selection.
+// This call neither performs a live check nor reserves the upstream exclusively.
 func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingProxyNext, error) {
 	if DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")

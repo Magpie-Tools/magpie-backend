@@ -20,6 +20,14 @@ go run ./cmd/magpie
 
 The API listens on `http://localhost:5656` by default.
 
+## Understanding the backend
+
+Start with the [architecture walkthrough](docs/architecture.md). It follows one
+proxy route through import, storage, scheduling, checking, result persistence,
+and rotation, with a reading order and tests for each stage. The
+[domain glossary](CONTEXT.md) defines the terms used in the walkthrough, and
+[decision records](docs/adr/) explain the storage and checker tradeoffs.
+
 ## Development test data
 
 Stop all backends connected to the development database, then preview or reset

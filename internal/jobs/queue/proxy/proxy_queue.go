@@ -266,6 +266,10 @@ func proxyQueueShardIndex(member string, shards int) int {
 	return int(hasher.Sum32() % uint32(shards))
 }
 
+// AddToQueue publishes payloads and schedules routes with active workspaces.
+// Callers supply the complete active workspace list, not just the importing
+// workspace. Imports may replace payloads while a checker is running; the Lua
+// script preserves its lease. An error can leave earlier pipeline batches saved.
 func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 	if len(proxies) == 0 {
 		return nil
@@ -335,6 +339,10 @@ func hasQueuedWorkspace(workspaces []domain.Workspace) bool {
 	return false
 }
 
+// RemoveFromQueue removes runtime payloads and scheduling state, not database
+// routes. Worker removals compare both the lease and its payload snapshot so an
+// intervening import survives. Administrative callers without a lease remove
+// unconditionally. ErrProxyLeaseLost tells a worker to abandon its stale claim.
 func (rpq *RedisProxyQueue) RemoveFromQueue(proxies []domain.Proxy) error {
 	if rpq == nil {
 		return errors.New("redis proxy queue is nil")
@@ -408,6 +416,10 @@ func (rpq *RedisProxyQueue) GetNextProxy() (domain.Proxy, time.Time, error) {
 	return rpq.GetNextProxyContext(rpq.baseContext())
 }
 
+// GetNextProxyContext waits for a due route, atomically claims its lease and
+// returns its previous scheduled time. The returned QueueLease is mutable and
+// belongs to one worker; renewal and completion must not run concurrently on it.
+// An error after claiming leaves the lease to expire so the route is recoverable.
 func (rpq *RedisProxyQueue) GetNextProxyContext(ctx context.Context) (domain.Proxy, time.Time, error) {
 	if ctx == nil {
 		ctx = rpq.baseContext()
@@ -636,6 +648,9 @@ func coerceLuaInt64(value interface{}) (int64, error) {
 	}
 }
 
+// RequeueProxy completes the worker's lease and schedules the next check using
+// only sorted-set updates. It neither encodes nor rewrites the stored payload.
+// ErrProxyLeaseLost means a newer claim or removal fenced this worker out.
 func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, lastCheckTime time.Time) error {
 	return rpq.requeueProxy(proxy, lastCheckTime, false)
 }
@@ -643,6 +658,9 @@ func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, lastCheckTime time.
 // RequeueProxyWithPayload persists changed ownership or credentials before
 // rescheduling. The normal checker path should use RequeueProxy so each check
 // only updates sorted-set scheduling state.
+// If an import replaced the leased snapshot, completion merges the worker's
+// ownership delta into that payload, preserving newly published workspaces and
+// credentials. A stale lease cannot complete either form of requeue.
 func (rpq *RedisProxyQueue) RequeueProxyWithPayload(proxy domain.Proxy, lastCheckTime time.Time) error {
 	return rpq.requeueProxy(proxy, lastCheckTime, true)
 }
@@ -809,6 +827,9 @@ func (qp queuedProxy) needsRewrite() bool {
 	return hasEncryptedCredentials
 }
 
+// toDomainProxy retains readers for legacy owner lists and encrypted credentials.
+// Current plaintext payloads reuse their stored hash without invoking the cipher.
+// Fingerprint regeneration is reserved for legacy payloads lacking a current hash.
 func (qp queuedProxy) toDomainProxy() (domain.Proxy, error) {
 	workspaceIDs := qp.WorkspaceIDs
 	if len(workspaceIDs) == 0 {

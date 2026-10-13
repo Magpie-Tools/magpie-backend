@@ -44,6 +44,12 @@ func newOwnershipVerifier() *ownershipVerifier {
 	}
 }
 
+// verifyProxyOwnership reports whether any workspace still actively manages
+// the route. Concurrent requests share a batched database lookup. Recheck before
+// requeueing because management can change while a network check is running.
+// False with no error means no active management, including an unknown or zero
+// ID. On cancellation or lookup failure, ownership is unknown; the worker keeps
+// the route scheduled rather than treating the error as permission to remove it.
 func verifyProxyOwnership(ctx context.Context, proxyID uint64) (bool, error) {
 	if proxyID == 0 {
 		return false, nil
@@ -168,6 +174,8 @@ func fetchProxyOwnership(proxyIDs []uint64) (map[uint64]bool, error) {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
+	// A caller's cancellation must not cancel the lookup shared by other workers.
+	// The batch has its own timeout and reads active management without credentials.
 	ctx, cancel := context.WithTimeout(context.Background(), ownershipQueryTimeout)
 	defer cancel()
 
@@ -190,6 +198,7 @@ func fetchProxyOwnership(proxyIDs []uint64) (map[uint64]bool, error) {
 	return results, nil
 }
 
+// Buffered, nonblocking replies let a caller leave without stalling the batch.
 func (req *ownershipRequest) respond(owned bool, err error) {
 	select {
 	case req.resp <- ownershipResult{owned: owned, err: err}:

@@ -80,10 +80,20 @@ type proxyStatisticStreamConfig struct {
 	tenantOverloadPolicies map[uint]string
 }
 
+// AddProxyStatistic hands off a result using any WorkspaceIDs already attached
+// to it. It has the same asynchronous acceptance contract as the attributed form.
 func AddProxyStatistic(proxyStatistic domain.ProxyStatistic) {
 	AddProxyStatisticForUsers(proxyStatistic, nil)
 }
 
+// AddProxyStatisticForUsers hands off one physical check result for asynchronous
+// persistence. Despite the historical name, userIDs contains workspace IDs.
+// The payload shares slices with its caller; do not mutate them after handoff.
+// Returning reports neither acceptance nor a PostgreSQL commit: policy can drop
+// the result, Redis acceptance depends on Redis persistence, and memory fallback
+// is volatile. Block policy retries stream admission within the configured wait
+// budget, then tries the memory queue with any remaining time. Rejected new
+// results are counted and logged instead of returned to the checker.
 func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, userIDs []uint) {
 	if len(userIDs) > 0 {
 		proxyStatistic.WorkspaceIDs = userIDs
@@ -124,6 +134,10 @@ func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, userIDs []u
 	recordProxyStatisticDrop(dropped, policy)
 }
 
+// enqueueProxyStatisticToStream returns (enqueued, handled). An intentional
+// drop_new rejection is handled but not enqueued, preventing memory fallback
+// from bypassing the policy. An unavailable or failing stream leaves fallback
+// to the producer. evict_oldest may trim unread or pending entries via XADD.
 func enqueueProxyStatisticToStream(proxyStatistic domain.ProxyStatistic, policy string) (bool, bool) {
 	client, cfg := proxyStatisticStreamSnapshot()
 	if client == nil || !cfg.enabled {
@@ -170,6 +184,10 @@ func enqueueProxyStatisticToStream(proxyStatistic domain.ProxyStatistic, policy 
 	return true, true
 }
 
+// enqueueProxyStatistic makes one immediate admission attempt, then waits only
+// until a nonzero deadline. Only the stream path evicts old entries; the memory
+// fallback treats evict_oldest like block. False means the caller must count a
+// drop, and true means the volatile queue accepted the result, not that it saved it.
 func enqueueProxyStatistic(proxyStatistic domain.ProxyStatistic, policy string, blockDeadline time.Time) bool {
 	if policy == statisticsOverloadPolicyDropNew {
 		select {
@@ -227,6 +245,11 @@ func recordProxyStatisticDrop(totalDropped uint64, policy string) {
 	log.Warn("Dropped proxy statistic due overload policy", "policy", policy, "dropped_total", totalDropped)
 }
 
+// StartProxyStatisticsRoutine runs stream and memory consumers alongside the
+// reputation coordinator and waits for them on cancellation. Memory consumers
+// remain available while stream initialization recovers from an outage. Each
+// consumer owns its batch; stream batches can replay after shutdown, while a
+// failed final memory flush loses that consumer's buffered results.
 func StartProxyStatisticsRoutine(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -399,6 +422,9 @@ func normalizeOverloadPolicy(raw string) string {
 	}
 }
 
+// resolveStatisticsOverloadPolicy selects the highest-priority policy among the
+// default and workspace overrides. Block outranks drop_new, then evict_oldest;
+// an override cannot weaken the default for any result sharing that stream entry.
 func resolveStatisticsOverloadPolicy(userIDs []uint) string {
 	_, cfg := proxyStatisticStreamSnapshot()
 	selected := normalizeOverloadPolicy(cfg.overloadPolicy)
@@ -477,6 +503,10 @@ func runProxyStatisticsWorker(ctx context.Context) {
 	}
 }
 
+// runProxyStatisticsStreamWorker owns the paired result and message-ID buffers.
+// IDs remain pending until persistence and acknowledgement finish. Recovery reads
+// this consumer's pending entries and claims idle entries from other consumers;
+// the database event ledger handles overlap and replay across workers.
 func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 	client, cfg := proxyStatisticStreamSnapshot()
 	if client == nil || !cfg.enabled {
@@ -640,6 +670,9 @@ func claimStaleProxyStatisticStreamMessages(ctx context.Context, client *redis.C
 	return messages, nextStart, nil
 }
 
+// appendStreamMessagesToBuffer returns the number of decoded results appended,
+// deduplicating IDs already buffered. Malformed payloads are logged and discarded
+// with acknowledgement/deletion so a poison entry cannot stall ingestion forever.
 func appendStreamMessagesToBuffer(ctx context.Context, messages []redis.XMessage, buffer *[]domain.ProxyStatistic, messageIDs *[]string, client *redis.Client, cfg proxyStatisticStreamConfig) int {
 	if len(messages) == 0 {
 		return 0
@@ -696,6 +729,11 @@ func decodeProxyStatisticStreamMessage(msg redis.XMessage) (domain.ProxyStatisti
 	return stat, nil
 }
 
+// flushStreamStatisticsBuffer persists decoded results before acknowledging IDs.
+// Deleted routes and malformed entries need no insert. False retains unfinished
+// work for retry. After a commit, the cleared buffer avoids another insert here
+// while retained IDs retry acknowledgement. A later consumer can replay those
+// IDs safely through the transactional event ledger.
 func flushStreamStatisticsBuffer(ctx context.Context, buffer *[]domain.ProxyStatistic, messageIDs *[]string, client *redis.Client, cfg proxyStatisticStreamConfig) bool {
 	if len(*buffer) > 0 {
 		if _, flushed := flushProxyStatisticsContext(ctx, buffer); !flushed {
@@ -715,6 +753,9 @@ func flushStreamStatisticsBuffer(ctx context.Context, buffer *[]domain.ProxyStat
 	return true
 }
 
+// ackAndDeleteStreamMessageIDs deletes and acknowledges each batch in one Lua
+// call. The count is the successfully handled prefix of messageIDs, including
+// IDs already gone from Redis, so callers retain only the unfinished suffix.
 func ackAndDeleteStreamMessageIDs(ctx context.Context, messageIDs []string, client *redis.Client, cfg proxyStatisticStreamConfig) (int, error) {
 	if len(messageIDs) == 0 {
 		return 0, nil
@@ -760,6 +801,8 @@ func resolveStatisticsIngestWorkers() int {
 	return workers
 }
 
+// A nonpositive setting means no timed wait in memory fallback. The stream block
+// loop interprets the resulting zero deadline as unlimited admission retries.
 func resolveStatisticsProducerMaxBlock() time.Duration {
 	ms := support.GetEnvInt(envProxyStatisticsProducerBlockMS, int(defaultStatisticsProducerMaxBlock/time.Millisecond))
 	if ms <= 0 {
@@ -772,6 +815,10 @@ func flushProxyStatistics(buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
 	return flushProxyStatisticsContext(context.Background(), buffer)
 }
 
+// flushProxyStatisticsContext returns prepared route IDs and whether the batch
+// was handled. Failure leaves the buffer intact for retry. Success clears it,
+// including when deleted routes or previously committed stream events leave
+// nothing new to insert; true does not mean every submitted result became a row.
 func flushProxyStatisticsContext(ctx context.Context, buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
 	if len(*buffer) == 0 {
 		return nil, true
@@ -850,6 +897,9 @@ func collectProxyIDs(stats []domain.ProxyStatistic) []uint64 {
 	return ids
 }
 
+// prepareProxyStatistics filters routes deleted between checking and ingestion.
+// Skipping their results lets the rest of the batch persist instead of retrying
+// forever against a missing foreign key. Lookup failure preserves the batch.
 func prepareProxyStatistics(ctx context.Context, stats []domain.ProxyStatistic) ([]domain.ProxyStatistic, []uint64, error) {
 	if len(stats) == 0 {
 		return nil, nil, nil

@@ -184,6 +184,10 @@ func getAutoThreads(cfg config.Config) uint32 {
 	return uint32(requiredThreads)
 }
 
+// work owns one route lease at a time. Statistics are handed off asynchronously,
+// while failure tracking and ownership verification wait for shared batches.
+// If a cycle stops before completing its lease, a later dequeue can reclaim the
+// route after expiry. Each worker owns its assignment and success maps.
 func work(parent context.Context) {
 	ctx, cleanup := createWorkerContext(parent)
 	defer cleanup()
@@ -250,6 +254,9 @@ func work(parent context.Context) {
 	}
 }
 
+// requeueCheckedProxy rewrites the payload only when queued ownership changed.
+// Refreshed checker settings live in runtime snapshots and do not need a payload
+// write. Normal cycles must keep serialization and encryption out of requeueing.
 func requeueCheckedProxy(proxy domain.Proxy, scheduledTime time.Time, persistPayload bool) error {
 	if persistPayload {
 		return proxyqueue.PublicProxyQueue.RequeueProxyWithPayload(proxy, scheduledTime)
@@ -282,6 +289,10 @@ func createWorkerContext(parent context.Context) (context.Context, func()) {
 	return ctx, cleanup
 }
 
+// refreshProxyWorkspaces replaces queued workspace stubs with current settings.
+// The bool reports an ownership-list change requiring a payload rewrite, not a
+// settings change. Before snapshots are ready, the database/cache fallback keeps
+// unknown workspaces on lookup failure so a transient error cannot remove them.
 func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 	if len(proxy.Workspaces) == 0 {
 		return proxy, false
@@ -372,6 +383,10 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 
 var lookupCheckerWorkspace = checkerconfig.Lookup
 
+// buildRequestAssignments shares a physical request only when judge, protocol,
+// transport, timeout and retry budget match. Validation remains per workspace.
+// The returned success and eligibility maps use workspace IDs; no eligible judge
+// means no failure-streak update. Maximum budgets support fallback assignments.
 func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
 	requests := make(map[string]*requestAssignment)
 	success, hasChecks := make(map[uint]bool, len(proxy.Workspaces)), make(map[uint]bool, len(proxy.Workspaces))
@@ -446,6 +461,11 @@ func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool
 	return "http"
 }
 
+// processJudgeAssignments runs assignments serially and updates the worker's
+// success map. Each physical check hands off one statistic with independent
+// workspace verdicts, even on a transport failure. Lease loss or cancellation
+// aborts the cycle; statistics already handed off are not undone. A nil error
+// does not mean those statistics have committed to PostgreSQL.
 func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, userSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
 	for _, item := range assignments {
 		timeout, retries := item.timeout, item.retries
@@ -575,6 +595,12 @@ func filterRemovedUsers(proxy domain.Proxy, removed map[uint]struct{}) domain.Pr
 	return proxy
 }
 
+// CheckProxyWithRetries makes an initial request plus up to retries additional
+// requests, stopping on transport success. Workspace response validation happens
+// afterward and does not trigger retries. The body and timing describe the last
+// request. Timing is in milliseconds; the fourth result is a zero-based attempt
+// index, not a request count. A failed lease renewal returns before that attempt
+// and joins ErrProxyLeaseLost to the error so the worker abandons the cycle.
 func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeout uint16, retries uint8) (string, error, int64, uint8) {
 	var (
 		html         string
