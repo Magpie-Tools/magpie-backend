@@ -12,14 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
 func TestRotatorTLSConfig_RequiresConfiguredCertAndKey(t *testing.T) {
-	resetRotatorTLSConfigState()
-	t.Cleanup(resetRotatorTLSConfigState)
 
 	t.Setenv(envRotatingProxyHTTP3TLSCertFile, "")
 	t.Setenv(envRotatingProxyHTTP3TLSKeyFile, "")
@@ -40,8 +37,6 @@ func TestRotatorTLSConfig_RequiresConfiguredCertAndKey(t *testing.T) {
 }
 
 func TestRotatorTLSConfig_RejectsIncompleteConfiguration(t *testing.T) {
-	resetRotatorTLSConfigState()
-	t.Cleanup(resetRotatorTLSConfigState)
 
 	tempDir := t.TempDir()
 	certPath := filepath.Join(tempDir, "cert.pem")
@@ -65,8 +60,6 @@ func TestRotatorTLSConfig_RejectsIncompleteConfiguration(t *testing.T) {
 }
 
 func TestRotatorTLSConfig_LoadsConfiguredCertAndKey(t *testing.T) {
-	resetRotatorTLSConfigState()
-	t.Cleanup(resetRotatorTLSConfigState)
 
 	tempDir := t.TempDir()
 	certPath, keyPath := createSelfSignedRotatorTLSFiles(t, tempDir)
@@ -84,8 +77,9 @@ func TestRotatorTLSConfig_LoadsConfiguredCertAndKey(t *testing.T) {
 	if cfg.MinVersion != tls.VersionTLS13 {
 		t.Fatalf("tls min version = %d, want %d", cfg.MinVersion, tls.VersionTLS13)
 	}
-	if len(cfg.Certificates) != 1 {
-		t.Fatalf("certificates count = %d, want 1", len(cfg.Certificates))
+	cert, err := cfg.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil || cert == nil {
+		t.Fatalf("certificate callback: %v %v", cert, err)
 	}
 }
 
@@ -138,8 +132,33 @@ func createSelfSignedRotatorTLSFiles(t *testing.T, dir string) (string, string) 
 	return certPath, keyPath
 }
 
-func resetRotatorTLSConfigState() {
-	rotatorTLSOnce = sync.Once{}
-	rotatorTLSValue = nil
-	rotatorTLSErr = nil
+func TestRotatorTLSRetriesInitialFailureAndInvalidRenewal(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := filepath.Join(dir, "rotator-cert.pem"), filepath.Join(dir, "rotator-key.pem")
+	t.Setenv(envRotatingProxyHTTP3TLSCertFile, certPath)
+	t.Setenv(envRotatingProxyHTTP3TLSKeyFile, keyPath)
+	if _, err := rotatorTLSConfig(); err == nil {
+		t.Fatal("missing files loaded")
+	}
+	createSelfSignedRotatorTLSFiles(t, dir)
+	cfg, err := rotatorTLSConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := cfg.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("partial renewal"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := cfg.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil || retained != first {
+		t.Fatal("invalid renewal replaced valid certificate")
+	}
+	createSelfSignedRotatorTLSFiles(t, dir)
+	renewed, err := cfg.GetCertificate(&tls.ClientHelloInfo{})
+	if err != nil || renewed == first {
+		t.Fatal("valid renewal did not recover")
+	}
 }

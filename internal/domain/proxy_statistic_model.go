@@ -37,12 +37,20 @@ type ProxyStatistic struct {
 	CreatedAt time.Time `gorm:"autoCreateTime;index:idx_proxy_statistics_proxy_created_id,sort:desc,priority:2"`
 }
 
-// ProxyStatisticEvent survives history retention so a committed stream event
-// cannot increment usage again after a delayed replay.
+// ProxyStatisticEvent protects committed entries above the durable replay floor.
 type ProxyStatisticEvent struct {
-	Stream    string    `gorm:"primaryKey;size:255"`
+	Stream    string    `gorm:"primaryKey;size:255;index:idx_statistic_events_stream_sort,priority:1"`
 	EventID   string    `gorm:"primaryKey;size:64"`
+	SortID    string    `gorm:"size:41;not null;default:'';index:idx_statistic_events_stream_sort,priority:2"`
 	CreatedAt time.Time `gorm:"autoCreateTime"`
+}
+
+// ProxyStatisticStream rejects historical replays after their individual
+// identities have been retired. The floor is exclusive and never moves back.
+type ProxyStatisticStream struct {
+	Stream       string    `gorm:"primaryKey;size:255"`
+	ReplayBefore string    `gorm:"size:41;not null;default:''"`
+	UpdatedAt    time.Time `gorm:"autoUpdateTime"`
 }
 
 type WorkspaceCheckEvidence struct {

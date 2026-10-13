@@ -7,7 +7,6 @@ import (
 	"magpie/internal/support"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"github.com/temoto/robotstxt"
@@ -22,12 +21,7 @@ const (
 	robotsCacheTTL = time.Hour
 )
 
-var robotsCache = struct {
-	mu      sync.Mutex
-	entries map[string]robotsCacheEntry
-}{
-	entries: make(map[string]robotsCacheEntry),
-}
+var robotsCache = support.NewExpiryCache[string, robotsCacheEntry](2_000)
 
 type RobotsCheckResult struct {
 	Allowed     bool
@@ -96,29 +90,16 @@ func loadRobotsEntry(parsed *url.URL, timeout time.Duration) (robotsCacheEntry, 
 
 	entry.fetched = time.Now()
 
-	robotsCache.mu.Lock()
-	robotsCache.entries[key] = entry
-	robotsCache.mu.Unlock()
+	robotsCache.Set(key, entry, entry.fetched.Add(robotsCacheTTL))
 
 	return entry, nil
 }
 
 func getCachedRobotsEntry(key string) (robotsCacheEntry, bool) {
-	robotsCache.mu.Lock()
-	defer robotsCache.mu.Unlock()
-
-	entry, ok := robotsCache.entries[key]
-	if !ok {
-		return robotsCacheEntry{}, false
-	}
-
-	if time.Since(entry.fetched) > robotsCacheTTL {
-		delete(robotsCache.entries, key)
-		return robotsCacheEntry{}, false
-	}
-
-	return entry, true
+	return robotsCache.Get(key, time.Now())
 }
+
+func PruneRobotsCache(now time.Time) { robotsCache.Prune(now) }
 
 func fetchRobotsEntry(parsed *url.URL, timeout time.Duration) (robotsCacheEntry, error) {
 	robotsURL := robotsURLFor(parsed)

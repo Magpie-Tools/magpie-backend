@@ -32,7 +32,7 @@ func (h *statisticsAckHook) ProcessPipelineHook(next redis.ProcessPipelineHook) 
 func (h *statisticsAckHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		err := next(ctx, cmd)
-		if err == nil && cmd.Name() == "xdel" {
+		if err == nil && isStatisticAckCommand(cmd) {
 			h.once.Do(func() { close(h.done) })
 		}
 		return err
@@ -104,7 +104,7 @@ func statisticsRecoveryFixture(t *testing.T) (*gorm.DB, *redis.Client, proxyStat
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&domain.ProxyStatistic{}, &domain.ProxyStatisticEvent{}, &domain.ProxyDailyCheck{}, &domain.ProxyLatestStatistic{}, &domain.ProxyOverallStatus{}); err != nil {
+	if err := db.AutoMigrate(&domain.ProxyStatistic{}, &domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.ProxyDailyCheck{}, &domain.ProxyLatestStatistic{}, &domain.ProxyOverallStatus{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec("INSERT INTO proxies (id, host, port, country, estimated_type) VALUES (1, '192.0.2.1', 8080, '', '')").Error; err != nil {
@@ -153,4 +153,10 @@ func seedPendingStatistics(t *testing.T, client *redis.Client, cfg proxyStatisti
 	if err := client.XReadGroup(ctx, &redis.XReadGroupArgs{Group: cfg.groupName, Consumer: "worker", Streams: []string{cfg.streamKey, ">"}, Count: int64(count), Block: -1}).Err(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func isStatisticAckCommand(cmd redis.Cmder) bool {
+	args := cmd.Args()
+	return (cmd.Name() == "eval" || cmd.Name() == "evalsha") && len(args) > 1 &&
+		(fmt.Sprint(args[1]) == ackDeleteStatisticScript.Hash() || fmt.Sprint(args[1]) == ackDeleteStatisticScriptSource)
 }

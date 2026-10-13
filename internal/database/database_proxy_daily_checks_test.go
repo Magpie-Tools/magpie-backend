@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/domain"
+
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -118,5 +120,8 @@ func openDailyChecksSQLite(t *testing.T) *gorm.DB {
 		}
 	}
 
+	if err := db.AutoMigrate(&domain.ProxyCheckTotal{}); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }

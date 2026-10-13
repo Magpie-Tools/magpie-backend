@@ -21,6 +21,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/support"
 )
 
 //go:embed GeoLite2-ASN.mmdb
@@ -28,11 +29,6 @@ var geoLiteASNDB []byte
 
 //go:embed GeoLite2-Country.mmdb
 var geoLiteCountryDB []byte
-
-type dnsCacheEntry struct {
-	names   []string
-	expires time.Time
-}
 
 type residentialOverrideCandidate struct {
 	index int
@@ -59,7 +55,7 @@ var (
 	residentialKeywords = regexp.MustCompile(`(?i)(dyn|pool|dsl|cust|res|ip|adsl|ppp|user|mobile|static|dhcp)`)
 	ispKeywords         = regexp.MustCompile(`(?i)(isp|broadband|telecom|communications|networks|carrier)`)
 
-	dnsCache                      sync.Map
+	dnsCache                      = support.NewExpiryCache[string, []string](20_000)
 	dnsLookupGroup                singleflight.Group
 	dnsCacheTTL                   = 12 * time.Hour
 	dnsLookupTimeout              = 2 * time.Second
@@ -165,11 +161,8 @@ func GeoLiteAvailable() bool {
 
 func getCachedDNS(ip string) []string {
 	now := time.Now()
-	if entry, ok := dnsCache.Load(ip); ok {
-		cachedEntry := entry.(dnsCacheEntry)
-		if now.Before(cachedEntry.expires) {
-			return cachedEntry.names
-		}
+	if names, ok := dnsCache.Get(ip, now); ok {
+		return names
 	}
 
 	result, err, _ := dnsLookupGroup.Do(ip, func() (interface{}, error) {
@@ -188,12 +181,11 @@ func getCachedDNS(ip string) []string {
 	}
 
 	names := result.([]string)
-	dnsCache.Store(ip, dnsCacheEntry{
-		names:   names,
-		expires: now.Add(dnsCacheTTL),
-	})
+	dnsCache.Set(ip, names, time.Now().Add(dnsCacheTTL))
 	return names
 }
+
+func PruneDNSCache(now time.Time) { dnsCache.Prune(now) }
 
 func AsyncEnrichProxyMetadata(proxies []domain.Proxy) {
 	if len(proxies) == 0 {

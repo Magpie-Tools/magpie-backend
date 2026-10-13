@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func setupProxyIngestionPostgresTest(t *testing.T) *gorm.DB {
+func setupProxyIngestionPostgresTest(t testing.TB) *gorm.DB {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("MAGPIE_TEST_POSTGRES_DSN"))
 	if dsn == "" {

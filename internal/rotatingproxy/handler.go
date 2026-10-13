@@ -47,11 +47,13 @@ var (
 )
 
 type proxyHandler struct {
-	rotator domain.RotatingProxy
+	rotator     domain.RotatingProxy
+	connections *rotatorConnections
 }
 
 type socksProxyHandler struct {
-	rotator domain.RotatingProxy
+	rotator     domain.RotatingProxy
+	connections *rotatorConnections
 }
 
 func newSocksProxyHandler(rotator domain.RotatingProxy) *socksProxyHandler {
@@ -87,11 +89,16 @@ func (h *socksProxyHandler) handleSocks5(conn net.Conn) {
 		return
 	}
 
-	upstreamConn, err := connectThroughUpstreamFunc(target, next)
+	upstreamConn, err := connectForRotator(h.connections, target, next)
 	if err != nil {
 		_ = writeSocks5Reply(conn, 0x05)
 		return
 	}
+	if !h.connections.add(upstreamConn, true) {
+		return
+	}
+	defer h.connections.remove(upstreamConn)
+	defer upstreamConn.Close()
 
 	if err := writeSocks5Success(conn, upstreamConn.LocalAddr()); err != nil {
 		_ = upstreamConn.Close()
@@ -257,11 +264,16 @@ func (h *socksProxyHandler) handleSocks4(conn net.Conn) {
 		return
 	}
 
-	upstreamConn, err := connectThroughUpstreamFunc(target, next)
+	upstreamConn, err := connectForRotator(h.connections, target, next)
 	if err != nil {
 		_ = writeSocks4Response(conn, 0x5B, dstPort, dstIP)
 		return
 	}
+	if !h.connections.add(upstreamConn, true) {
+		return
+	}
+	defer h.connections.remove(upstreamConn)
+	defer upstreamConn.Close()
 
 	if err := writeSocks4Response(conn, 0x5A, dstPort, dstIP); err != nil {
 		_ = upstreamConn.Close()
@@ -613,7 +625,7 @@ func connectThroughUpstreamWithContext(ctx context.Context, target string, next 
 	}
 
 	done := make(chan struct{})
-	resultCh := make(chan upstreamDialResult, 1)
+	resultCh := make(chan upstreamDialResult)
 	go func() {
 		conn, err := connectFn(target, next)
 		select {
@@ -646,6 +658,10 @@ func (h *proxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to hijack connection", http.StatusInternalServerError)
 		return
 	}
+	if !h.connections.add(clientConn, false) {
+		return
+	}
+	defer h.connections.remove(clientConn)
 
 	defer func() {
 		if err := clientConn.Close(); err != nil {
@@ -664,7 +680,7 @@ func (h *proxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upConn, err := connectThroughUpstreamFunc(r.Host, next)
+	upConn, err := connectForRotator(h.connections, r.Host, next)
 	if err != nil {
 		log.Warn("rotating proxy: upstream connect failed",
 			"rotator_id", h.rotator.ID,
@@ -676,6 +692,11 @@ func (h *proxyHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		writeHijackedResponse(buf, http.StatusBadGateway, "Upstream CONNECT failed")
 		return
 	}
+	if !h.connections.add(upConn, true) {
+		return
+	}
+	defer h.connections.remove(upConn)
+	defer upConn.Close()
 
 	applyConnDeadline(clientConn, handshakeTimeout)
 	if _, err := clientConn.Write([]byte(connectEstablishedResponse)); err != nil {

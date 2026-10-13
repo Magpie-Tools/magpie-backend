@@ -27,7 +27,7 @@ func (h *cancelStatisticsAckHook) ProcessPipelineHook(next redis.ProcessPipeline
 }
 func (h *cancelStatisticsAckHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		if cmd.Name() == "xack" {
+		if isStatisticAckCommand(cmd) {
 			h.once.Do(h.cancel)
 			if ctx.Err() != nil {
 				return ctx.Err()

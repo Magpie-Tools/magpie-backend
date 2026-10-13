@@ -81,12 +81,19 @@ func observeRequestMetrics(r *http.Request, statusCode int, duration time.Durati
 
 	route := strings.TrimSpace(r.Pattern)
 	if route == "" {
-		route = r.URL.Path
+		route = "unmatched"
+	}
+	method := r.Method
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace:
+	default:
+		method = "OTHER"
 	}
 	status := strconv.Itoa(statusCode)
 
-	httpRequestsTotal.WithLabelValues(r.Method, route, status).Inc()
-	httpRequestDurationSeconds.WithLabelValues(r.Method, route, status).Observe(duration.Seconds())
+	httpRequestsTotal.WithLabelValues(method, route, status).Inc()
+	httpRequestDurationSeconds.WithLabelValues(method, route, status).Observe(duration.Seconds())
 }
 
 func recordAuthFailureMetric(reason string) {

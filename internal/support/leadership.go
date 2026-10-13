@@ -58,15 +58,21 @@ func RunWithLeader(ctx context.Context, key string, ttl time.Duration, run func(
 	if ttl <= 0 {
 		ttl = DefaultLeadershipTTL
 	}
-
-	client, err := GetRedisClient()
-	if err != nil {
-		return fmt.Errorf("support: leader lock redis client: %w", err)
-	}
+	leaderJobActive.WithLabelValues(key).Set(0)
 
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		client, err := GetRedisClientContext(ctx)
+		if err != nil {
+			log.Warn("leader lock: redis unavailable; retrying", "key", key, "error", err)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(leadershipRetryDelay):
+				continue
+			}
 		}
 
 		session, err := acquireLeaderSession(ctx, client, key, ttl)
@@ -84,8 +90,10 @@ func RunWithLeader(ctx context.Context, key string, ttl time.Duration, run func(
 		}
 
 		log.Debug("leader lock: acquired", "key", key)
+		leaderJobActive.WithLabelValues(key).Set(1)
 		run(session.ctx)
 		session.Close()
+		leaderJobActive.WithLabelValues(key).Set(0)
 		log.Debug("leader lock: released", "key", key)
 
 		select {
@@ -113,7 +121,7 @@ func RunLeaderTaskOnce(ctx context.Context, key string, ttl time.Duration, run f
 		ttl = DefaultLeadershipTTL
 	}
 
-	client, err := GetRedisClient()
+	client, err := GetRedisClientContext(ctx)
 	if err != nil {
 		return fmt.Errorf("support: leader lock redis client: %w", err)
 	}

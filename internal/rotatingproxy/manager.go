@@ -169,6 +169,7 @@ func (m *Manager) StopAll() {
 }
 
 type proxyServer struct {
+	connections             *rotatorConnections
 	rotator                 domain.RotatingProxy
 	listener                net.Listener
 	httpServer              *http.Server
@@ -179,7 +180,7 @@ type proxyServer struct {
 }
 
 func newProxyServer(rotator domain.RotatingProxy) *proxyServer {
-	server := &proxyServer{rotator: rotator}
+	server := &proxyServer{rotator: rotator, connections: newRotatorConnections()}
 	if maxSocksConcurrentConnections > 0 {
 		server.socksWorkerSem = make(chan struct{}, maxSocksConcurrentConnections)
 	}
@@ -209,7 +210,7 @@ func (ps *proxyServer) startHTTPServer() error {
 		return err
 	}
 
-	handler := &proxyHandler{rotator: ps.rotator}
+	handler := &proxyHandler{rotator: ps.rotator, connections: ps.connections}
 	server := &http.Server{
 		Handler:           handler,
 		ReadTimeout:       30 * time.Second,
@@ -237,6 +238,7 @@ func (ps *proxyServer) startSocksServer() error {
 	}
 
 	handler := newSocksProxyHandler(ps.rotator)
+	handler.connections = ps.connections
 	ps.listener = listener
 
 	go func() {
@@ -267,7 +269,7 @@ func (ps *proxyServer) startHTTP3Server(transport string) error {
 	}
 
 	enableDatagrams := transport == support.TransportQUIC
-	handler := &proxyHandler{rotator: ps.rotator}
+	handler := &proxyHandler{rotator: ps.rotator, connections: ps.connections}
 	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
 			http.Error(w, "CONNECT is not supported for HTTP/3 rotators", http.StatusMethodNotAllowed)
@@ -299,6 +301,7 @@ func (ps *proxyServer) startHTTP3Server(transport string) error {
 
 func (ps *proxyServer) Stop() {
 	ps.closeOnce.Do(func() {
+		ps.connections.stop()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if ps.httpServer != nil {
@@ -352,8 +355,16 @@ func loadMaxSocksConcurrentConnections() int {
 }
 
 func (ps *proxyServer) dispatchSocksConnection(conn net.Conn, handle func(net.Conn)) bool {
+	if !ps.connections.add(conn, false) {
+		return false
+	}
+	trackedHandle := func() {
+		defer ps.connections.remove(conn)
+		defer conn.Close()
+		handle(conn)
+	}
 	if ps.socksWorkerSem == nil {
-		go handle(conn)
+		go trackedHandle()
 		return true
 	}
 
@@ -361,10 +372,11 @@ func (ps *proxyServer) dispatchSocksConnection(conn net.Conn, handle func(net.Co
 	case ps.socksWorkerSem <- struct{}{}:
 		go func() {
 			defer func() { <-ps.socksWorkerSem }()
-			handle(conn)
+			trackedHandle()
 		}()
 		return true
 	default:
+		ps.connections.remove(conn)
 		_ = conn.Close()
 		return false
 	}

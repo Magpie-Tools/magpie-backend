@@ -217,16 +217,8 @@ func Notify(workspaceID uint) {
 func Initialize(ctx context.Context, client *redis.Client, loader Loader, list func(context.Context) ([]uint, error)) error {
 	state.Lock()
 	state.loader = loader
-	state.client = client
+	state.client = nil
 	state.Unlock()
-	var subscription *redis.PubSub
-	if client != nil {
-		subscription = client.Subscribe(ctx, syncChannel)
-		if _, err := subscription.Receive(ctx); err != nil {
-			_ = subscription.Close()
-			return err
-		}
-	}
 	reconcile := func() error {
 		ids, err := list(ctx)
 		if err != nil {
@@ -249,9 +241,6 @@ func Initialize(ctx context.Context, client *redis.Client, loader Loader, list f
 		return nil
 	}
 	if err := reconcile(); err != nil {
-		if subscription != nil {
-			_ = subscription.Close()
-		}
 		return err
 	}
 	state.Lock()
@@ -260,27 +249,10 @@ func Initialize(ctx context.Context, client *redis.Client, loader Loader, list f
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
-		var events <-chan *redis.Message
-		if subscription != nil {
-			defer subscription.Close()
-			events = subscription.Channel()
-		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case message := <-events:
-				if message == nil {
-					events = nil
-					continue
-				}
-				var id uint
-				var origin string
-				if _, err := fmt.Sscan(message.Payload, &origin, &id); err == nil && id > 0 && origin != notificationOrigin {
-					if err := Refresh(ctx, id); err != nil {
-						log.Warn("reload checker settings notification", "error", err)
-					}
-				}
 			case <-ticker.C:
 				if err := reconcile(); err != nil {
 					log.Warn("reconcile checker settings", "error", err)
@@ -288,6 +260,9 @@ func Initialize(ctx context.Context, client *redis.Client, loader Loader, list f
 			}
 		}
 	}()
+	if client != nil {
+		return EnableRedisSynchronization(ctx, client)
+	}
 	return nil
 }
 
@@ -300,4 +275,59 @@ func TagAssignmentsChanged(workspaceID uint) {
 	if snapshot == nil || len(snapshot.Value.DefaultCheckerSettings().Rules) > 0 {
 		Notify(workspaceID)
 	}
+}
+
+var redisSubscriptionMu sync.Mutex
+
+// EnableRedisSynchronization can attach Redis after an initial degraded startup
+// without launching a second database reconciliation loop.
+func EnableRedisSynchronization(ctx context.Context, client *redis.Client) error {
+	redisSubscriptionMu.Lock()
+	defer redisSubscriptionMu.Unlock()
+	state.RLock()
+	connected := state.client != nil
+	state.RUnlock()
+	if connected || client == nil {
+		return nil
+	}
+	subscription := client.Subscribe(ctx, syncChannel)
+	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_, err := subscription.Receive(opCtx)
+	cancel()
+	if err != nil {
+		_ = subscription.Close()
+		return err
+	}
+	state.Lock()
+	state.client = client
+	state.Unlock()
+	go func() {
+		defer subscription.Close()
+		defer func() {
+			state.Lock()
+			if state.client == client {
+				state.client = nil
+			}
+			state.Unlock()
+		}()
+		events := subscription.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case message, ok := <-events:
+				if !ok {
+					return
+				}
+				var id uint
+				var origin string
+				if _, err := fmt.Sscan(message.Payload, &origin, &id); err == nil && id > 0 && origin != notificationOrigin {
+					if err := Refresh(ctx, id); err != nil {
+						log.Warn("reload checker settings notification", "error", err)
+					}
+				}
+			}
+		}
+	}()
+	return nil
 }

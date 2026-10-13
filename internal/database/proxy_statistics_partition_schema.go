@@ -87,6 +87,33 @@ func ensureProxyStatisticsMonthlyPartitions(db *gorm.DB, now time.Time) error {
 	return nil
 }
 
+// MaintainProxyStatisticsPartitions runs for an already partitioned schema,
+// including installations that disable application schema migrations.
+func MaintainProxyStatisticsPartitions(ctx context.Context, now time.Time) error {
+	if DB == nil || !isPostgresDialector(DB) {
+		return nil
+	}
+	db := DB.WithContext(ctx)
+	partitioned, err := isProxyStatisticsPartitioned(db)
+	if err != nil || !partitioned {
+		return err
+	}
+	if err := ensureProxyStatisticsDefaultPartition(db); err != nil {
+		return err
+	}
+	months := support.GetEnvInt(envProxyStatisticsPartitionPrecreateMonths, defaultPartitionPrecreateMonths)
+	if months < 1 {
+		months = defaultPartitionPrecreateMonths
+	}
+	start := monthStartUTC(now)
+	for month := 0; month <= months; month++ {
+		if err := ensureProxyStatisticsMonthlyPartition(db, start.AddDate(0, month, 0)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ensureProxyStatisticsDefaultPartition(db *gorm.DB) error {
 	hasDefault, err := hasProxyStatisticsDefaultPartition(db)
 	if err != nil {
@@ -304,7 +331,42 @@ func ensureMonthlyPartitionForTable(db *gorm.DB, parent string, partitionPrefix 
 		start.Format("2006-01-02 15:04:05-07"),
 		end.Format("2006-01-02 15:04:05-07"),
 	)
-	return db.Exec(stmt).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		// Serializes concurrent precreation and prevents inserts into DEFAULT
+		// while its rows are moved. A busy database retries on the next pass.
+		if err := tx.Exec(`SET LOCAL lock_timeout = '2s'`).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`LOCK TABLE ` + quoteIdentifier(parent) + ` IN ACCESS EXCLUSIVE MODE`).Error; err != nil {
+			return err
+		}
+		exists, err := hasPartitionForRange(tx, parent, start, end)
+		if err != nil || exists {
+			return err
+		}
+		var defaultName string
+		if err := tx.Raw(`SELECT child.relname FROM pg_inherits i
+			JOIN pg_class parent ON parent.oid = i.inhparent
+			JOIN pg_class child ON child.oid = i.inhrelid
+			JOIN pg_namespace ns ON ns.oid = child.relnamespace
+			WHERE parent.relname = ? AND ns.nspname = current_schema()
+			AND pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'`, parent).Scan(&defaultName).Error; err != nil {
+			return err
+		}
+		if defaultName == "" {
+			return tx.Exec(stmt).Error
+		}
+		if err := tx.Exec(`CREATE TABLE ` + quoteIdentifier(name) + ` (LIKE ` + quoteIdentifier(parent) + ` INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING INDEXES)`).Error; err != nil {
+			return err
+		}
+		move := `WITH moved AS (DELETE FROM ` + quoteIdentifier(defaultName) + ` WHERE created_at >= ? AND created_at < ? RETURNING *)
+			INSERT INTO ` + quoteIdentifier(name) + ` OVERRIDING SYSTEM VALUE SELECT * FROM moved`
+		if err := tx.Exec(move, start, end).Error; err != nil {
+			return err
+		}
+		attach := fmt.Sprintf(`ALTER TABLE %s ATTACH PARTITION %s FOR VALUES FROM ('%s') TO ('%s')`, quoteIdentifier(parent), quoteIdentifier(name), start.Format("2006-01-02 15:04:05-07"), end.Format("2006-01-02 15:04:05-07"))
+		return tx.Exec(attach).Error
+	})
 }
 
 func hasPartitionForRange(db *gorm.DB, parent string, start time.Time, end time.Time) (bool, error) {
@@ -375,8 +437,7 @@ SELECT EXISTS (
 	SELECT 1
 	FROM pg_inherits i
 	JOIN pg_class child ON child.oid = i.inhrelid
-	JOIN pg_class parent ON parent.oid = i.inhparent
-	WHERE parent.relname = 'proxy_statistics'
+	WHERE i.inhparent = 'proxy_statistics'::regclass
 	  AND pg_get_expr(child.relpartbound, child.oid) = 'DEFAULT'
 )`
 

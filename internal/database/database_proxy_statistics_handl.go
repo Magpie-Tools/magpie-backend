@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var proxyStatisticFieldCount atomic.Int32
@@ -120,7 +121,7 @@ func acceptProxyStatisticEvents(tx *gorm.DB, statistics []domain.ProxyStatistic)
 			continue
 		}
 		seen[key] = struct{}{}
-		events = append(events, domain.ProxyStatisticEvent{Stream: key.stream, EventID: key.id})
+		events = append(events, domain.ProxyStatisticEvent{Stream: key.stream, EventID: key.id, SortID: ProxyStatisticEventSortID(key.id)})
 	}
 	if len(events) == 0 {
 		return statistics, nil
@@ -131,19 +132,43 @@ func acceptProxyStatisticEvents(tx *gorm.DB, statistics []domain.ProxyStatistic)
 		}
 		return events[i].EventID < events[j].EventID
 	})
+	streams := make([]domain.ProxyStatisticStream, 0)
+	streamIDs := make([]string, 0)
+	for _, event := range events {
+		if len(streamIDs) == 0 || streamIDs[len(streamIDs)-1] != event.Stream {
+			streams = append(streams, domain.ProxyStatisticStream{Stream: event.Stream})
+			streamIDs = append(streamIDs, event.Stream)
+		}
+	}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&streams).Error; err != nil {
+		return nil, err
+	}
 
 	acceptedKeys := make(map[eventKey]struct{}, len(events))
 	for start := 0; start < len(events); start += 1000 {
 		chunk := events[start:min(start+1000, len(events))]
 		values := make([]string, len(chunk))
-		args := make([]any, 0, len(chunk)*3)
+		args := make([]any, 0, len(chunk)*4+1)
 		for i, event := range chunk {
-			values[i] = "(?, ?, ?)"
-			args = append(args, event.Stream, event.EventID, time.Now().UTC())
+			values[i] = "(?, ?, ?, ?)"
+			if isPostgresDialector(tx) {
+				values[i] = "(?, ?, ?, ?::timestamptz)"
+			}
+			args = append(args, event.Stream, event.EventID, event.SortID, time.Now().UTC())
 		}
 		var inserted []domain.ProxyStatisticEvent
-		query := "INSERT INTO proxy_statistic_events (stream, event_id, created_at) VALUES " + strings.Join(values, ",") +
-			" ON CONFLICT (stream, event_id) DO NOTHING RETURNING stream, event_id, created_at"
+		lock := ""
+		if isPostgresDialector(tx) {
+			lock = " FOR SHARE"
+		}
+		// Lock floors inside the existing ledger insert. Retirement cannot
+		// delete an identity while an ingestion transaction accepts its replay.
+		query := "WITH incoming(stream, event_id, sort_id, created_at) AS (VALUES " + strings.Join(values, ",") +
+			"), floors AS (SELECT stream, replay_before FROM proxy_statistic_streams WHERE stream IN ? ORDER BY stream" + lock + ") " +
+			"INSERT INTO proxy_statistic_events (stream, event_id, sort_id, created_at) SELECT i.stream, i.event_id, i.sort_id, i.created_at " +
+			"FROM incoming i JOIN floors f ON f.stream = i.stream WHERE i.sort_id = '' OR i.sort_id >= f.replay_before " +
+			"ON CONFLICT (stream, event_id) DO NOTHING RETURNING stream, event_id, created_at"
+		args = append(args, streamIDs)
 		if err := tx.Raw(query, args...).Scan(&inserted).Error; err != nil {
 			return nil, err
 		}

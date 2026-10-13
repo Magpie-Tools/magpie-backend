@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -110,16 +111,19 @@ func runEmailDeliveryPass(ctx context.Context) {
 }
 
 func runEmailDeliveryMaintenancePass(ctx context.Context) {
+	var runErr error
+	defer func() { support.RecordMaintenanceRun("email_outbox", runErr) }()
 	processingTimeout := resolveEmailProcessingTimeout()
 	if processingTimeout > 0 {
 		if recovered, err := database.RequeueStaleEmailOutboxMessages(ctx, time.Now().UTC().Add(-processingTimeout)); err != nil {
+			runErr = err
 			log.Error("Failed to requeue stale email outbox messages", "error", err)
 		} else if recovered > 0 {
 			log.Warn("Recovered stale email outbox messages", "count", recovered)
 		}
 	}
 
-	cleanupSentEmailOutbox(ctx)
+	runErr = errors.Join(runErr, cleanupSentEmailOutbox(ctx))
 }
 
 func deliverEmailOutboxMessage(ctx context.Context, msg domain.EmailOutbox) {
@@ -159,16 +163,17 @@ func scheduleEmailRetry(ctx context.Context, msg domain.EmailOutbox, metricResul
 	}
 }
 
-func cleanupSentEmailOutbox(ctx context.Context) {
+func cleanupSentEmailOutbox(ctx context.Context) error {
 	retention := resolveEmailOutboxRetention()
 	if retention <= 0 {
-		return
+		return nil
 	}
 	olderThan := time.Now().UTC().Add(-retention)
 	_, err := database.DeleteSentEmailOutbox(ctx, olderThan, emailOutboxCleanupBatchSize)
 	if err != nil {
-		log.Error("Failed to cleanup sent email outbox rows", "error", err)
+		log.Error("Failed to clean up terminal email outbox rows", "error", err)
 	}
+	return err
 }
 
 func updateEmailQueueDepthMetric(ctx context.Context) {

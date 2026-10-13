@@ -64,10 +64,11 @@ var (
 	proxyStatisticDroppedCount        atomic.Uint64
 	proxyStatisticLastBackpressureLog atomic.Int64
 
-	proxyStatisticStreamInitMu sync.Mutex
-	proxyStatisticStreamClient *redis.Client
-	proxyStatisticStreamCfg    proxyStatisticStreamConfig
-	proxyStatisticStreamReady  atomic.Bool
+	proxyStatisticStreamInitMu  sync.Mutex
+	proxyStatisticStreamStateMu sync.RWMutex
+	proxyStatisticStreamClient  *redis.Client
+	proxyStatisticStreamCfg     proxyStatisticStreamConfig
+	proxyStatisticStreamReady   atomic.Bool
 )
 
 type proxyStatisticStreamConfig struct {
@@ -124,7 +125,7 @@ func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, userIDs []u
 }
 
 func enqueueProxyStatisticToStream(proxyStatistic domain.ProxyStatistic, policy string) (bool, bool) {
-	client, cfg := proxyStatisticStreamClient, proxyStatisticStreamCfg
+	client, cfg := proxyStatisticStreamSnapshot()
 	if client == nil || !cfg.enabled {
 		return false, false
 	}
@@ -243,19 +244,29 @@ func StartProxyStatisticsRoutine(ctx context.Context) {
 
 	var workerWG sync.WaitGroup
 	memoryWorkerCount := workerCount
-	streamWorkerCount := 0
-	if proxyStatisticStreamReady.Load() {
-		streamWorkerCount = workerCount
-		memoryWorkerCount = 1 // in-memory queue is fallback when stream publish fails
-	}
-
-	for i := 0; i < streamWorkerCount; i++ {
-		consumerName := fmt.Sprintf("%s-%d", instanceid.Get(), i)
+	_, streamCfg := proxyStatisticStreamSnapshot()
+	if streamCfg.enabled {
 		workerWG.Add(1)
-		go func(name string) {
+		go func() {
 			defer workerWG.Done()
-			runProxyStatisticsStreamWorker(ctx, name)
-		}(consumerName)
+			for !proxyStatisticStreamReady.Load() {
+				if !waitForStatisticsRetry(ctx) {
+					return
+				}
+				initializeProxyStatisticStream(ctx)
+			}
+			var streams sync.WaitGroup
+			for i := 0; i < workerCount; i++ {
+				streams.Add(1)
+				go func(i int) {
+					defer streams.Done()
+					runProxyStatisticsStreamWorker(ctx, fmt.Sprintf("%s-%d", instanceid.Get(), i))
+				}(i)
+			}
+			streams.Add(1)
+			go func() { defer streams.Done(); runProxyStatisticStreamMaintenance(ctx) }()
+			streams.Wait()
+		}()
 	}
 
 	for i := 0; i < memoryWorkerCount; i++ {
@@ -272,22 +283,20 @@ func StartProxyStatisticsRoutine(ctx context.Context) {
 }
 
 func initializeProxyStatisticStream(ctx context.Context) {
-	cfg := resolveProxyStatisticStreamConfig()
-	proxyStatisticStreamCfg = cfg
-	if !cfg.enabled {
-		return
-	}
-	if proxyStatisticStreamReady.Load() {
-		return
-	}
-
 	proxyStatisticStreamInitMu.Lock()
 	defer proxyStatisticStreamInitMu.Unlock()
 	if proxyStatisticStreamReady.Load() {
 		return
 	}
+	cfg := resolveProxyStatisticStreamConfig()
+	proxyStatisticStreamStateMu.Lock()
+	proxyStatisticStreamCfg = cfg
+	proxyStatisticStreamStateMu.Unlock()
+	if !cfg.enabled {
+		return
+	}
 
-	client, err := support.GetRedisClient()
+	client, err := support.GetRedisClientContext(ctx)
 	if err != nil {
 		log.Warn("Proxy statistics Redis stream unavailable; using in-memory backpressure path", "error", err)
 		return
@@ -302,7 +311,9 @@ func initializeProxyStatisticStream(ctx context.Context) {
 		return
 	}
 
+	proxyStatisticStreamStateMu.Lock()
 	proxyStatisticStreamClient = client
+	proxyStatisticStreamStateMu.Unlock()
 	proxyStatisticStreamReady.Store(true)
 	log.Info(
 		"Proxy statistics ingest using Redis stream",
@@ -312,6 +323,12 @@ func initializeProxyStatisticStream(ctx context.Context) {
 		"tenant_overload_policies", len(cfg.tenantOverloadPolicies),
 		"max_len", cfg.maxLen,
 	)
+}
+
+func proxyStatisticStreamSnapshot() (*redis.Client, proxyStatisticStreamConfig) {
+	proxyStatisticStreamStateMu.RLock()
+	defer proxyStatisticStreamStateMu.RUnlock()
+	return proxyStatisticStreamClient, proxyStatisticStreamCfg
 }
 
 func resolveProxyStatisticStreamConfig() proxyStatisticStreamConfig {
@@ -383,7 +400,7 @@ func normalizeOverloadPolicy(raw string) string {
 }
 
 func resolveStatisticsOverloadPolicy(userIDs []uint) string {
-	cfg := proxyStatisticStreamCfg
+	_, cfg := proxyStatisticStreamSnapshot()
 	selected := normalizeOverloadPolicy(cfg.overloadPolicy)
 	if len(userIDs) == 0 || len(cfg.tenantOverloadPolicies) == 0 {
 		return selected
@@ -461,8 +478,7 @@ func runProxyStatisticsWorker(ctx context.Context) {
 }
 
 func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
-	client := proxyStatisticStreamClient
-	cfg := proxyStatisticStreamCfg
+	client, cfg := proxyStatisticStreamSnapshot()
 	if client == nil || !cfg.enabled {
 		return
 	}
@@ -510,6 +526,9 @@ func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 					return
 				}
 				log.Error("Failed to claim stale proxy statistics stream messages", "error", err, "consumer", consumerName)
+				if repairProxyStatisticGroup(ctx, client, cfg, err) {
+					streamID, claimStart, lastClaim = "0", statisticsStreamClaimStart, time.Time{}
+				}
 				if !waitForStatisticsRetry(ctx) {
 					return
 				}
@@ -556,6 +575,9 @@ func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 				return
 			}
 			log.Error("Failed reading proxy statistics stream", "error", err, "consumer", consumerName)
+			if repairProxyStatisticGroup(ctx, client, cfg, err) {
+				streamID, claimStart, lastClaim = "0", statisticsStreamClaimStart, time.Time{}
+			}
 			if !waitForStatisticsRetry(ctx) {
 				return
 			}
@@ -629,21 +651,22 @@ func appendStreamMessagesToBuffer(ctx context.Context, messages []redis.XMessage
 		seen[id] = struct{}{}
 	}
 	for _, msg := range messages {
+		if _, duplicate := seen[msg.ID]; duplicate {
+			continue
+		}
+		seen[msg.ID] = struct{}{}
 		stat, err := decodeProxyStatisticStreamMessage(msg)
 		if err != nil {
 			log.Warn("Dropping malformed proxy statistic stream message", "id", msg.ID, "error", err)
-			_, _ = client.XAck(ctx, cfg.streamKey, cfg.groupName, msg.ID).Result()
-			_, _ = client.XDel(ctx, cfg.streamKey, msg.ID).Result()
+			if _, err := ackAndDeleteStreamMessageIDs(ctx, []string{msg.ID}, client, cfg); err != nil {
+				*messageIDs = append(*messageIDs, msg.ID)
+			}
 			continue
 		}
 
 		stat.EventStream = cfg.streamKey
 		stat.EventID = msg.ID
 		// XAUTOCLAIM and pending recovery may overlap within the same buffer.
-		if _, duplicate := seen[msg.ID]; duplicate {
-			continue
-		}
-		seen[msg.ID] = struct{}{}
 		*buffer = append(*buffer, stat)
 		*messageIDs = append(*messageIDs, msg.ID)
 		appended++
@@ -685,6 +708,7 @@ func flushStreamStatisticsBuffer(ctx context.Context, buffer *[]domain.ProxyStat
 		*messageIDs = (*messageIDs)[ackedCount:]
 	}
 	if err != nil {
+		repairProxyStatisticGroup(ctx, client, cfg, err)
 		log.Error("Failed to ack proxy statistic stream messages", "error", err, "remaining", len(*messageIDs))
 		return false
 	}
@@ -706,11 +730,13 @@ func ackAndDeleteStreamMessageIDs(ctx context.Context, messageIDs []string, clie
 		if len(ids) == 0 {
 			continue
 		}
-		if _, err := client.XAck(ctx, cfg.streamKey, cfg.groupName, ids...).Result(); err != nil {
-			return ackedCount, err
+		args := make([]any, 0, len(ids)+1)
+		args = append(args, cfg.groupName)
+		for _, id := range ids {
+			args = append(args, id)
 		}
-		if _, err := client.XDel(ctx, cfg.streamKey, ids...).Result(); err != nil {
-			log.Warn("Failed to trim acked proxy statistic stream messages", "error", err, "count", len(ids))
+		if _, err := ackDeleteStatisticScript.Run(ctx, client, []string{cfg.streamKey}, args...).Result(); err != nil {
+			return ackedCount, err
 		}
 		ackedCount += len(ids)
 	}

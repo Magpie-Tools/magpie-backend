@@ -28,6 +28,8 @@ type workspaceTrafficCounter struct {
 }
 
 var workspaceTrafficCounters sync.Map
+var workspaceTrafficMu sync.RWMutex
+var workspaceTrafficFlushMu sync.Mutex
 var recordWorkspaceManagedTrafficBatch = database.RecordWorkspaceManagedTrafficBatch
 
 // AddWorkspaceManagedTraffic records rotator usage without blocking on the
@@ -40,6 +42,8 @@ func AddWorkspaceManagedTraffic(workspaceID uint, requests, bytes uint64) {
 	now := time.Now().UTC()
 	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	key := workspaceTrafficKey{WorkspaceID: workspaceID, PeriodStart: periodStart.Unix()}
+	workspaceTrafficMu.RLock()
+	defer workspaceTrafficMu.RUnlock()
 	value, _ := workspaceTrafficCounters.LoadOrStore(key, &workspaceTrafficCounter{})
 	counter := value.(*workspaceTrafficCounter)
 	if requests > 0 {
@@ -77,6 +81,8 @@ func StartWorkspaceUsageRoutine(ctx context.Context) {
 }
 
 func flushWorkspaceManagedTraffic(ctx context.Context) error {
+	workspaceTrafficFlushMu.Lock()
+	defer workspaceTrafficFlushMu.Unlock()
 	type pendingSample struct {
 		counter  *workspaceTrafficCounter
 		requests uint64
@@ -109,6 +115,7 @@ func flushWorkspaceManagedTraffic(ctx context.Context) error {
 		return true
 	})
 	if len(samples) == 0 {
+		pruneWorkspaceTrafficCounters()
 		return nil
 	}
 	if err := recordWorkspaceManagedTrafficBatch(ctx, samples); err != nil {
@@ -120,5 +127,21 @@ func flushWorkspaceManagedTraffic(ctx context.Context) error {
 		}
 		return err
 	}
+	pruneWorkspaceTrafficCounters()
 	return nil
+}
+
+func pruneWorkspaceTrafficCounters() {
+	now := time.Now().UTC()
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Unix()
+	workspaceTrafficMu.Lock()
+	defer workspaceTrafficMu.Unlock()
+	workspaceTrafficCounters.Range(func(rawKey, rawValue any) bool {
+		key := rawKey.(workspaceTrafficKey)
+		counter := rawValue.(*workspaceTrafficCounter)
+		if key.PeriodStart < month && counter.Requests.Load() == 0 && counter.Bytes.Load() == 0 {
+			workspaceTrafficCounters.CompareAndDelete(key, counter)
+		}
+		return true
+	})
 }

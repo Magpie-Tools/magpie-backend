@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -229,14 +230,14 @@ func queryDashboardCheckCountsFromDaily(userID uint, weekAgo time.Time) (dashboa
 	cutoffDayStart := startOfUTCDay(cutoff)
 	nextDayStart := cutoffDayStart.Add(24 * time.Hour)
 
-	err := DB.Table("proxy_daily_checks pdc").
+	err := DB.Table("(SELECT proxy_id, day, checks_count FROM proxy_daily_checks UNION ALL SELECT proxy_id, NULL AS day, checks_count FROM proxy_check_totals) pdc").
 		Select(
 			"COALESCE(SUM(pdc.checks_count), 0) AS total_checks, "+
 				"COALESCE(SUM(CASE WHEN pdc.day >= ? THEN pdc.checks_count ELSE 0 END), 0) AS total_checks_week",
 			nextDayStart,
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = pdc.proxy_id AND up.workspace_id = ?", userID).
-		Where("pdc.day < ?", todayStart).
+		Where("pdc.day < ? OR pdc.day IS NULL", todayStart).
 		Scan(&counts).Error
 	if err != nil {
 		return dashboardCheckCounts{}, err
@@ -300,8 +301,10 @@ SELECT
 	CURRENT_TIMESTAMP,
 	CURRENT_TIMESTAMP
 FROM proxy_statistics ps
+LEFT JOIN proxy_check_totals pct ON pct.proxy_id = ps.proxy_id
 WHERE ps.proxy_id IN ?
 	AND ps.created_at < ?
+	AND (pct.proxy_id IS NULL OR ps.created_at >= pct.compacted_before)
 GROUP BY ps.proxy_id, DATE(ps.created_at AT TIME ZONE 'UTC')
 ON CONFLICT (proxy_id, day) DO UPDATE
 SET checks_count = GREATEST(proxy_daily_checks.checks_count, EXCLUDED.checks_count),
@@ -325,4 +328,150 @@ func startOfUTCDay(value time.Time) time.Time {
 	value = value.UTC()
 	year, month, day := value.Date()
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+}
+
+// CompactProxyDailyChecks replaces old days with lifetime totals atomically.
+// Late statistics still enter daily counters and are folded on a later pass.
+func CompactProxyDailyChecks(ctx context.Context, before time.Time, limit int) (int64, error) {
+	if DB == nil {
+		return 0, nil
+	}
+	before = startOfUTCDay(before)
+	var count int64
+	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if isPostgresDialector(tx) {
+			var acquired bool
+			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", proxyDailyBackfillAdvisoryLockBase).Scan(&acquired).Error; err != nil {
+				return err
+			}
+			if !acquired {
+				return nil
+			}
+			var missing []uint64
+			if err := tx.Table("proxy_daily_checks d").Select("DISTINCT d.proxy_id").
+				Joins("LEFT JOIN proxy_daily_check_proxy_backfills b ON b.proxy_id = d.proxy_id").
+				Where("d.day < ? AND b.proxy_id IS NULL", before).Order("d.proxy_id").Limit(proxyDailyBackfillBatchSize).Pluck("d.proxy_id", &missing).Error; err != nil {
+				return err
+			}
+			if err := backfillProxyDailyChecksForProxyIDsTx(tx, missing, startOfUTCDay(time.Now())); err != nil {
+				return err
+			}
+			if err := markProxyDailyChecksBackfilled(tx, missing); err != nil {
+				return err
+			}
+			query := `WITH candidates AS (
+				SELECT proxy_id, day FROM proxy_daily_checks d WHERE day < ?
+				AND EXISTS (SELECT 1 FROM proxy_daily_check_proxy_backfills b WHERE b.proxy_id = d.proxy_id)
+				ORDER BY day, proxy_id LIMIT ? FOR UPDATE SKIP LOCKED
+			), removed AS (
+				DELETE FROM proxy_daily_checks d USING candidates c
+				WHERE d.proxy_id = c.proxy_id AND d.day = c.day
+				RETURNING d.proxy_id, d.day, d.checks_count
+			), compacted AS (
+				INSERT INTO proxy_check_totals (proxy_id, checks_count, compacted_before)
+				SELECT proxy_id, SUM(checks_count), MAX(day) + INTERVAL '1 day'
+				FROM removed GROUP BY proxy_id ORDER BY proxy_id
+				ON CONFLICT (proxy_id) DO UPDATE SET
+				checks_count = proxy_check_totals.checks_count + EXCLUDED.checks_count,
+				compacted_before = GREATEST(proxy_check_totals.compacted_before, EXCLUDED.compacted_before)
+				RETURNING proxy_id
+			) SELECT COUNT(*) FROM removed`
+			return tx.Raw(query, before, max(1, limit)).Scan(&count).Error
+		}
+		var days []domain.ProxyDailyCheck
+		if err := tx.Where("day < ?", before).Order("proxy_id, day").Limit(max(1, limit)).Find(&days).Error; err != nil {
+			return err
+		}
+		totals := make(map[uint64]domain.ProxyCheckTotal)
+		for _, day := range days {
+			total := totals[day.ProxyID]
+			total.ProxyID = day.ProxyID
+			total.ChecksCount += day.ChecksCount
+			if next := day.Day.AddDate(0, 0, 1); next.After(total.CompactedBefore) {
+				total.CompactedBefore = next
+			}
+			totals[day.ProxyID] = total
+			if err := tx.Where("proxy_id = ? AND day = ?", day.ProxyID, day.Day).Delete(&domain.ProxyDailyCheck{}).Error; err != nil {
+				return err
+			}
+		}
+		for _, total := range totals {
+			if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "proxy_id"}}, DoUpdates: clause.Assignments(map[string]any{
+				"checks_count":     gorm.Expr("proxy_check_totals.checks_count + EXCLUDED.checks_count"),
+				"compacted_before": gorm.Expr("MAX(proxy_check_totals.compacted_before, EXCLUDED.compacted_before)"),
+			})}).Create(&total).Error; err != nil {
+				return err
+			}
+		}
+		count = int64(len(days))
+		return nil
+	})
+	return count, err
+}
+
+func DeleteOrphanProxyCheckCounters(ctx context.Context, limit int) error {
+	if DB == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	limit = min(deleteChunkSize, max(1, limit))
+	type counterTable struct {
+		name  string
+		after uint64
+		done  bool
+	}
+	var tables []counterTable
+	existingTables, err := DB.WithContext(ctx).Migrator().GetTables()
+	if err != nil {
+		return err
+	}
+	present := make(map[string]bool, len(existingTables))
+	for _, table := range existingTables {
+		present[table] = true
+	}
+	for _, table := range []string{"proxy_daily_checks", "proxy_daily_check_proxy_backfills", "proxy_check_totals"} {
+		if present[table] {
+			tables = append(tables, counterTable{name: table})
+		}
+	}
+	// Visit every table each round so an interrupted pass makes progress on
+	// totals and backfill markers as well as daily rows. The ID cursor avoids
+	// rescanning the live prefix of each table for every batch.
+	for {
+		unfinished := false
+		for i := range tables {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			table := &tables[i]
+			if table.done {
+				continue
+			}
+			var ids []uint64
+			query := DB.WithContext(ctx).Table(table.name + " AS c")
+			if table.after != 0 {
+				query = query.Where("c.proxy_id > ?", table.after)
+			}
+			if err := query.
+				Where("NOT EXISTS (SELECT 1 FROM proxies p WHERE p.id = c.proxy_id)").
+				Distinct("c.proxy_id").Order("c.proxy_id").Limit(limit).
+				Pluck("c.proxy_id", &ids).Error; err != nil {
+				return err
+			}
+			if len(ids) > 0 {
+				query := `DELETE FROM ` + table.name + ` WHERE proxy_id IN ? AND NOT EXISTS (SELECT 1 FROM proxies p WHERE p.id = ` + table.name + `.proxy_id)`
+				if err := DB.WithContext(ctx).Exec(query, ids).Error; err != nil {
+					return err
+				}
+				table.after = ids[len(ids)-1]
+			}
+			table.done = len(ids) < limit
+			unfinished = unfinished || !table.done
+		}
+		if !unfinished {
+			return ctx.Err()
+		}
+	}
 }

@@ -35,6 +35,16 @@ const (
 )
 
 func GetRedisClient() (*redis.Client, error) {
+	return GetRedisClientContext(context.Background())
+}
+
+func GetRedisClientContext(ctx context.Context) (*redis.Client, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	redisMu.Lock()
 	defer redisMu.Unlock()
 
@@ -60,7 +70,7 @@ func GetRedisClient() (*redis.Client, error) {
 		return nil, redisLastErr
 	}
 
-	if err := client.Ping(context.Background()).Err(); err != nil {
+	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		redisLastErr = fmt.Errorf("failed to connect to Redis: %w", err)
 		redisRetryAfter = now.Add(redisConnectRetryBackoff())

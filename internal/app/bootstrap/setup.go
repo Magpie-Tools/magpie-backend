@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/redis/go-redis/v9"
 
 	"magpie/internal/blacklist"
 	"magpie/internal/checkerconfig"
@@ -72,6 +73,7 @@ func Setup(ctx context.Context) error {
 		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
 		return nil
 	}
+	go maintainRuntimeCaches(ctx)
 	config.SetBetweenTime()
 	go proxyqueue.PublicProxyQueue.StartIntervalUpdates(ctx)
 	go sitequeue.PublicScrapeSiteQueue.StartIntervalUpdates(ctx)
@@ -87,10 +89,11 @@ func Setup(ctx context.Context) error {
 	}
 
 	judgeSetup()
-	redisClient, _ := support.GetRedisClient()
-	if err := checkerconfig.Initialize(ctx, redisClient, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
+	if err := checkerconfig.Initialize(ctx, nil, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
 		return fmt.Errorf("load checker settings snapshots: %w", err)
 	}
+
+	go recoverRedisSynchronization(ctx)
 
 	pausedForFailure, inactiveProxies, refreshProxies, cleanupErr := database.CleanupAutoRemovalViolations(ctx)
 	if cleanupErr != nil {
@@ -136,53 +139,17 @@ func Setup(ctx context.Context) error {
 		}
 	}
 
-	go func() {
-		cfg := config.GetConfig()
-
-		if config.GetCurrentIp() == "" && cfg.Checker.IpLookup == "" {
-			return
-		}
-
-		for config.GetCurrentIp() == "" {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			html, err := checker.DefaultRequestWithContext(ctx, cfg.Checker.IpLookup)
-			if err != nil {
-				log.Error("Error checking IP address:", err)
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(3 * time.Second):
-				}
-				continue
-			}
-
-			currentIp := support.FindIP(html)
-			config.SetCurrentIp(currentIp)
-			log.Infof("Found IP! Current IP: %s", currentIp)
-
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(3 * time.Second):
-			}
-		}
-
-	}()
+	go refreshPublicIP(ctx)
 
 	startupQueueBootstrapCompleted.Store(false)
 	if support.GetEnvBool(envStartupQueueBootstrapAsync, true) {
 		startBootstrapStartupQueuesAsync(ctx)
 	} else {
-		if err := bootstrapStartupQueues(ctx); err != nil {
+		if err := waitForStartupQueues(ctx); err != nil {
 			return err
 		}
-		startupQueueBootstrapCompleted.Store(true)
 	}
+	go monitorQueueState(ctx)
 
 	rotatingproxy.GlobalManager.StartAll()
 	go func() {
@@ -248,9 +215,8 @@ func startBootstrapStartupQueuesAsync(ctx context.Context) {
 	go func() {
 		defer startupQueueBootstrapRunning.Store(false)
 		for {
-			err := bootstrapStartupQueues(ctx)
+			err := initializeRuntimeQueues(ctx)
 			if err == nil {
-				startupQueueBootstrapCompleted.Store(true)
 				log.Info("Startup queue bootstrap completed")
 				return
 			}
@@ -268,19 +234,50 @@ func startBootstrapStartupQueuesAsync(ctx context.Context) {
 	}()
 }
 
+func waitForStartupQueues(ctx context.Context) error {
+	for {
+		err := initializeRuntimeQueues(ctx)
+		if !errors.Is(err, support.ErrLeaderLockNotAcquired) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(startupQueueBootstrapRetryDelay):
+		}
+	}
+}
+
+func initializeRuntimeQueues(ctx context.Context) error {
+	// Startup refreshes existing payloads as well as missing queues. The marker
+	// can survive a deployment whose queue format or active ownership changed.
+	startupQueueBootstrapCompleted.Store(false)
+	err := bootstrapStartupQueues(ctx)
+	if err != nil && !errors.Is(err, support.ErrLeaderLockNotAcquired) {
+		return err
+	}
+	return recoverRuntimeQueueState(ctx)
+}
+
 func bootstrapStartupQueues(ctx context.Context) error {
 	err := support.RunLeaderTaskOnce(ctx, startupQueueBootstrapLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) error {
 		if err := queueStartupProxies(leaderCtx); err != nil {
 			return err
 		}
-		return queueStartupScrapeSites(leaderCtx)
+		if err := queueStartupScrapeSites(leaderCtx); err != nil {
+			return err
+		}
+		client, err := support.GetRedisClientContext(leaderCtx)
+		if err != nil {
+			return err
+		}
+		return client.Set(leaderCtx, runtimeQueueBootstrapMarker, "ready", 0).Err()
 	})
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, support.ErrLeaderLockNotAcquired) {
 		log.Info("Skipped startup queue bootstrap on follower instance")
-		return nil
 	}
 	return err
 }
@@ -352,4 +349,132 @@ func queueStartupScrapeSites(ctx context.Context) error {
 	}
 	log.Infof("Added %d scrape sites to queue", len(filtered))
 	return nil
+}
+
+const runtimeQueueBootstrapMarker = "magpie:runtime:queues_bootstrapped"
+
+func recoverRedisSynchronization(ctx context.Context) {
+	for ctx.Err() == nil {
+		client, err := support.GetRedisClient()
+		if err == nil {
+			config.EnableRedisSynchronization(ctx, client)
+			judges.EnableRedisSynchronization(ctx, client)
+			geolite.EnableRedisDistribution(ctx, client)
+			blacklist.EnableRedisSynchronization(ctx, client)
+			err = checkerconfig.EnableRedisSynchronization(ctx, client)
+			if err == nil {
+				return
+			}
+		}
+		log.Warn("Redis synchronization unavailable; retrying", "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(startupQueueBootstrapRetryDelay):
+		}
+	}
+}
+
+func maintainRuntimeCaches(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		database.PruneDNSCache(time.Now())
+		scraper.PruneRobotsCache(time.Now())
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func monitorQueueState(ctx context.Context) {
+	ticker := time.NewTicker(startupQueueBootstrapRetryDelay)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		err := recoverRuntimeQueueState(ctx)
+		support.RecordMaintenanceRun("queue_recovery", err)
+		if err != nil && ctx.Err() == nil {
+			log.Error("Queue state recovery failed", "error", err)
+		}
+	}
+}
+
+func recoverRuntimeQueueState(ctx context.Context) error {
+	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	client, err := support.GetRedisClientContext(opCtx)
+	cancel()
+	if err != nil {
+		startupQueueBootstrapCompleted.Store(false)
+		return err
+	}
+	return recoverQueueState(ctx, client, bootstrapStartupQueues)
+}
+
+func queueBootstrapMarkerExists(ctx context.Context, client *redis.Client) (bool, error) {
+	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	exists, err := client.Exists(opCtx, runtimeQueueBootstrapMarker).Result()
+	return exists != 0, err
+}
+
+func recoverQueueState(ctx context.Context, client *redis.Client, restore func(context.Context) error) error {
+	exists, err := queueBootstrapMarkerExists(ctx, client)
+	if err != nil {
+		startupQueueBootstrapCompleted.Store(false)
+		return err
+	}
+	if exists {
+		startupQueueBootstrapCompleted.Store(true)
+		return nil
+	}
+	startupQueueBootstrapCompleted.Store(false)
+	restoreErr := restore(ctx)
+	if restoreErr != nil && !errors.Is(restoreErr, support.ErrLeaderLockNotAcquired) {
+		return restoreErr
+	}
+	exists, err = queueBootstrapMarkerExists(ctx, client)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if restoreErr != nil {
+			return restoreErr
+		}
+		return errors.New("queue reconstruction did not restore bootstrap marker")
+	}
+	startupQueueBootstrapCompleted.Store(true)
+	return nil
+}
+
+func refreshPublicIP(ctx context.Context) {
+	for ctx.Err() == nil {
+		delay := 15 * time.Minute
+		lookup := config.GetConfig().Checker.IpLookup
+		if lookup != "" {
+			body, err := checker.DefaultRequestWithContext(ctx, lookup)
+			if err != nil {
+				log.Warn("Public IP lookup failed", "error", err)
+				delay = 3 * time.Second
+			} else if ip := support.FindIP(body); ip != "" {
+				if ip != config.GetCurrentIp() {
+					config.SetCurrentIp(ip)
+					log.Info("Public IP updated", "ip", ip)
+				}
+			} else {
+				delay = 3 * time.Second
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+	}
 }

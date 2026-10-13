@@ -20,7 +20,7 @@ func TestStatisticsReplayIsIdempotent(t *testing.T) {
 				db = setupProxyIngestionPostgresTest(t)
 			} else {
 				db = setupRotatingProxyTestDB(t)
-				if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyDailyCheck{}, &domain.WorkspaceUsagePeriod{}, &domain.ProxyReputationRefresh{}); err != nil {
+				if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.ProxyDailyCheck{}, &domain.WorkspaceUsagePeriod{}, &domain.ProxyReputationRefresh{}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -75,7 +75,7 @@ func assertStatisticsAccounting(t *testing.T, db *gorm.DB, proxyID uint64, works
 
 func TestStatisticEventRollsBackWithFailedPersistence(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
-	if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyDailyCheck{}, &domain.WorkspaceUsagePeriod{}); err != nil {
+	if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.ProxyDailyCheck{}, &domain.WorkspaceUsagePeriod{}); err != nil {
 		t.Fatal(err)
 	}
 	a, _, proxy, judge := seedCheckerEvidenceTest(t, db)

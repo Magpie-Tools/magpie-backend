@@ -57,8 +57,7 @@ func StartProxyStatisticsRetentionRoutine(ctx context.Context) {
 
 	cfg := resolveProxyStatisticsRetentionConfig()
 	if cfg.statRetentionDays <= 0 && cfg.responseRetentionDays <= 0 {
-		log.Info("Proxy statistics retention disabled")
-		return
+		log.Info("Proxy statistics history retention disabled; partition and counter maintenance remain enabled")
 	}
 
 	err := support.RunWithLeader(ctx, proxyStatisticsRetentionLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) {
@@ -85,16 +84,31 @@ func runProxyStatisticsRetentionLoop(ctx context.Context, cfg proxyStatisticsRet
 	}
 }
 
-func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRetentionConfig) {
+func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRetentionConfig) (runErr error) {
+	defer func() { support.RecordMaintenanceRun("statistics_retention", runErr) }()
 	now := time.Now().UTC()
 	start := time.Now()
 	deadline := start.Add(cfg.maxRunDuration)
 	opCtx, cancel := context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
-	_, err := database.PruneDeletedCheckerRoutes(opCtx, now.Add(-24*time.Hour), cfg.batchSize)
+	err := database.MaintainProxyStatisticsPartitions(opCtx, now)
+	cancel()
+	if err != nil {
+		log.Error("Failed to maintain statistics partitions", "error", err)
+		return err
+	}
+	opCtx, cancel = context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
+	_, err = database.CompactProxyDailyChecks(opCtx, now.AddDate(0, 0, -max(8, support.GetEnvInt("PROXY_DAILY_CHECK_RETENTION_DAYS", 30))), cfg.batchSize)
+	cancel()
+	if err != nil {
+		log.Error("Failed to compact daily check counters", "error", err)
+		return err
+	}
+	opCtx, cancel = context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
+	_, err = database.PruneDeletedCheckerRoutes(opCtx, now.Add(-24*time.Hour), cfg.batchSize)
 	cancel()
 	if err != nil {
 		log.Error("Failed to prune removed checker routes", "error", err)
-		return
+		return err
 	}
 
 	var totalPruned int64
@@ -125,7 +139,7 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 			cancel()
 			if err != nil {
 				log.Error("Failed to drop old proxy statistics partitions", "error", err)
-				return
+				return err
 			}
 			totalPartitionsDropped += dropped
 			if dropped > 0 {
@@ -158,7 +172,7 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 		for result := range results {
 			if result.err != nil {
 				log.Error("Failed to apply proxy statistics retention", "error", result.err)
-				return
+				return result.err
 			}
 			totalPruned += result.pruned
 			totalDeleted += result.deleted
@@ -174,7 +188,7 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 	}
 
 	if totalPruned == 0 && totalDeleted == 0 && totalPartitionsDropped == 0 {
-		return
+		return nil
 	}
 
 	log.Info(
@@ -185,6 +199,7 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 		"batches_run", batchesRun,
 		"duration", time.Since(start),
 	)
+	return nil
 }
 
 func runProxyStatisticsRetentionBatch(ctx context.Context, cfg proxyStatisticsRetentionConfig, now time.Time) (int64, int64, error) {

@@ -153,20 +153,21 @@ func DeleteSentEmailOutbox(ctx context.Context, olderThan time.Time, limit int) 
 			WHERE id IN (
 				SELECT id
 				FROM email_outboxes
-				WHERE status = ? AND sent_at IS NOT NULL AND sent_at <= ?
-				ORDER BY sent_at ASC
+				WHERE (status = ? AND sent_at IS NOT NULL AND sent_at <= ?)
+				   OR (status = ? AND updated_at <= ?)
+				ORDER BY updated_at ASC, id ASC
 				LIMIT ?
 			)
 		`
-		result := DB.WithContext(ctx).Exec(query, domain.EmailOutboxStatusSent, olderThan.UTC(), limit)
+		result := DB.WithContext(ctx).Exec(query, domain.EmailOutboxStatusSent, olderThan.UTC(), domain.EmailOutboxStatusAbandoned, olderThan.UTC(), limit)
 		return result.RowsAffected, result.Error
 	}
 
 	var rows []domain.EmailOutbox
 	if err := DB.WithContext(ctx).
 		Select("id").
-		Where("status = ? AND sent_at IS NOT NULL AND sent_at <= ?", domain.EmailOutboxStatusSent, olderThan.UTC()).
-		Order("sent_at ASC").
+		Where("(status = ? AND sent_at IS NOT NULL AND sent_at <= ?) OR (status = ? AND updated_at <= ?)", domain.EmailOutboxStatusSent, olderThan.UTC(), domain.EmailOutboxStatusAbandoned, olderThan.UTC()).
+		Order("updated_at ASC, id ASC").
 		Limit(limit).
 		Find(&rows).Error; err != nil {
 		return 0, err

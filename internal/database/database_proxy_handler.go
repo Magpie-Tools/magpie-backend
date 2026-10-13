@@ -2469,6 +2469,9 @@ func DeleteOrphanProxies(ctx context.Context) (int64, error) {
 	if result.Error != nil {
 		return 0, result.Error
 	}
+	if err := DeleteOrphanProxyCheckCounters(ctx, deleteChunkSize); err != nil {
+		return result.RowsAffected, err
+	}
 	return result.RowsAffected, nil
 }
 
