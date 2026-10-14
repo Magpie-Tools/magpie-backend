@@ -20,7 +20,8 @@ type UserSettings struct {
 	AutoRemoveFailureThreshold uint8            `json:"auto_remove_failure_threshold"`
 	FailureAction              string           `json:"failure_action"`
 
-	SimpleUserJudges []SimpleUserJudge `json:"judges"`
+	// Keep the historical Go field name for compatibility; these are workspace judges.
+	SimpleUserJudges []SimpleWorkspaceJudge `json:"judges"`
 
 	ScrapingSources          []string `json:"scraping_sources"`
 	ProxyListColumns         []string `json:"proxy_list_columns"`

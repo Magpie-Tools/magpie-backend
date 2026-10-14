@@ -32,7 +32,7 @@ const (
 )
 
 var errMissingProxyUploadContent = errors.New("missing proxy upload content")
-var getQueuedProxyForUser = database.GetQueuedProxyForUser
+var getQueuedProxyForWorkspace = database.GetQueuedProxyForWorkspace
 var insertProxiesForWorkspace = database.InsertAndGetProxiesWithWorkspace
 var removeQueuedProxies = func(proxies []domain.Proxy) error {
 	return proxyqueue.PublicProxyQueue.RemoveFromQueue(proxies)
@@ -42,8 +42,8 @@ var enqueueProxiesNow = func(proxies []domain.Proxy) error {
 }
 
 func addProxies(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -52,13 +52,13 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Invalid proxy tag id", http.StatusBadRequest)
 		return
 	}
-	if tagErr := database.ValidateProxyTags(userID, tagIDs); tagErr != nil {
+	if tagErr := database.ValidateProxyTags(workspaceID, tagIDs); tagErr != nil {
 		writeProxyTagError(w, tagErr)
 		return
 	}
 	startedAt := time.Now()
 	maxBodyBytes := resolveUploadMaxBodyBytes()
-	insertedCount, parseStats, blacklistedCount, err := ingestProxyUploadMultipartWithTags(w, r, userID, tagIDs, maxBodyBytes)
+	insertedCount, parseStats, blacklistedCount, err := ingestProxyUploadMultipartWithTags(w, r, workspaceID, tagIDs, maxBodyBytes)
 	if err != nil {
 		if errors.Is(err, bufio.ErrTooLong) {
 			writeError(w, "Input line exceeds maximum supported length", http.StatusRequestEntityTooLarge)
@@ -95,17 +95,17 @@ func addProxies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-func ingestProxyUploadMultipart(w http.ResponseWriter, r *http.Request, userID uint, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
-	return ingestProxyUploadMultipartWithTags(w, r, userID, nil, maxBodyBytes)
+func ingestProxyUploadMultipart(w http.ResponseWriter, r *http.Request, workspaceID uint, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
+	return ingestProxyUploadMultipartWithTags(w, r, workspaceID, nil, maxBodyBytes)
 }
 
 // ingestProxyUploadMultipartWithTags parses and commits bounded batches for the
-// selected workspace; userID is the historical parameter name for that ID.
+// selected workspace.
 // Route storage, tag assignment and Redis publication are separate operations.
 // A later error does not undo earlier batches or a committed route import.
 // On success, counts describe imported routes, parse outcomes and exclusions;
 // queue failures are logged and do not fail an otherwise successful upload.
-func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, userID uint, tagIDs []uint64, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
+func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, workspaceID uint, tagIDs []uint64, maxBodyBytes int64) (int, support.ProxyParseStats, int, error) {
 	if r == nil || r.Body == nil {
 		return 0, support.ProxyParseStats{}, 0, errMissingProxyUploadContent
 	}
@@ -140,7 +140,7 @@ func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, 
 			return nil
 		}
 
-		inserted, err := insertProxiesForWorkspace(filtered, userID)
+		inserted, err := insertProxiesForWorkspace(filtered, workspaceID)
 		if err != nil {
 			return err
 		}
@@ -150,7 +150,7 @@ func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, 
 			for _, proxy := range inserted {
 				proxyIDs = append(proxyIDs, proxy.ID)
 			}
-			if err := database.AddProxyTagsToProxies(userID, proxyIDs, tagIDs); err != nil {
+			if err := database.AddProxyTagsToProxies(workspaceID, proxyIDs, tagIDs); err != nil {
 				return err
 			}
 			insertedCount += len(inserted)
@@ -249,8 +249,8 @@ func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, 
 }
 
 func getProxyPage(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -300,7 +300,7 @@ func getProxyPage(w http.ResponseWriter, r *http.Request) {
 	sortOrder := strings.TrimSpace(r.URL.Query().Get("sortOrder"))
 
 	proxies, total := database.GetProxyInfoPageWithFiltersAndOptions(
-		userID,
+		workspaceID,
 		page,
 		pageSize,
 		search,
@@ -322,13 +322,13 @@ func getProxyPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func getProxyFilters(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	options, err := database.GetProxyFilterOptions(userID)
+	options, err := database.GetProxyFilterOptions(workspaceID)
 	if err != nil {
 		log.Error("error retrieving proxy filters", "error", err.Error())
 		writeError(w, "Failed to retrieve proxy filters", http.StatusInternalServerError)
@@ -399,18 +399,18 @@ func parseBoolQueryParam(value string, defaultValue bool) bool {
 }
 
 func getProxyCount(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, database.GetAllProxyCountOfUser(userID))
+	writeJSON(w, http.StatusOK, database.GetWorkspaceProxyCount(workspaceID))
 }
 
 func getProxyDetail(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -422,7 +422,7 @@ func getProxyDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detail, dbErr := database.GetProxyDetail(userID, proxyID)
+	detail, dbErr := database.GetProxyDetail(workspaceID, proxyID)
 	if dbErr != nil {
 		log.Error("error retrieving proxy detail", "error", dbErr.Error(), "proxy_id", proxyID)
 		writeError(w, "Failed to retrieve proxy", http.StatusInternalServerError)
@@ -489,8 +489,8 @@ func requeueProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -502,9 +502,10 @@ func requeueProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxy, dbErr := getQueuedProxyForUser(userID, proxyID)
+	proxy, dbErr := getQueuedProxyForWorkspace(workspaceID, proxyID)
+	// Keep user_id as the historical log field for this workspace ID.
 	if dbErr != nil {
-		log.Error("error retrieving proxy for requeue", "error", dbErr.Error(), "proxy_id", proxyID, "user_id", userID)
+		log.Error("error retrieving proxy for requeue", "error", dbErr.Error(), "proxy_id", proxyID, "user_id", workspaceID)
 		writeError(w, "Failed to retrieve proxy", http.StatusInternalServerError)
 		return
 	}
@@ -515,13 +516,13 @@ func requeueProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := removeQueuedProxies([]domain.Proxy{*proxy}); err != nil {
-		log.Error("failed to remove proxy from queue before requeue", "error", err, "proxy_id", proxyID, "user_id", userID)
+		log.Error("failed to remove proxy from queue before requeue", "error", err, "proxy_id", proxyID, "user_id", workspaceID)
 		writeError(w, "Failed to queue proxy", http.StatusServiceUnavailable)
 		return
 	}
 
 	if err := enqueueProxiesNow([]domain.Proxy{*proxy}); err != nil {
-		log.Error("failed to queue proxy", "error", err, "proxy_id", proxyID, "user_id", userID)
+		log.Error("failed to queue proxy", "error", err, "proxy_id", proxyID, "user_id", workspaceID)
 		writeError(w, "Failed to queue proxy", http.StatusServiceUnavailable)
 		return
 	}
@@ -533,8 +534,8 @@ func requeueProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -553,7 +554,7 @@ func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	statistics, dbErr := database.GetProxyStatistics(userID, proxyID, limit)
+	statistics, dbErr := database.GetProxyStatistics(workspaceID, proxyID, limit)
 	if dbErr != nil {
 		log.Error("error retrieving proxy statistics", "error", dbErr.Error(), "proxy_id", proxyID)
 		writeError(w, "Failed to retrieve proxy statistics", http.StatusInternalServerError)
@@ -564,8 +565,8 @@ func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
 }
 
 func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -584,7 +585,7 @@ func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responseDetail, dbErr := database.GetProxyStatisticResponseBody(userID, proxyID, statisticID)
+	responseDetail, dbErr := database.GetProxyStatisticResponseBody(workspaceID, proxyID, statisticID)
 	if dbErr != nil {
 		if errors.Is(dbErr, gorm.ErrRecordNotFound) {
 			writeError(w, "Proxy statistic not found", http.StatusNotFound)
@@ -600,8 +601,8 @@ func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteProxies(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -629,7 +630,7 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		deleted, orphaned, deleteErr := database.DeleteProxyRelation(userID, proxies)
+		deleted, orphaned, deleteErr := database.DeleteProxyRelation(workspaceID, proxies)
 		if deleteErr != nil {
 			log.Error("could not delete proxies", "error", deleteErr.Error())
 			writeError(w, "Could not delete proxies", http.StatusInternalServerError)
@@ -661,7 +662,7 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 		settings.Scope = "all"
 	}
 
-	deleted, orphaned, deleteErr := database.DeleteProxiesWithSettings(userID, settings)
+	deleted, orphaned, deleteErr := database.DeleteProxiesWithSettings(workspaceID, settings)
 	if deleteErr != nil {
 		if errors.Is(deleteErr, database.ErrNoProxiesSelected) {
 			writeError(w, "No proxies selected for deletion", http.StatusBadRequest)
@@ -688,8 +689,8 @@ func deleteProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func exportProxies(w http.ResponseWriter, r *http.Request) {
-	userID, userErr := workspaceIDFromRequest(r)
-	if userErr != nil {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -701,7 +702,7 @@ func exportProxies(w http.ResponseWriter, r *http.Request) {
 
 	timeout := time.Duration(resolvePositiveEnvInt("PROXY_EXPORT_TIMEOUT_SECONDS", 300)) * time.Second
 	writeProxyExport(w, r, timeout, settings.OutputFormat, func(ctx context.Context, consume func([]domain.Proxy) error) error {
-		return database.StreamProxiesForExport(ctx, userID, settings, proxyExportBatchSize, consume)
+		return database.StreamProxiesForExport(ctx, workspaceID, settings, proxyExportBatchSize, consume)
 	})
 }
 

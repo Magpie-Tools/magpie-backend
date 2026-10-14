@@ -413,8 +413,8 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 	return UpdateWorkspaceSettings(access.WorkspaceID, userID, settings)
 }
 
-func GetWorkspaceJudges(workspaceID uint) []dto.SimpleUserJudge {
-	var results []dto.SimpleUserJudge
+func GetWorkspaceJudges(workspaceID uint) []dto.SimpleWorkspaceJudge {
+	var results []dto.SimpleWorkspaceJudge
 
 	if err := DB.Table("user_judges").
 		Select("judges.full_string AS Url, user_judges.regex AS Regex").
@@ -427,7 +427,13 @@ func GetWorkspaceJudges(workspaceID uint) []dto.SimpleUserJudge {
 	return results
 }
 
-func GetUserJudges(workspaceID uint) []dto.SimpleUserJudge { return GetWorkspaceJudges(workspaceID) }
+// GetUserJudges is the compatibility name for a workspace's judge settings.
+// The ID identifies a workspace, not a user account.
+//
+// Deprecated: Use GetWorkspaceJudges.
+func GetUserJudges(workspaceID uint) []dto.SimpleWorkspaceJudge {
+	return GetWorkspaceJudges(workspaceID)
+}
 
 func GetWorkspaceJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
 	var rows []struct {
@@ -463,6 +469,10 @@ func GetWorkspaceJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, err
 	return result, nil
 }
 
+// GetUserJudgesWithRegex is the compatibility name for a workspace's judge assignments.
+// The ID identifies a workspace, not a user account.
+//
+// Deprecated: Use GetWorkspaceJudgesWithRegex.
 func GetUserJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
 	return GetWorkspaceJudgesWithRegex(workspaceID)
 }

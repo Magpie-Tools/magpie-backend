@@ -38,7 +38,8 @@ const (
 	envProxyStatisticsRedisStreamGroup          = "PROXY_STATISTICS_REDIS_STREAM_GROUP"
 	envProxyStatisticsRedisStreamMaxLen         = "PROXY_STATISTICS_REDIS_STREAM_MAXLEN"
 	envProxyStatisticsRedisStreamOverloadPolicy = "PROXY_STATISTICS_REDIS_STREAM_OVERLOAD_POLICY"
-	envProxyStatisticsTenantOverloadPolicies    = "PROXY_STATISTICS_TENANT_OVERLOAD_POLICIES"
+	// Keep the historical environment name; policy keys are workspace IDs.
+	envProxyStatisticsWorkspaceOverloadPolicies = "PROXY_STATISTICS_TENANT_OVERLOAD_POLICIES"
 
 	defaultProxyStatisticsRedisStreamKey       = "magpie:proxy_statistics:stream"
 	defaultProxyStatisticsRedisStreamGroup     = "magpie:proxy_statistics:consumers"
@@ -72,35 +73,35 @@ var (
 )
 
 type proxyStatisticStreamConfig struct {
-	enabled                bool
-	streamKey              string
-	groupName              string
-	maxLen                 int64
-	overloadPolicy         string
-	tenantOverloadPolicies map[uint]string
+	enabled                   bool
+	streamKey                 string
+	groupName                 string
+	maxLen                    int64
+	overloadPolicy            string
+	workspaceOverloadPolicies map[uint]string
 }
 
 // AddProxyStatistic hands off a result using any WorkspaceIDs already attached
 // to it. It has the same asynchronous acceptance contract as the attributed form.
 func AddProxyStatistic(proxyStatistic domain.ProxyStatistic) {
-	AddProxyStatisticForUsers(proxyStatistic, nil)
+	AddProxyStatisticForWorkspaces(proxyStatistic, nil)
 }
 
-// AddProxyStatisticForUsers hands off one physical check result for asynchronous
-// persistence. Despite the historical name, userIDs contains workspace IDs.
+// AddProxyStatisticForWorkspaces hands off one physical check result for
+// asynchronous persistence attributed to the supplied workspace IDs.
 // The payload shares slices with its caller; do not mutate them after handoff.
 // Returning reports neither acceptance nor a PostgreSQL commit: policy can drop
 // the result, Redis acceptance depends on Redis persistence, and memory fallback
 // is volatile. Block policy retries stream admission within the configured wait
 // budget, then tries the memory queue with any remaining time. Rejected new
 // results are counted and logged instead of returned to the checker.
-func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, userIDs []uint) {
-	if len(userIDs) > 0 {
-		proxyStatistic.WorkspaceIDs = userIDs
+func AddProxyStatisticForWorkspaces(proxyStatistic domain.ProxyStatistic, workspaceIDs []uint) {
+	if len(workspaceIDs) > 0 {
+		proxyStatistic.WorkspaceIDs = workspaceIDs
 	} else {
-		userIDs = proxyStatistic.WorkspaceIDs
+		workspaceIDs = proxyStatistic.WorkspaceIDs
 	}
-	policy := resolveStatisticsOverloadPolicy(userIDs)
+	policy := resolveStatisticsOverloadPolicy(workspaceIDs)
 	blockDeadline := time.Time{}
 	if policy != statisticsOverloadPolicyDropNew {
 		maxBlock := resolveStatisticsProducerMaxBlock()
@@ -132,6 +133,14 @@ func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, userIDs []u
 
 	dropped := proxyStatisticDroppedCount.Add(1)
 	recordProxyStatisticDrop(dropped, policy)
+}
+
+// AddProxyStatisticForUsers is the compatibility name for workspace attribution.
+// Its IDs identify workspaces, not user accounts.
+//
+// Deprecated: Use AddProxyStatisticForWorkspaces.
+func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, workspaceIDs []uint) {
+	AddProxyStatisticForWorkspaces(proxyStatistic, workspaceIDs)
 }
 
 // enqueueProxyStatisticToStream returns (enqueued, handled). An intentional
@@ -338,12 +347,13 @@ func initializeProxyStatisticStream(ctx context.Context) {
 	proxyStatisticStreamClient = client
 	proxyStatisticStreamStateMu.Unlock()
 	proxyStatisticStreamReady.Store(true)
+	// Keep tenant_overload_policies as the historical log field for workspace overrides.
 	log.Info(
 		"Proxy statistics ingest using Redis stream",
 		"stream", cfg.streamKey,
 		"group", cfg.groupName,
 		"default_overload_policy", cfg.overloadPolicy,
-		"tenant_overload_policies", len(cfg.tenantOverloadPolicies),
+		"tenant_overload_policies", len(cfg.workspaceOverloadPolicies),
 		"max_len", cfg.maxLen,
 	)
 }
@@ -373,19 +383,19 @@ func resolveProxyStatisticStreamConfig() proxyStatisticStreamConfig {
 	}
 
 	overloadPolicy := normalizeOverloadPolicy(support.GetEnv(envProxyStatisticsRedisStreamOverloadPolicy, defaultProxyStatisticsStreamOverloadPolicy))
-	tenantPolicies := parseTenantOverloadPolicies(support.GetEnv(envProxyStatisticsTenantOverloadPolicies, ""))
+	workspacePolicies := parseWorkspaceOverloadPolicies(support.GetEnv(envProxyStatisticsWorkspaceOverloadPolicies, ""))
 
 	return proxyStatisticStreamConfig{
-		enabled:                enabled,
-		streamKey:              streamKey,
-		groupName:              groupName,
-		maxLen:                 maxLen,
-		overloadPolicy:         overloadPolicy,
-		tenantOverloadPolicies: tenantPolicies,
+		enabled:                   enabled,
+		streamKey:                 streamKey,
+		groupName:                 groupName,
+		maxLen:                    maxLen,
+		overloadPolicy:            overloadPolicy,
+		workspaceOverloadPolicies: workspacePolicies,
 	}
 }
 
-func parseTenantOverloadPolicies(raw string) map[uint]string {
+func parseWorkspaceOverloadPolicies(raw string) map[uint]string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil
@@ -398,12 +408,12 @@ func parseTenantOverloadPolicies(raw string) map[uint]string {
 		if len(parts) != 2 {
 			continue
 		}
-		tenantID, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
-		if err != nil || tenantID == 0 {
+		workspaceID, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 64)
+		if err != nil || workspaceID == 0 {
 			continue
 		}
 		policy := normalizeOverloadPolicy(parts[1])
-		policies[uint(tenantID)] = policy
+		policies[uint(workspaceID)] = policy
 	}
 
 	if len(policies) == 0 {
@@ -425,15 +435,15 @@ func normalizeOverloadPolicy(raw string) string {
 // resolveStatisticsOverloadPolicy selects the highest-priority policy among the
 // default and workspace overrides. Block outranks drop_new, then evict_oldest;
 // an override cannot weaken the default for any result sharing that stream entry.
-func resolveStatisticsOverloadPolicy(userIDs []uint) string {
+func resolveStatisticsOverloadPolicy(workspaceIDs []uint) string {
 	_, cfg := proxyStatisticStreamSnapshot()
 	selected := normalizeOverloadPolicy(cfg.overloadPolicy)
-	if len(userIDs) == 0 || len(cfg.tenantOverloadPolicies) == 0 {
+	if len(workspaceIDs) == 0 || len(cfg.workspaceOverloadPolicies) == 0 {
 		return selected
 	}
 
-	for _, userID := range userIDs {
-		override, ok := cfg.tenantOverloadPolicies[userID]
+	for _, workspaceID := range workspaceIDs {
+		override, ok := cfg.workspaceOverloadPolicies[workspaceID]
 		if !ok {
 			continue
 		}

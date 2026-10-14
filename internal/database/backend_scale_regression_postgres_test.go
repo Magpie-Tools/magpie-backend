@@ -210,7 +210,7 @@ func TestSourceStatisticsRefreshCoalescesLargePoolPostgres(t *testing.T) {
 	measured := db.Session(&gorm.Session{Logger: queries})
 	start := time.Now()
 	for i := 0; i < 10; i++ {
-		if err := refreshUserScrapeSourceStatsForProxyIDs(measured, []uint64{p.ID}); err != nil {
+		if err := refreshWorkspaceScrapeSourceStatsForProxyIDs(measured, []uint64{p.ID}); err != nil {
 			t.Fatal(err)
 		}
 	}

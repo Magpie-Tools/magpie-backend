@@ -94,7 +94,7 @@ type User struct {
 	CreatedAt   time.Time             `gorm:"autoCreateTime"`
 }
 
-func (u *User) ToUserSettings(simpleUserJudges []dto.SimpleUserJudge, scrapingSources []string) dto.UserSettings {
+func (u *User) ToUserSettings(workspaceJudges []dto.SimpleWorkspaceJudge, scrapingSources []string) dto.UserSettings {
 	return dto.UserSettings{
 		HTTPProtocol:               u.HTTPProtocol,
 		HTTPSProtocol:              u.HTTPSProtocol,
@@ -107,7 +107,7 @@ func (u *User) ToUserSettings(simpleUserJudges []dto.SimpleUserJudge, scrapingSo
 		AutoRemoveFailingProxies:   u.AutoRemoveFailingProxies,
 		AutoRemoveFailureThreshold: u.AutoRemoveFailureThreshold,
 		FailureAction:              FailureActionPause,
-		SimpleUserJudges:           simpleUserJudges,
+		SimpleUserJudges:           workspaceJudges,
 		ScrapingSources:            scrapingSources,
 		ProxyListColumns:           NormalizeProxyListColumns(u.ProxyListColumns.Clone()),
 		ScrapeSourceProxyColumns:   NormalizeScrapeSourceProxyColumns(u.ScrapeSourceProxyColumns.Clone()),

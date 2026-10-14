@@ -10,15 +10,15 @@ import (
 	"magpie/internal/domain"
 )
 
-func TestNormalizeUserIDs(t *testing.T) {
-	got := normalizeUserIDs([]uint{9, 4, 9, 2, 4, 7, 2})
+func TestNormalizeWorkspaceIDs(t *testing.T) {
+	got := normalizeWorkspaceIDs([]uint{9, 4, 9, 2, 4, 7, 2})
 	want := []uint{2, 4, 7, 9}
 	if len(got) != len(want) {
-		t.Fatalf("normalizeUserIDs length = %d, want %d", len(got), len(want))
+		t.Fatalf("normalizeWorkspaceIDs length = %d, want %d", len(got), len(want))
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Fatalf("normalizeUserIDs[%d] = %d, want %d", i, got[i], want[i])
+			t.Fatalf("normalizeWorkspaceIDs[%d] = %d, want %d", i, got[i], want[i])
 		}
 	}
 }

@@ -5,18 +5,18 @@ import (
 	"magpie/internal/domain"
 )
 
-func collectProxyIDsForDeletion(userID uint, settings dto.DeleteSettings) ([]uint, error) {
+func collectProxyIDsForDeletion(workspaceID uint, settings dto.DeleteSettings) ([]uint, error) {
 	query := DB.Model(&domain.Proxy{}).
 		Select("DISTINCT proxies.id").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
-		Where("user_proxies.workspace_id = ?", userID)
+		Where("user_proxies.workspace_id = ?", workspaceID)
 
 	if settings.Scope == "selected" && len(settings.Proxies) > 0 {
 		query = query.Where("proxies.id IN ?", settings.Proxies)
 	}
 
 	if settings.Filter {
-		filterQuery := buildProxyListFilterQuery(userID, proxyListFiltersForDelete(settings))
+		filterQuery := buildProxyListFilterQuery(workspaceID, proxyListFiltersForDelete(settings))
 		if filterQuery != nil {
 			query = query.Where("proxies.id IN (?)", filterQuery)
 		}

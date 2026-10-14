@@ -34,7 +34,7 @@ func setupSettingsAPITest(t *testing.T) (uint, uint) {
 	if user.ID == workspace.ID {
 		t.Fatal("test requires distinct account and workspace IDs")
 	}
-	t.Cleanup(func() { judges.SetUserJudges(workspace.ID, nil) })
+	t.Cleanup(func() { judges.SetWorkspaceJudges(workspace.ID, nil) })
 	return user.ID, workspace.ID
 }
 
@@ -120,7 +120,7 @@ func TestSettingsAPIsRefreshWorkspaceJudgeCache(t *testing.T) {
 	for _, api := range []string{"REST", "GraphQL"} {
 		t.Run(api, func(t *testing.T) {
 			userID, workspaceID := setupSettingsAPITest(t)
-			judges.AddUserJudge(workspaceID, &domain.Judge{ID: 999, FullString: "https://old.example.test"}, "old")
+			judges.AddWorkspaceJudge(workspaceID, &domain.Judge{ID: 999, FullString: "https://old.example.test"}, "old")
 			input := map[string]any{"judges": []any{map[string]any{"url": "https://new.example.test", "regex": "new"}}}
 			if err := submitSettings(t, api, userID, workspaceID, input); err != nil {
 				t.Fatal(err)

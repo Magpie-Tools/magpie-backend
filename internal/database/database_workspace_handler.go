@@ -396,7 +396,7 @@ func GetWorkspaceByID(workspaceID uint) domain.Workspace {
 }
 
 func GetWorkspacesByIDsForChecker(ids []uint) (map[uint]domain.Workspace, error) {
-	ids = normalizeUserIDs(ids)
+	ids = normalizeWorkspaceIDs(ids)
 	if len(ids) == 0 {
 		return nil, nil
 	}

@@ -19,8 +19,9 @@ const (
 	judgeRedisChannel        = "magpie:judges:updates"
 	judgeRedisPublishTimeout = 5 * time.Second
 
-	judgeEventTypeSetUserJudges    = "set_user_judges"
-	judgeEventTypeAddJudgesToUsers = "add_judges_to_users"
+	// Preserve event strings for instances using the historical names.
+	judgeEventTypeSetWorkspaceJudges    = "set_user_judges"
+	judgeEventTypeAddJudgesToWorkspaces = "add_judges_to_users"
 )
 
 type judgeSyncState struct {
@@ -36,12 +37,14 @@ var (
 	judgeSyncBackoff = time.Second
 )
 
+// judgeSyncEvent uses historical JSON keys for compatibility between instances.
+// Both user_id and user_ids carry workspace IDs.
 type judgeSyncEvent struct {
-	Type    string           `json:"type"`
-	Origin  string           `json:"origin"`
-	UserID  uint             `json:"user_id,omitempty"`
-	UserIDs []uint           `json:"user_ids,omitempty"`
-	Judges  []judgeSyncJudge `json:"judges,omitempty"`
+	Type         string           `json:"type"`
+	Origin       string           `json:"origin"`
+	WorkspaceID  uint             `json:"user_id,omitempty"`
+	WorkspaceIDs []uint           `json:"user_ids,omitempty"`
+	Judges       []judgeSyncJudge `json:"judges,omitempty"`
 }
 
 type judgeSyncJudge struct {
@@ -106,21 +109,21 @@ func subscribeToJudgeUpdates(ctx context.Context, client *redis.Client) {
 
 func handleJudgeSyncEvent(event judgeSyncEvent) {
 	switch event.Type {
-	case judgeEventTypeSetUserJudges:
-		if event.UserID == 0 {
+	case judgeEventTypeSetWorkspaceJudges:
+		if event.WorkspaceID == 0 {
 			return
 		}
 		jwr := buildJudgesFromPayload(event.Judges)
-		setUserJudgesLocal(event.UserID, jwr)
-	case judgeEventTypeAddJudgesToUsers:
-		if len(event.UserIDs) == 0 {
+		setWorkspaceJudgesLocal(event.WorkspaceID, jwr)
+	case judgeEventTypeAddJudgesToWorkspaces:
+		if len(event.WorkspaceIDs) == 0 {
 			return
 		}
 		jwr := buildJudgesFromPayload(event.Judges)
 		if len(jwr) == 0 {
 			return
 		}
-		addJudgesToUsersLocal(event.UserIDs, jwr)
+		addJudgesToWorkspacesLocal(event.WorkspaceIDs, jwr)
 	default:
 		log.Warn("Judge sync: unknown event type", "type", event.Type)
 	}
@@ -151,22 +154,22 @@ func buildJudgesFromPayload(payload []judgeSyncJudge) []domain.JudgeWithRegex {
 	return results
 }
 
-func broadcastSetUserJudges(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
-	if userID == 0 {
+func broadcastSetWorkspaceJudges(workspaceID uint, judgesWithRegex []domain.JudgeWithRegex) {
+	if workspaceID == 0 {
 		return
 	}
 
 	event := judgeSyncEvent{
-		Type:   judgeEventTypeSetUserJudges,
-		Origin: judgeSyncNodeID,
-		UserID: userID,
-		Judges: serializeJudges(judgesWithRegex),
+		Type:        judgeEventTypeSetWorkspaceJudges,
+		Origin:      judgeSyncNodeID,
+		WorkspaceID: workspaceID,
+		Judges:      serializeJudges(judgesWithRegex),
 	}
 	publishJudgeEvent(event)
 }
 
-func broadcastAddJudgesToUsers(userIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
-	if len(userIDs) == 0 {
+func broadcastAddJudgesToWorkspaces(workspaceIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
+	if len(workspaceIDs) == 0 {
 		return
 	}
 
@@ -176,10 +179,10 @@ func broadcastAddJudgesToUsers(userIDs []uint, judgesWithRegex []domain.JudgeWit
 	}
 
 	event := judgeSyncEvent{
-		Type:    judgeEventTypeAddJudgesToUsers,
-		Origin:  judgeSyncNodeID,
-		UserIDs: userIDs,
-		Judges:  serialized,
+		Type:         judgeEventTypeAddJudgesToWorkspaces,
+		Origin:       judgeSyncNodeID,
+		WorkspaceIDs: workspaceIDs,
+		Judges:       serialized,
 	}
 	publishJudgeEvent(event)
 }

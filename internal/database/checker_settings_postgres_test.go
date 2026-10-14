@@ -90,7 +90,7 @@ func TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres(t 
 			t.Fatalf("workspace %d TCP candidates=%d err=%v", id, len(routes), err)
 		}
 	}
-	if err := refreshUserProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
+	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[uint]bool{a.ID: true, b.ID: false} {
@@ -122,7 +122,7 @@ func TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres(t 
 	}
 	assertAlive(a.ID, nil)
 	assertAlive(b.ID, new(false))
-	if err := refreshUserProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
+	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
 		t.Fatal(err)
 	}
 	dead := buildProxyListFilterQuery(a.ID, dto.ProxyListFilters{Status: "dead"})
@@ -334,7 +334,7 @@ func TestPendingCheckerProjectionSuppressesHealthWithoutPruningEvidencePostgres(
 	if err := InsertProxyStatistics(ctx, []domain.ProxyStatistic{stat}, 100); err != nil {
 		t.Fatal(err)
 	}
-	if err := refreshUserProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
+	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Model(&domain.Workspace{}).Where("id = ?", a.ID).UpdateColumn("checker_dirty", true).Error; err != nil {
@@ -365,7 +365,7 @@ func TestPendingCheckerProjectionSuppressesHealthWithoutPruningEvidencePostgres(
 	}
 	// A statistics flush while pending can rebuild indexes as unknown. A
 	// successful refresh must restore still-applicable evidence atomically.
-	if err := refreshUserProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
+	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
 		t.Fatal(err)
 	}
 	refreshed, err := LoadCheckerWorkspace(ctx, a.ID)

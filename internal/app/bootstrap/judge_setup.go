@@ -13,9 +13,8 @@ import (
 
 var addDefaultJudgeMutex sync.Mutex
 
-// AddDefaultJudgesToUsers keeps its exported name for compatibility. Judges are
-// assigned to workspaces, not accounts.
-func AddDefaultJudgesToUsers() {
+// AddDefaultJudgesToWorkspaces assigns default judges to workspaces that have none.
+func AddDefaultJudgesToWorkspaces() {
 	addDefaultJudgeMutex.Lock()
 	defer addDefaultJudgeMutex.Unlock()
 
@@ -74,6 +73,7 @@ func AddDefaultJudgesToUsers() {
 
 	err := database.AddWorkspaceJudgesRelation(workspaces, judgesWithRegex)
 	if err != nil {
+		// Keep the historical log message for existing log consumers.
 		log.Error("Error adding user judgeList to database", "error", err)
 	} else {
 		judgesNonPointer := make([]domain.JudgeWithRegex, len(judgesWithRegex))
@@ -81,8 +81,15 @@ func AddDefaultJudgesToUsers() {
 			judgesNonPointer[i] = *j
 		}
 
-		judges.AddJudgesToUsers(support.GetWorkspaceIDsFromList(workspaces), judgesNonPointer)
+		judges.AddJudgesToWorkspaces(support.GetWorkspaceIDsFromList(workspaces), judgesNonPointer)
 	}
+}
+
+// AddDefaultJudgesToUsers is the compatibility name for workspace judge setup.
+//
+// Deprecated: Use AddDefaultJudgesToWorkspaces.
+func AddDefaultJudgesToUsers() {
+	AddDefaultJudgesToWorkspaces()
 }
 
 func addJudgeRelationsToCache() {
@@ -95,7 +102,7 @@ func addJudgeRelationsToCache() {
 					log.Info("Skipping cached judge because website is blocked", "url", judge.Judge.FullString, "workspace_id", workspaceJudge.WorkspaceID)
 					continue
 				}
-				judges.AddUserJudge(workspaceJudge.WorkspaceID, judge.Judge, judge.Regex)
+				judges.AddWorkspaceJudge(workspaceJudge.WorkspaceID, judge.Judge, judge.Regex)
 			}
 		}
 	}

@@ -86,18 +86,18 @@ func TestRequeueProxy_ReturnsQueuedProxy(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
 	configureProxyHashTest(t)
 
-	originalGetProxy := getQueuedProxyForUser
+	originalGetProxy := getQueuedProxyForWorkspace
 	originalRemoveQueued := removeQueuedProxies
 	originalEnqueue := enqueueProxiesNow
 	t.Cleanup(func() {
-		getQueuedProxyForUser = originalGetProxy
+		getQueuedProxyForWorkspace = originalGetProxy
 		removeQueuedProxies = originalRemoveQueued
 		enqueueProxiesNow = originalEnqueue
 	})
 
 	var removed []domain.Proxy
 	var queued []domain.Proxy
-	getQueuedProxyForUser = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
+	getQueuedProxyForWorkspace = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
 		proxy := domain.Proxy{
 			ID:         42,
 			IP:         "127.0.0.1",
@@ -148,12 +148,12 @@ func TestRequeueProxy_ReturnsQueuedProxy(t *testing.T) {
 func TestRequeueProxy_ReturnsNotFoundWhenProxyMissing(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
 
-	originalGetProxy := getQueuedProxyForUser
+	originalGetProxy := getQueuedProxyForWorkspace
 	t.Cleanup(func() {
-		getQueuedProxyForUser = originalGetProxy
+		getQueuedProxyForWorkspace = originalGetProxy
 	})
 
-	getQueuedProxyForUser = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
+	getQueuedProxyForWorkspace = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
 		return nil, nil
 	}
 
@@ -180,14 +180,14 @@ func TestRequeueProxy_ReturnsServiceUnavailableOnQueueFailure(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
 	configureProxyHashTest(t)
 
-	originalGetProxy := getQueuedProxyForUser
+	originalGetProxy := getQueuedProxyForWorkspace
 	originalRemoveQueued := removeQueuedProxies
 	t.Cleanup(func() {
-		getQueuedProxyForUser = originalGetProxy
+		getQueuedProxyForWorkspace = originalGetProxy
 		removeQueuedProxies = originalRemoveQueued
 	})
 
-	getQueuedProxyForUser = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
+	getQueuedProxyForWorkspace = func(userID uint, proxyID uint64) (*domain.Proxy, error) {
 		proxy := domain.Proxy{
 			ID:         proxyID,
 			IP:         "127.0.0.1",

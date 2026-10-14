@@ -86,5 +86,7 @@ func (ManagedProxy) TableName() string {
 }
 
 // UserProxy is kept as a source-compatible type name for integrations that
-// compile against Magpie's Go packages. New code should use ManagedProxy.
+// compile against Magpie's Go packages.
+//
+// Deprecated: Use ManagedProxy.
 type UserProxy = ManagedProxy

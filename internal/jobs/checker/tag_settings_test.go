@@ -82,9 +82,9 @@ func TestSharedRequestKeepsWorkspaceValidationEvidence(t *testing.T) {
 	}
 	var captured []domain.ProxyStatistic
 	enqueueProxyStatistic = func(stat domain.ProxyStatistic, _ []uint) { captured = append(captured, stat) }
-	assignments := map[string]*requestAssignment{"shared": {judge: &domain.Judge{ID: 1}, protocolID: 1, proxyProtocol: "http", transportProtocol: "tcp", timeout: 1000, budgetSet: true, checks: []userCheck{
-		{userID: 1, regex: "default", headers: []string{"HEADER-A"}, configKey: "first"},
-		{userID: 2, regex: "DEFAULT", headers: []string{"HEADER-B"}, configKey: "second"},
+	assignments := map[string]*requestAssignment{"shared": {judge: &domain.Judge{ID: 1}, protocolID: 1, proxyProtocol: "http", transportProtocol: "tcp", timeout: 1000, budgetSet: true, checks: []workspaceCheck{
+		{workspaceID: 1, regex: "default", headers: []string{"HEADER-A"}, configKey: "first"},
+		{workspaceID: 2, regex: "DEFAULT", headers: []string{"HEADER-B"}, configKey: "second"},
 	}}}
 	success := map[uint]bool{}
 	processJudgeAssignments(domain.Proxy{ID: 1}, assignments, success, 8000, 4, false)

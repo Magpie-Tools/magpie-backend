@@ -6,11 +6,12 @@ same host and port with different credentials creates a different route.
 Several workspaces can manage the same route, each with its own lifecycle,
 checker settings, tags, failure streak and health assessment.
 
-The [domain glossary](../CONTEXT.md) defines these terms. Some internal helpers
-still use historical names: `user_proxies` stores managed proxies,
-`AddProxyStatisticForUsers` accepts workspace IDs, and `GetNextRotatingProxy`'s
-`userID` argument identifies a workspace. User accounts gain access through
-workspace memberships.
+The [domain glossary](../CONTEXT.md) defines these terms. User accounts gain
+access through workspace memberships. Checker and proxy database symbols use
+workspace terminology; deprecated wrappers and aliases retain historical names.
+Persisted table names such as `user_proxies` and the
+`PROXY_STATISTICS_TENANT_OVERLOAD_POLICIES` environment name remain compatible
+with existing deployments. Their ownership and policy IDs identify workspaces.
 
 ## Suggested reading order
 
@@ -24,7 +25,7 @@ workspace memberships.
 3. Follow `addProxies` and `ingestProxyUploadMultipartWithTags` in the
    [upload handler](../internal/app/server/route_proxy_handler.go) into
    `InsertAndGetProxiesWithWorkspace` in the
-   [proxy database handler](../internal/database/database_proxy_handler.go).
+   [proxy ingestion](../internal/database/database_proxy_ingestion.go).
 4. Read `AddToQueue`, `GetNextProxyContext` and `RequeueProxy` in the
    [proxy queue](../internal/jobs/queue/proxy/proxy_queue.go), alongside
    [pop.lua](../internal/jobs/queue/proxy/pop.lua) and
@@ -34,6 +35,11 @@ workspace memberships.
    [checker worker](../internal/jobs/checker/thread_handler.go). Then read the
    [ownership verifier](../internal/jobs/checker/ownership_verifier.go) and
    [failure tracker](../internal/jobs/checker/failure_tracker.go).
+   `GetNextJudge`, `AddWorkspaceJudge` and `SetWorkspaceJudges` in the
+   [workspace judge cache](../internal/jobs/checker/judges/judges_handler.go)
+   select judges and apply cache updates. Their
+   [Redis synchronization](../internal/jobs/checker/judges/redis_sync.go) retains
+   historical event strings and JSON keys for compatibility between instances.
 6. Follow the result into [statistics ingestion](../internal/jobs/runtime/proxy_statistics.go),
    [InsertProxyStatistics](../internal/database/database_proxy_statistics_handl.go)
    and [latest evidence updates](../internal/database/database_proxy_status_handler.go).
@@ -41,6 +47,26 @@ workspace memberships.
    [rotation database handler](../internal/database/database_rotating_proxy_handler.go),
    then follow the selected route into the
    [listener handlers](../internal/rotatingproxy/handler.go).
+
+## Proxy database file map
+
+The proxy database operations share the `database` package. Find each
+responsibility in these files:
+
+| Responsibility | File |
+| --- | --- |
+| Route import, deduplication and workspace management | [database_proxy_ingestion.go](../internal/database/database_proxy_ingestion.go) |
+| Active route batches for queue reconstruction | [database_proxy_inventory.go](../internal/database/database_proxy_inventory.go) |
+| Proxy pages, sorting and response mapping | [database_proxy_list.go](../internal/database/database_proxy_list.go) |
+| List filters and available filter values | [database_proxy_filters.go](../internal/database/database_proxy_filters.go) |
+| Text, tag and IP search | [database_proxy_search.go](../internal/database/database_proxy_search.go) |
+| Recent checks, fastest routes and their caches | [database_proxy_dashboard.go](../internal/database/database_proxy_dashboard.go) |
+| Route details, queue state and check history | [database_proxy_detail.go](../internal/database/database_proxy_detail.go) |
+| Managed proxy deletion, pausing and activation | [database_proxy_lifecycle.go](../internal/database/database_proxy_lifecycle.go) |
+| Failure/capacity cleanup and orphan route deletion | [database_proxy_cleanup.go](../internal/database/database_proxy_cleanup.go) |
+| Export snapshots, batches and export filters | [database_proxy_export.go](../internal/database/database_proxy_export.go) |
+| Reputation response mapping and shared reputation filters | [database_proxy_reputation_helpers.go](../internal/database/database_proxy_reputation_helpers.go) |
+| Historical exported names | [database_proxy_compat.go](../internal/database/database_proxy_compat.go) |
 
 ## State and execution boundaries
 
@@ -202,7 +228,7 @@ workspaces and credentials. Both requeue forms reject a stale lease.
 
 ## Result admission, persistence and recovery
 
-`AddProxyStatisticForUsers` hands the result to asynchronous ingestion. Its
+`AddProxyStatisticForWorkspaces` hands the result to asynchronous ingestion. Its
 return value is void: it reports neither admission nor a durable commit. The
 checker can finish its cycle and schedule another check before this result is
 visible in PostgreSQL.

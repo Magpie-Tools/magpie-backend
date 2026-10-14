@@ -15,6 +15,9 @@ func (WorkspaceJudge) TableName() string {
 	return "user_judges"
 }
 
+// UserJudge is the compatibility name for a workspace's judge assignment.
+//
+// Deprecated: Use WorkspaceJudge.
 type UserJudge = WorkspaceJudge
 
 type JudgeWithRegex struct {

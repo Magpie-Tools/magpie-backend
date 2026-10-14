@@ -130,7 +130,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go bootstrap.AddDefaultJudgesToUsers()
+	go bootstrap.AddDefaultJudgesToWorkspaces()
 	registrationWarning := ""
 	sites, err := database.SaveScrapingSourcesOfUsers(workspaceAccess.WorkspaceID, cfg.Scraper.ScrapeSites)
 	if err != nil {
@@ -300,12 +300,12 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 
 	cleanupWarning := ""
 	if len(newConfig.WebsiteBlacklist) > 0 {
-		cleanupResult, err := database.RemoveBlockedWebsitesFromUsers(context.Background(), newConfig.WebsiteBlacklist)
+		cleanupResult, err := database.RemoveBlockedWebsitesFromWorkspaces(context.Background(), newConfig.WebsiteBlacklist)
 		if err != nil {
 			log.Error("Blocked-website cleanup failed after configuration update", "error", err)
 			cleanupWarning = "Configuration was saved, but blocked-site cleanup failed. Retry save after database recovery."
 		} else {
-			refreshUserJudgeCache(cleanupResult.UpdatedUserJudges)
+			refreshWorkspaceJudgeCache(cleanupResult.UpdatedUserJudges)
 
 			if len(cleanupResult.BlockedScrapeSites) > 0 {
 				if err := sitequeue.PublicScrapeSiteQueue.RemoveFromQueue(cleanupResult.BlockedScrapeSites); err != nil {
@@ -604,7 +604,7 @@ func deleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, workspaceID := range result.DeletedWorkspaceIDs {
-		judges.SetUserJudges(workspaceID, nil)
+		judges.SetWorkspaceJudges(workspaceID, nil)
 	}
 
 	if len(result.InactiveProxies) > 0 {
@@ -718,12 +718,12 @@ func isUniqueConstraintError(err error) bool {
 		strings.Contains(normalized, "duplicate entry")
 }
 
-func refreshUserJudgeCache(updates map[uint][]database.UserJudgeAssignment) {
+func refreshWorkspaceJudgeCache(updates map[uint][]database.WorkspaceJudgeAssignment) {
 	if len(updates) == 0 {
 		return
 	}
 
-	for userID, assignments := range updates {
+	for workspaceID, assignments := range updates {
 		judgesWithRegex := make([]domain.JudgeWithRegex, 0, len(assignments))
 
 		for _, assignment := range assignments {
@@ -734,7 +734,8 @@ func refreshUserJudgeCache(updates map[uint][]database.UserJudgeAssignment) {
 			}
 
 			if err := judge.SetUp(); err != nil {
-				log.Warn("Failed to set up judge after website blacklist cleanup", "user_id", userID, "url", assignment.FullString, "error", err)
+				// Keep user_id as the historical log field for the affected workspace.
+				log.Warn("Failed to set up judge after website blacklist cleanup", "user_id", workspaceID, "url", assignment.FullString, "error", err)
 				continue
 			}
 
@@ -746,7 +747,7 @@ func refreshUserJudgeCache(updates map[uint][]database.UserJudgeAssignment) {
 			})
 		}
 
-		judges.SetUserJudges(userID, judgesWithRegex)
+		judges.SetWorkspaceJudges(workspaceID, judgesWithRegex)
 	}
 }
 

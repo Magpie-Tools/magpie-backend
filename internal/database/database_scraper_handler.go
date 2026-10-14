@@ -132,7 +132,7 @@ func SaveScrapingSourcesWithSettings(userID uint, sources []string, mode string,
 			}
 			sites = loaded
 
-			if err := refreshUserScrapeSourceStatsForUserSites(tx, userID, siteIDs); err != nil {
+			if err := refreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, userID, siteIDs); err != nil {
 				return err
 			}
 		}
@@ -211,7 +211,7 @@ func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
 			}
 		}
 
-		return refreshUserScrapeSourceStatsForSites(tx, []uint64{siteID})
+		return refreshWorkspaceScrapeSourceStatsForSites(tx, []uint64{siteID})
 	})
 }
 

@@ -233,7 +233,7 @@ func defaultMigrations() []any {
 		domain.ProxyOverallStatus{},
 		domain.AnonymityLevel{},
 		domain.Judge{},
-		domain.UserJudge{},
+		domain.WorkspaceJudge{},
 		domain.ScrapeSite{},
 		domain.UserScrapeSite{},
 		domain.ScrapeSourceTag{},

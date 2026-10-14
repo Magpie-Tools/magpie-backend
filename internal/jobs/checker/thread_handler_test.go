@@ -41,10 +41,10 @@ func TestProcessJudgeAssignments_EnqueuesOneStatisticPerNetworkCheck(t *testing.
 	}
 
 	var captured []domain.ProxyStatistic
-	var capturedUserIDs [][]uint
-	enqueueProxyStatistic = func(stat domain.ProxyStatistic, userIDs []uint) {
+	var capturedWorkspaceIDs [][]uint
+	enqueueProxyStatistic = func(stat domain.ProxyStatistic, workspaceIDs []uint) {
 		captured = append(captured, stat)
-		capturedUserIDs = append(capturedUserIDs, append([]uint(nil), userIDs...))
+		capturedWorkspaceIDs = append(capturedWorkspaceIDs, append([]uint(nil), workspaceIDs...))
 	}
 
 	proxy := domain.Proxy{ID: 99}
@@ -55,20 +55,20 @@ func TestProcessJudgeAssignments_EnqueuesOneStatisticPerNetworkCheck(t *testing.
 			proxyProtocol:     "http",
 			transportProtocol: support.TransportTCP,
 			protocolID:        1,
-			checks: []userCheck{
-				{userID: 1, regex: "ok"},
-				{userID: 2, regex: "ok"},
-				{userID: 3, regex: "missing"},
+			checks: []workspaceCheck{
+				{workspaceID: 1, regex: "ok"},
+				{workspaceID: 2, regex: "ok"},
+				{workspaceID: 3, regex: "missing"},
 			},
 		},
 	}
-	userSuccess := map[uint]bool{
+	workspaceSuccess := map[uint]bool{
 		1: false,
 		2: false,
 		3: false,
 	}
 
-	processJudgeAssignments(proxy, assignments, userSuccess, 1000, 2, false)
+	processJudgeAssignments(proxy, assignments, workspaceSuccess, 1000, 2, false)
 
 	if len(captured) != 1 {
 		t.Fatalf("expected 1 proxy statistic, got %d", len(captured))
@@ -89,14 +89,14 @@ func TestProcessJudgeAssignments_EnqueuesOneStatisticPerNetworkCheck(t *testing.
 	if stat.LevelID == nil {
 		t.Fatal("expected level id to be set for alive aggregated statistic")
 	}
-	if !userSuccess[1] || !userSuccess[2] || userSuccess[3] {
-		t.Fatalf("unexpected user success map: %#v", userSuccess)
+	if !workspaceSuccess[1] || !workspaceSuccess[2] || workspaceSuccess[3] {
+		t.Fatalf("unexpected workspace success map: %#v", workspaceSuccess)
 	}
-	if len(capturedUserIDs) != 1 {
-		t.Fatalf("expected 1 captured user id set, got %d", len(capturedUserIDs))
+	if len(capturedWorkspaceIDs) != 1 {
+		t.Fatalf("expected 1 captured workspace ID set, got %d", len(capturedWorkspaceIDs))
 	}
-	if len(capturedUserIDs[0]) != 3 {
-		t.Fatalf("captured user ids = %#v, want 3 unique IDs", capturedUserIDs[0])
+	if len(capturedWorkspaceIDs[0]) != 3 {
+		t.Fatalf("captured workspace IDs = %#v, want 3 unique IDs", capturedWorkspaceIDs[0])
 	}
 }
 
@@ -125,18 +125,18 @@ func TestProcessJudgeAssignments_RecordsFailedCheckOnce(t *testing.T) {
 			proxyProtocol:     "https",
 			transportProtocol: support.TransportTCP,
 			protocolID:        2,
-			checks: []userCheck{
-				{userID: 10, regex: "ok"},
-				{userID: 11, regex: "ok"},
+			checks: []workspaceCheck{
+				{workspaceID: 10, regex: "ok"},
+				{workspaceID: 11, regex: "ok"},
 			},
 		},
 	}
-	userSuccess := map[uint]bool{
+	workspaceSuccess := map[uint]bool{
 		10: false,
 		11: false,
 	}
 
-	processJudgeAssignments(proxy, assignments, userSuccess, 1000, 1, false)
+	processJudgeAssignments(proxy, assignments, workspaceSuccess, 1000, 1, false)
 
 	if len(captured) != 1 {
 		t.Fatalf("expected 1 proxy statistic, got %d", len(captured))
@@ -148,8 +148,8 @@ func TestProcessJudgeAssignments_RecordsFailedCheckOnce(t *testing.T) {
 	if stat.LevelID != nil {
 		t.Fatal("expected level id to be nil for dead statistic")
 	}
-	if userSuccess[10] || userSuccess[11] {
-		t.Fatalf("expected users to remain unsuccessful on failed check, got %#v", userSuccess)
+	if workspaceSuccess[10] || workspaceSuccess[11] {
+		t.Fatalf("expected workspaces to remain unsuccessful on failed check, got %#v", workspaceSuccess)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestRefreshProxyUsers_RemovesMissingOwnershipOnce(t *testing.T) {
 
 	getWorkspacesForChecker = func(ids []uint) (map[uint]domain.Workspace, error) {
 		if len(ids) != 2 {
-			t.Fatalf("lookup ids = %#v, want both queued users", ids)
+			t.Fatalf("lookup ids = %#v, want both queued workspaces", ids)
 		}
 		return map[uint]domain.Workspace{
 			4: {ID: 4, Timeout: 2500, Retries: 3},
@@ -176,13 +176,13 @@ func TestRefreshProxyUsers_RemovesMissingOwnershipOnce(t *testing.T) {
 	}}
 	refreshed, payloadChanged := refreshProxyWorkspaces(proxy)
 	if !payloadChanged {
-		t.Fatal("missing user did not mark queue payload as changed")
+		t.Fatal("missing workspace did not mark queue payload as changed")
 	}
 	if len(refreshed.Workspaces) != 1 || refreshed.Workspaces[0].ID != 4 {
-		t.Fatalf("refreshed users = %#v, want only user 4", refreshed.Workspaces)
+		t.Fatalf("refreshed workspaces = %#v, want only workspace 4", refreshed.Workspaces)
 	}
 	if refreshed.Workspaces[0].Timeout != 2500 || refreshed.Workspaces[0].Retries != 3 {
-		t.Fatalf("user settings were not refreshed: %#v", refreshed.Workspaces[0])
+		t.Fatalf("workspace settings were not refreshed: %#v", refreshed.Workspaces[0])
 	}
 }
 
@@ -201,10 +201,10 @@ func TestRefreshProxyUsers_PreservesUnknownUsersOnLookupFailure(t *testing.T) {
 	proxy := domain.Proxy{Workspaces: []domain.Workspace{{ID: 4}, {ID: 9}}}
 	refreshed, payloadChanged := refreshProxyWorkspaces(proxy)
 	if payloadChanged {
-		t.Fatal("lookup failure must not remove users from the queue payload")
+		t.Fatal("lookup failure must not remove workspaces from the queue payload")
 	}
 	if len(refreshed.Workspaces) != len(proxy.Workspaces) {
-		t.Fatalf("lookup failure changed users from %#v to %#v", proxy.Workspaces, refreshed.Workspaces)
+		t.Fatalf("lookup failure changed workspaces from %#v to %#v", proxy.Workspaces, refreshed.Workspaces)
 	}
 }
 

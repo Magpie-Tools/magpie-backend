@@ -125,7 +125,7 @@ func TestProxyTagFiltersUseAnyMatchAndSearchIncludesNumericNames(t *testing.T) {
 	}
 }
 
-func TestProxyTagsAreUserOwnedAndManyToMany(t *testing.T) {
+func TestProxyTagsAreWorkspaceOwnedAndManyToMany(t *testing.T) {
 	db := setupProxyTagTestDB(t)
 	users := []domain.User{
 		{Email: "first-tags@example.test", Password: "hash", Role: "user"},

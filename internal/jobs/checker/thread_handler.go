@@ -28,25 +28,25 @@ var (
 	stopChannel             = make(chan struct{}) // Signal to stop threads
 	workspaceCache          sync.Map
 	checkProxyWithRetries   = CheckProxyWithRetries
-	enqueueProxyStatistic   = jobruntime.AddProxyStatisticForUsers
+	enqueueProxyStatistic   = jobruntime.AddProxyStatisticForWorkspaces
 	getWorkspacesForChecker = database.GetWorkspacesByIDsForChecker
 )
 
 const (
 	maxResponseBodyLength = 512
-	userCacheTTL          = 5 * time.Second
+	workspaceCacheTTL     = 5 * time.Second
 )
 
 type cachedWorkspace struct {
-	user      domain.Workspace
+	workspace domain.Workspace
 	expiresAt time.Time
 }
 
-type userCheck struct {
-	userID    uint
-	regex     string
-	configKey string
-	headers   []string
+type workspaceCheck struct {
+	workspaceID uint
+	regex       string
+	configKey   string
+	headers     []string
 }
 
 type requestAssignment struct {
@@ -57,7 +57,7 @@ type requestAssignment struct {
 	timeout           uint16
 	retries           uint8
 	budgetSet         bool
-	checks            []userCheck
+	checks            []workspaceCheck
 }
 
 func ThreadDispatcher(ctx context.Context) {
@@ -205,19 +205,19 @@ func work(parent context.Context) {
 		var payloadChanged bool
 		proxy, payloadChanged = refreshProxyWorkspaces(proxy)
 
-		judgeRequests, userSuccess, userHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy)
+		judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy)
 		saveResponses := config.GetConfig().Checker.SaveResponses
-		if err := processJudgeAssignments(proxy, judgeRequests, userSuccess, maxTimeout, maxRetries, saveResponses); err != nil {
+		if err := processJudgeAssignments(proxy, judgeRequests, workspaceSuccess, maxTimeout, maxRetries, saveResponses); err != nil {
 			continue
 		}
 		if err := proxyqueue.PublicProxyQueue.RenewLeaseIfNeeded(ctx, proxy); err != nil {
 			continue
 		}
 
-		removedUsers, orphaned := handleFailureTracking(proxy, userSuccess, userHasChecks)
-		payloadChanged = payloadChanged || len(removedUsers) > 0
-		if len(removedUsers) > 0 {
-			proxy = filterRemovedUsers(proxy, removedUsers)
+		removedWorkspaces, orphaned := handleFailureTracking(proxy, workspaceSuccess, workspaceHasChecks)
+		payloadChanged = payloadChanged || len(removedWorkspaces) > 0
+		if len(removedWorkspaces) > 0 {
+			proxy = filterRemovedWorkspaces(proxy, removedWorkspaces)
 		}
 
 		if len(orphaned) > 0 {
@@ -300,15 +300,15 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 
 	ids := make([]uint, 0, len(proxy.Workspaces))
 	seen := make(map[uint]struct{}, len(proxy.Workspaces))
-	for _, user := range proxy.Workspaces {
-		if user.ID == 0 {
+	for _, workspace := range proxy.Workspaces {
+		if workspace.ID == 0 {
 			continue
 		}
-		if _, ok := seen[user.ID]; ok {
+		if _, ok := seen[workspace.ID]; ok {
 			continue
 		}
-		seen[user.ID] = struct{}{}
-		ids = append(ids, user.ID)
+		seen[workspace.ID] = struct{}{}
+		ids = append(ids, workspace.ID)
 	}
 
 	if _, ready := lookupCheckerWorkspace(0); ready {
@@ -330,7 +330,7 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 		if cached, ok := workspaceCache.Load(id); ok {
 			entry, ok := cached.(cachedWorkspace)
 			if ok && entry.expiresAt.After(now) {
-				refreshedWorkspaces[id] = entry.user
+				refreshedWorkspaces[id] = entry.workspace
 				continue
 			}
 			workspaceCache.Delete(id)
@@ -341,6 +341,7 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 	if len(missing) > 0 {
 		dbWorkspaces, err := getWorkspacesForChecker(missing)
 		if err != nil {
+			// Preserve the historical log message for existing log consumers.
 			log.Error("refresh proxy users", "error", err)
 			for i := range proxy.Workspaces {
 				if fresh, ok := refreshedWorkspaces[proxy.Workspaces[i].ID]; ok {
@@ -349,11 +350,11 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 			}
 			return proxy, false
 		} else {
-			expiry := now.Add(userCacheTTL)
-			for id, user := range dbWorkspaces {
-				refreshedWorkspaces[id] = user
+			expiry := now.Add(workspaceCacheTTL)
+			for id, workspace := range dbWorkspaces {
+				refreshedWorkspaces[id] = workspace
 				workspaceCache.Store(id, cachedWorkspace{
-					user:      user,
+					workspace: workspace,
 					expiresAt: expiry,
 				})
 			}
@@ -444,7 +445,7 @@ func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment,
 				assignment = &requestAssignment{judge: judge, proxyProtocol: protocol, transportProtocol: transport, protocolID: protocolID, timeout: setting.Timeout, retries: setting.Retries, budgetSet: true}
 				requests[key] = assignment
 			}
-			assignment.checks = append(assignment.checks, userCheck{userID: workspace.ID, regex: regex, configKey: configKey, headers: headers})
+			assignment.checks = append(assignment.checks, workspaceCheck{workspaceID: workspace.ID, regex: regex, configKey: configKey, headers: headers})
 			hasChecks[workspace.ID] = true
 		}
 	}
@@ -466,7 +467,7 @@ func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool
 // workspace verdicts, even on a transport failure. Lease loss or cancellation
 // aborts the cycle; statistics already handed off are not undone. A nil error
 // does not mean those statistics have committed to PostgreSQL.
-func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, userSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
+func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, workspaceSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
 	for _, item := range assignments {
 		timeout, retries := item.timeout, item.retries
 		if !item.budgetSet {
@@ -499,11 +500,11 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 				responseValidByRegex[validationKey] = validResponse
 			}
 			if check.configKey != "" {
-				evidence = append(evidence, domain.WorkspaceCheckEvidence{WorkspaceID: check.userID, ConfigKey: check.configKey, Alive: validResponse})
+				evidence = append(evidence, domain.WorkspaceCheckEvidence{WorkspaceID: check.workspaceID, ConfigKey: check.configKey, Alive: validResponse})
 			}
 			if validResponse {
 				statAlive = true
-				userSuccess[check.userID] = true
+				workspaceSuccess[check.workspaceID] = true
 			}
 		}
 
@@ -522,48 +523,48 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 			statistic.LevelID = new(support.GetProxyLevel(html))
 		}
 
-		tenantUserIDs := collectCheckUserIDs(item.checks)
-		enqueueProxyStatistic(statistic, tenantUserIDs)
+		workspaceIDs := collectCheckWorkspaceIDs(item.checks)
+		enqueueProxyStatistic(statistic, workspaceIDs)
 	}
 	return nil
 }
 
-func collectCheckUserIDs(checks []userCheck) []uint {
+func collectCheckWorkspaceIDs(checks []workspaceCheck) []uint {
 	if len(checks) == 0 {
 		return nil
 	}
 
 	seen := make(map[uint]struct{}, len(checks))
-	userIDs := make([]uint, 0, len(checks))
+	workspaceIDs := make([]uint, 0, len(checks))
 	for _, check := range checks {
-		if check.userID == 0 {
+		if check.workspaceID == 0 {
 			continue
 		}
-		if _, ok := seen[check.userID]; ok {
+		if _, ok := seen[check.workspaceID]; ok {
 			continue
 		}
-		seen[check.userID] = struct{}{}
-		userIDs = append(userIDs, check.userID)
+		seen[check.workspaceID] = struct{}{}
+		workspaceIDs = append(workspaceIDs, check.workspaceID)
 	}
-	return userIDs
+	return workspaceIDs
 }
 
-func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[uint]bool) (map[uint]struct{}, []domain.Proxy) {
+func handleFailureTracking(proxy domain.Proxy, workspaceSuccess, workspaceHasChecks map[uint]bool) (map[uint]struct{}, []domain.Proxy) {
 	if len(proxy.Workspaces) == 0 {
 		return nil, nil
 	}
 
 	events := make([]failureEvent, 0, len(proxy.Workspaces))
-	for _, user := range proxy.Workspaces {
-		if !userHasChecks[user.ID] {
+	for _, workspace := range proxy.Workspaces {
+		if !workspaceHasChecks[workspace.ID] {
 			continue
 		}
 		events = append(events, failureEvent{
-			WorkspaceID:       user.ID,
-			Success:           userSuccess[user.ID],
-			AutoRemove:        user.AutoRemoveFailingProxies,
-			FailureThreshold:  user.AutoRemoveFailureThreshold,
-			FailureAction:     user.EffectiveFailureAction(),
+			WorkspaceID:       workspace.ID,
+			Success:           workspaceSuccess[workspace.ID],
+			AutoRemove:        workspace.AutoRemoveFailingProxies,
+			FailureThreshold:  workspace.AutoRemoveFailureThreshold,
+			FailureAction:     workspace.EffectiveFailureAction(),
 			HasEligibleChecks: true,
 		})
 	}
@@ -582,13 +583,13 @@ func handleFailureTracking(proxy domain.Proxy, userSuccess, userHasChecks map[ui
 	return removed, orphaned
 }
 
-func filterRemovedUsers(proxy domain.Proxy, removed map[uint]struct{}) domain.Proxy {
+func filterRemovedWorkspaces(proxy domain.Proxy, removed map[uint]struct{}) domain.Proxy {
 	filtered := make([]domain.Workspace, 0, len(proxy.Workspaces))
-	for _, user := range proxy.Workspaces {
-		if _, ok := removed[user.ID]; ok {
+	for _, workspace := range proxy.Workspaces {
+		if _, ok := removed[workspace.ID]; ok {
 			continue
 		}
-		filtered = append(filtered, user)
+		filtered = append(filtered, workspace)
 	}
 	proxy.Workspaces = filtered
 

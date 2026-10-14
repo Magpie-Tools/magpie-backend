@@ -93,7 +93,7 @@ func (workspace Workspace) GetProtocolMap() map[string]int {
 	return protocols
 }
 
-func (workspace Workspace) ToUserSettings(judges []dto.SimpleUserJudge, sources []string, preference WorkspaceMemberPreference) dto.UserSettings {
+func (workspace Workspace) ToUserSettings(judges []dto.SimpleWorkspaceJudge, sources []string, preference WorkspaceMemberPreference) dto.UserSettings {
 	checker := workspace.DefaultCheckerSettings()
 	return dto.UserSettings{
 		CheckerSettings:            checker,

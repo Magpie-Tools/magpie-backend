@@ -269,10 +269,10 @@ func seedDevelopmentWorkspace(tx *gorm.DB, workspace *domain.Workspace, index in
 	if err := seedDevelopmentAlerts(tx, *workspace, index, options, result); err != nil {
 		return err
 	}
-	if err := refreshUserProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID); err != nil {
+	if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID); err != nil {
 		return err
 	}
-	if err := refreshUserScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID); err != nil {
+	if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID); err != nil {
 		return err
 	}
 	result.Proxies += len(proxies)

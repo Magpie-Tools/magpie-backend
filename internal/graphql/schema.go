@@ -32,6 +32,7 @@ const (
 )
 
 func NewSchema() (gql.Schema, error) {
+	// Retain the historical GraphQL type name for workspace judge settings.
 	simpleJudgeType := gql.NewObject(gql.ObjectConfig{
 		Name: "SimpleUserJudge",
 		Fields: gql.Fields{
@@ -305,7 +306,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(userSettingsType),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						judges := database.GetUserJudges(data.workspace.ID)
+						judges := database.GetWorkspaceJudges(data.workspace.ID)
 						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
 						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
@@ -335,7 +336,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(gql.Int),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						return int(database.GetAllProxyCountOfUser(data.workspace.ID)), nil
+						return int(database.GetWorkspaceProxyCount(data.workspace.ID)), nil
 					}
 					return 0, nil
 				},
@@ -539,7 +540,7 @@ func NewSchema() (gql.Schema, error) {
 						return nil, err
 					}
 					if data, ok := viewer.(*viewerData); ok {
-						judges := database.GetUserJudges(data.workspace.ID)
+						judges := database.GetWorkspaceJudges(data.workspace.ID)
 						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
 						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
@@ -586,7 +587,7 @@ func fetchViewer(ctx context.Context) (interface{}, error) {
 	}, nil
 }
 
-func buildUserSettings(workspace domain.Workspace, preference domain.WorkspaceMemberPreference, judges []dto.SimpleUserJudge, sources []string) map[string]interface{} {
+func buildUserSettings(workspace domain.Workspace, preference domain.WorkspaceMemberPreference, judges []dto.SimpleWorkspaceJudge, sources []string) map[string]interface{} {
 	dtoSettings := workspace.ToUserSettings(judges, sources, preference)
 
 	judgeList := make([]map[string]interface{}, 0, len(dtoSettings.SimpleUserJudges))
@@ -618,8 +619,8 @@ func buildUserSettings(workspace domain.Workspace, preference domain.WorkspaceMe
 	}
 }
 
-func buildProxyHistory(userID uint, limit int) []map[string]interface{} {
-	entries := database.GetProxyHistoryEntries(userID, limit)
+func buildProxyHistory(workspaceID uint, limit int) []map[string]interface{} {
+	entries := database.GetProxyHistoryEntries(workspaceID, limit)
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		result = append(result, map[string]interface{}{
@@ -630,8 +631,8 @@ func buildProxyHistory(userID uint, limit int) []map[string]interface{} {
 	return result
 }
 
-func buildRecentProxyChecks(userID uint, limit int) []map[string]interface{} {
-	entries := database.GetRecentProxyChecks(userID, limit)
+func buildRecentProxyChecks(workspaceID uint, limit int) []map[string]interface{} {
+	entries := database.GetRecentProxyChecks(workspaceID, limit)
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -650,8 +651,8 @@ func buildRecentProxyChecks(userID uint, limit int) []map[string]interface{} {
 	return result
 }
 
-func buildFastestAliveProxies(userID uint, limit int) []map[string]interface{} {
-	entries := database.GetFastestAliveProxies(userID, limit)
+func buildFastestAliveProxies(workspaceID uint, limit int) []map[string]interface{} {
+	entries := database.GetFastestAliveProxies(workspaceID, limit)
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -718,8 +719,8 @@ func clampPositiveLimit(limit, max int) int {
 	return limit
 }
 
-func buildProxyPage(userID uint, page int) map[string]interface{} {
-	proxies := database.GetProxyInfoPage(userID, page)
+func buildProxyPage(workspaceID uint, page int) map[string]interface{} {
+	proxies := database.GetProxyInfoPage(workspaceID, page)
 	items := make([]map[string]interface{}, 0, len(proxies))
 	for _, proxy := range proxies {
 		tags := make([]map[string]interface{}, 0, len(proxy.Tags))
@@ -750,7 +751,7 @@ func buildProxyPage(userID uint, page int) map[string]interface{} {
 	return map[string]interface{}{
 		"page":       page,
 		"pageSize":   len(items),
-		"totalCount": int(database.GetAllProxyCountOfUser(userID)),
+		"totalCount": int(database.GetWorkspaceProxyCount(workspaceID)),
 		"items":      items,
 	}
 }
@@ -797,8 +798,8 @@ func graphQLReputationEntry(rep dto.ProxyReputation) map[string]interface{} {
 	}
 }
 
-func buildScrapeSitePage(userID uint, page int) map[string]interface{} {
-	sites := database.GetScrapeSiteInfoPage(userID, page)
+func buildScrapeSitePage(workspaceID uint, page int) map[string]interface{} {
+	sites := database.GetScrapeSiteInfoPage(workspaceID, page)
 	items := make([]map[string]interface{}, 0, len(sites))
 	for _, site := range sites {
 		items = append(items, map[string]interface{}{
@@ -812,7 +813,7 @@ func buildScrapeSitePage(userID uint, page int) map[string]interface{} {
 	return map[string]interface{}{
 		"page":       page,
 		"pageSize":   len(items),
-		"totalCount": int(database.GetAllScrapeSiteCountOfUser(userID)),
+		"totalCount": int(database.GetAllScrapeSiteCountOfUser(workspaceID)),
 		"items":      items,
 	}
 }
@@ -940,10 +941,10 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	}
 
 	if rawJudges, ok := input["judges"].([]interface{}); ok {
-		judges := make([]dto.SimpleUserJudge, 0, len(rawJudges))
+		judges := make([]dto.SimpleWorkspaceJudge, 0, len(rawJudges))
 		for _, rawJudge := range rawJudges {
 			if judgeMap, ok := rawJudge.(map[string]interface{}); ok {
-				judge := dto.SimpleUserJudge{}
+				judge := dto.SimpleWorkspaceJudge{}
 				if url, ok := judgeMap["url"].(string); ok {
 					judge.Url = url
 				}

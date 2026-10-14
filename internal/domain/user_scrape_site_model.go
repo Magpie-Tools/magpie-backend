@@ -28,4 +28,7 @@ func (WorkspaceScrapeSite) TableName() string {
 	return "user_scrape_site"
 }
 
+// UserScrapeSite is the compatibility name for a workspace's source subscription.
+//
+// Deprecated: Use WorkspaceScrapeSite.
 type UserScrapeSite = WorkspaceScrapeSite

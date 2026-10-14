@@ -80,7 +80,7 @@ func SaveWorkspace(workspaceID, userID uint, value dto.UserSettings) error {
 	if err != nil {
 		log.Warn("failed to refresh workspace judge cache after settings update", "workspace_id", workspaceID, "error", err)
 	} else {
-		judges.SetUserJudges(workspaceID, loaded)
+		judges.SetWorkspaceJudges(workspaceID, loaded)
 	}
 	checkerconfig.Notify(workspaceID)
 	return nil

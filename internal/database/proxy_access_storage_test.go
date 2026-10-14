@@ -230,7 +230,7 @@ func assertStoredProxyAccess(t *testing.T, db *gorm.DB, userID uint, proxyID uin
 		t.Fatalf("stored password is not encrypted: %q", access.PasswordEncrypted)
 	}
 
-	proxy, err := GetQueuedProxyForUser(userID, proxyID)
+	proxy, err := GetQueuedProxyForWorkspace(userID, proxyID)
 	if err != nil {
 		t.Fatalf("load queued proxy: %v", err)
 	}

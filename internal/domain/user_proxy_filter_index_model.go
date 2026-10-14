@@ -48,4 +48,7 @@ func (WorkspaceProxyFilterIndex) TableName() string {
 	return "user_proxy_filter_indexes"
 }
 
+// UserProxyFilterIndex is the compatibility name for workspace proxy filters.
+//
+// Deprecated: Use WorkspaceProxyFilterIndex.
 type UserProxyFilterIndex = WorkspaceProxyFilterIndex

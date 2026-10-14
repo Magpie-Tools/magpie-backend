@@ -204,7 +204,7 @@ func StartupQueueBootstrapCompleted() bool {
 
 func judgeSetup() {
 	addJudgeRelationsToCache()
-	AddDefaultJudgesToUsers()
+	AddDefaultJudgesToWorkspaces()
 }
 
 func startBootstrapStartupQueuesAsync(ctx context.Context) {

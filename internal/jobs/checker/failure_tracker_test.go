@@ -240,7 +240,7 @@ func TestFailureTrackingRetainsCommittedDeletionsOnActionError(t *testing.T) {
 			if _, exists := removed[workspaces[0].ID]; !exists {
 				t.Fatalf("wrong workspace removed: %v", removed)
 			}
-			filtered := filterRemovedUsers(proxy, removed)
+			filtered := filterRemovedWorkspaces(proxy, removed)
 			if len(filtered.Workspaces) != 1 || filtered.Workspaces[0].ID != workspaces[1].ID {
 				t.Fatal("deleted workspace would remain in the queue payload")
 			}

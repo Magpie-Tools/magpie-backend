@@ -47,7 +47,7 @@ func createWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go bootstrap.AddDefaultJudgesToUsers()
+	go bootstrap.AddDefaultJudgesToWorkspaces()
 	defaultSites, sitesErr := database.SaveScrapingSourcesOfUsers(workspace.ID, config.GetConfig().Scraper.ScrapeSites)
 	if sitesErr != nil {
 		log.Warn("Could not add default scraping sources to workspace", "workspace_id", workspace.ID, "error", sitesErr)

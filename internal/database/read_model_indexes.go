@@ -58,7 +58,7 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 			}
 		}
 		if count == 0 || missingHosts > 0 {
-			if err := refreshAllUserProxyFilterIndexes(db); err != nil {
+			if err := refreshAllWorkspaceProxyFilterIndexes(db); err != nil {
 				return err
 			}
 			log.Info("Proxy filter read model backfilled")
@@ -71,7 +71,7 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 			return fmt.Errorf("read model: count scrape-source stats: %w", err)
 		}
 		if count == 0 {
-			if err := refreshAllUserScrapeSourceStats(db); err != nil {
+			if err := refreshAllWorkspaceScrapeSourceStats(db); err != nil {
 				return err
 			}
 			log.Info("Scrape-source stats read model backfilled")
@@ -262,12 +262,12 @@ func flushReadModelDirtyProxyIDs(ctx context.Context, drainAll bool) {
 		}
 
 		start := time.Now()
-		if err := refreshUserProxyFilterIndexesForProxyIDs(db, proxyIDs); err != nil {
+		if err := refreshWorkspaceProxyFilterIndexesForProxyIDs(db, proxyIDs); err != nil {
 			requeueDirtyReadModelProxyIDs(proxyIDs)
 			log.Warn("read model refresh: proxy filter index failed", "error", err, "count", len(proxyIDs))
 			return
 		}
-		if err := refreshUserScrapeSourceStatsForProxyIDs(db, proxyIDs); err != nil {
+		if err := refreshWorkspaceScrapeSourceStatsForProxyIDs(db, proxyIDs); err != nil {
 			requeueDirtyReadModelProxyIDs(proxyIDs)
 			log.Warn("read model refresh: scrape-source stats failed", "error", err, "count", len(proxyIDs))
 			return
@@ -339,11 +339,11 @@ func readModelRefreshMaxBatches() int {
 	return maxBatches
 }
 
-func refreshAllUserProxyFilterIndexes(db *gorm.DB) error {
-	return refreshUserProxyFilterIndexes(db, "")
+func refreshAllWorkspaceProxyFilterIndexes(db *gorm.DB) error {
+	return refreshWorkspaceProxyFilterIndexes(db, "")
 }
 
-func refreshUserProxyFilterIndexesForProxyIDs(tx *gorm.DB, proxyIDs []uint64) error {
+func refreshWorkspaceProxyFilterIndexesForProxyIDs(tx *gorm.DB, proxyIDs []uint64) error {
 	if len(proxyIDs) == 0 {
 		return nil
 	}
@@ -355,15 +355,15 @@ func refreshUserProxyFilterIndexesForProxyIDs(tx *gorm.DB, proxyIDs []uint64) er
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
-		if err := refreshUserProxyFilterIndexes(tx, "WHERE up.proxy_id IN ?", proxyIDs[start:end]); err != nil {
+		if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.proxy_id IN ?", proxyIDs[start:end]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func refreshUserProxyFilterIndexesForUserProxyIDs(tx *gorm.DB, userID uint, proxyIDs []uint64) error {
-	if userID == 0 || len(proxyIDs) == 0 {
+func refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
+	if workspaceID == 0 || len(proxyIDs) == 0 {
 		return nil
 	}
 	if tx == nil {
@@ -374,14 +374,14 @@ func refreshUserProxyFilterIndexesForUserProxyIDs(tx *gorm.DB, userID uint, prox
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
-		if err := refreshUserProxyFilterIndexes(tx, "WHERE up.workspace_id = ? AND up.proxy_id IN ?", userID, proxyIDs[start:end]); err != nil {
+		if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ? AND up.proxy_id IN ?", workspaceID, proxyIDs[start:end]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func refreshUserProxyFilterIndexes(tx *gorm.DB, where string, args ...interface{}) error {
+func refreshWorkspaceProxyFilterIndexes(tx *gorm.DB, where string, args ...interface{}) error {
 	if tx == nil || !tx.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
 		return nil
 	}
@@ -519,11 +519,11 @@ ON CONFLICT (workspace_id, proxy_id) DO UPDATE SET
 	return nil
 }
 
-func refreshAllUserScrapeSourceStats(db *gorm.DB) error {
-	return refreshUserScrapeSourceStats(db, "")
+func refreshAllWorkspaceScrapeSourceStats(db *gorm.DB) error {
+	return refreshWorkspaceScrapeSourceStats(db, "")
 }
 
-func refreshUserScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) error {
+func refreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) error {
 	if tx == nil || len(siteIDs) == 0 {
 		return nil
 	}
@@ -532,15 +532,15 @@ func refreshUserScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) error {
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
-		if err := refreshUserScrapeSourceStats(tx, "WHERE ss.id IN ?", siteIDs[start:end]); err != nil {
+		if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE ss.id IN ?", siteIDs[start:end]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func refreshUserScrapeSourceStatsForUserSites(tx *gorm.DB, userID uint, siteIDs []uint64) error {
-	if tx == nil || userID == 0 || len(siteIDs) == 0 {
+func refreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx *gorm.DB, workspaceID uint, siteIDs []uint64) error {
+	if tx == nil || workspaceID == 0 || len(siteIDs) == 0 {
 		return nil
 	}
 	for start := 0; start < len(siteIDs); start += deleteChunkSize {
@@ -548,14 +548,14 @@ func refreshUserScrapeSourceStatsForUserSites(tx *gorm.DB, userID uint, siteIDs 
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
-		if err := refreshUserScrapeSourceStats(tx, "WHERE uss.workspace_id = ? AND ss.id IN ?", userID, siteIDs[start:end]); err != nil {
+		if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ? AND ss.id IN ?", workspaceID, siteIDs[start:end]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func refreshUserScrapeSourceStatsForProxyIDs(tx *gorm.DB, proxyIDs []uint64) error {
+func refreshWorkspaceScrapeSourceStatsForProxyIDs(tx *gorm.DB, proxyIDs []uint64) error {
 	if tx == nil || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}
@@ -623,7 +623,7 @@ func flushDirtySourceStats(ctx context.Context) {
 		values[i] = []any{pair.WorkspaceID, pair.ScrapeSiteID}
 	}
 	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err := refreshUserScrapeSourceStats(DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
+	err := refreshWorkspaceScrapeSourceStats(DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
 	cancel()
 	if err != nil {
 		sourceStatsDirtyMu.Lock()
@@ -635,8 +635,8 @@ func flushDirtySourceStats(ctx context.Context) {
 	}
 }
 
-func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxyIDs []uint64) error {
-	if tx == nil || userID == 0 || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
+func refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
+	if tx == nil || workspaceID == 0 || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}
 
@@ -651,7 +651,7 @@ func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxy
 		var siteIDs []uint64
 		if err := tx.Table("proxy_scrape_site pss").
 			Distinct("pss.scrape_site_id").
-			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.workspace_id = ?", userID).
+			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.workspace_id = ?", workspaceID).
 			Where("pss.proxy_id IN ?", proxyIDs[start:end]).
 			Pluck("pss.scrape_site_id", &siteIDs).Error; err != nil {
 			return fmt.Errorf("read model: load user scrape-source ids for proxies: %w", err)
@@ -663,10 +663,10 @@ func refreshUserScrapeSourceStatsForUserProxyIDs(tx *gorm.DB, userID uint, proxy
 			}
 		}
 	}
-	return refreshUserScrapeSourceStatsForUserSites(tx, userID, affectedSiteIDs)
+	return refreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, workspaceID, affectedSiteIDs)
 }
 
-func refreshUserScrapeSourceStats(tx *gorm.DB, where string, args ...interface{}) error {
+func refreshWorkspaceScrapeSourceStats(tx *gorm.DB, where string, args ...interface{}) error {
 	if tx == nil || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}
@@ -730,8 +730,8 @@ func RefreshReadModelIndexes(ctx context.Context) error {
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
-	if err := refreshAllUserProxyFilterIndexes(db); err != nil {
+	if err := refreshAllWorkspaceProxyFilterIndexes(db); err != nil {
 		return err
 	}
-	return refreshAllUserScrapeSourceStats(db)
+	return refreshAllWorkspaceScrapeSourceStats(db)
 }

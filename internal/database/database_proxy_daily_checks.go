@@ -91,42 +91,42 @@ func incrementProxyDailyChecks(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 	return nil
 }
 
-func loadDashboardCheckCounts(userID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
-	if DB == nil || userID == 0 {
+func loadDashboardCheckCounts(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
+	if DB == nil || workspaceID == 0 {
 		return dashboardCheckCounts{}, nil
 	}
 
-	counts, err := queryDashboardCheckCountsFromDaily(userID, weekAgo)
+	counts, err := queryDashboardCheckCountsFromDaily(workspaceID, weekAgo)
 	if err == nil {
-		queueProxyDailyChecksBackfill(userID)
+		queueProxyDailyChecksBackfill(workspaceID)
 	}
 	return counts, err
 }
 
-func queueProxyDailyChecksBackfill(userID uint) {
-	if DB == nil || userID == 0 {
+func queueProxyDailyChecksBackfill(workspaceID uint) {
+	if DB == nil || workspaceID == 0 {
 		return
 	}
 
-	if _, loaded := proxyDailyBackfillInFlight.LoadOrStore(userID, struct{}{}); loaded {
+	if _, loaded := proxyDailyBackfillInFlight.LoadOrStore(workspaceID, struct{}{}); loaded {
 		return
 	}
 
 	go func() {
-		defer proxyDailyBackfillInFlight.Delete(userID)
+		defer proxyDailyBackfillInFlight.Delete(workspaceID)
 
 		timer := time.NewTimer(proxyDailyBackfillStartDelay)
 		defer timer.Stop()
 		<-timer.C
 
-		if _, err := ensureProxyDailyChecksBackfilled(userID); err != nil {
-			log.Warn("dashboard: async daily check backfill failed", "workspace_id", userID, "error", err)
+		if _, err := ensureProxyDailyChecksBackfilled(workspaceID); err != nil {
+			log.Warn("dashboard: async daily check backfill failed", "workspace_id", workspaceID, "error", err)
 		}
 	}()
 }
 
-func ensureProxyDailyChecksBackfilled(userID uint) (bool, error) {
-	if DB == nil || userID == 0 {
+func ensureProxyDailyChecksBackfilled(workspaceID uint) (bool, error) {
+	if DB == nil || workspaceID == 0 {
 		return false, nil
 	}
 
@@ -142,7 +142,7 @@ func ensureProxyDailyChecksBackfilled(userID uint) (bool, error) {
 			}
 		}
 
-		missingProxyIDs, err := loadUserProxyIDsMissingBackfill(tx, userID)
+		missingProxyIDs, err := loadWorkspaceProxyIDsMissingBackfill(tx, workspaceID)
 		if err != nil {
 			return err
 		}
@@ -164,7 +164,7 @@ func ensureProxyDailyChecksBackfilled(userID uint) (bool, error) {
 	return processed, err
 }
 
-func loadUserProxyIDsMissingBackfill(tx *gorm.DB, userID uint) ([]uint64, error) {
+func loadWorkspaceProxyIDsMissingBackfill(tx *gorm.DB, workspaceID uint) ([]uint64, error) {
 	var rows []struct {
 		ProxyID uint64 `gorm:"column:proxy_id"`
 	}
@@ -172,7 +172,7 @@ func loadUserProxyIDsMissingBackfill(tx *gorm.DB, userID uint) ([]uint64, error)
 	if err := tx.Table("user_proxies up").
 		Select("up.proxy_id").
 		Joins("LEFT JOIN proxy_daily_check_proxy_backfills b ON b.proxy_id = up.proxy_id").
-		Where("up.workspace_id = ? AND b.proxy_id IS NULL", userID).
+		Where("up.workspace_id = ? AND b.proxy_id IS NULL", workspaceID).
 		Order("up.proxy_id").
 		Limit(proxyDailyBackfillBatchSize).
 		Scan(&rows).Error; err != nil {
@@ -223,7 +223,7 @@ func markProxyDailyChecksBackfilled(tx *gorm.DB, proxyIDs []uint64) error {
 	return nil
 }
 
-func queryDashboardCheckCountsFromDaily(userID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
+func queryDashboardCheckCountsFromDaily(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
 	var counts dashboardCheckCounts
 	todayStart := startOfUTCDay(time.Now())
 	cutoff := weekAgo.UTC()
@@ -236,7 +236,7 @@ func queryDashboardCheckCountsFromDaily(userID uint, weekAgo time.Time) (dashboa
 				"COALESCE(SUM(CASE WHEN pdc.day >= ? THEN pdc.checks_count ELSE 0 END), 0) AS total_checks_week",
 			nextDayStart,
 		).
-		Joins("JOIN user_proxies up ON up.proxy_id = pdc.proxy_id AND up.workspace_id = ?", userID).
+		Joins("JOIN user_proxies up ON up.proxy_id = pdc.proxy_id AND up.workspace_id = ?", workspaceID).
 		Where("pdc.day < ? OR pdc.day IS NULL", todayStart).
 		Scan(&counts).Error
 	if err != nil {
@@ -254,7 +254,7 @@ func queryDashboardCheckCountsFromDaily(userID uint, weekAgo time.Time) (dashboa
 			nextDayStart,
 			todayStart,
 		).
-		Joins("JOIN user_proxies up ON up.proxy_id = ps.proxy_id AND up.workspace_id = ?", userID).
+		Joins("JOIN user_proxies up ON up.proxy_id = ps.proxy_id AND up.workspace_id = ?", workspaceID).
 		Where("ps.created_at >= ?", cutoff).
 		Scan(&boundaryCounts).Error
 	if err != nil {
@@ -266,9 +266,9 @@ func queryDashboardCheckCountsFromDaily(userID uint, weekAgo time.Time) (dashboa
 	return counts, nil
 }
 
-func loadDashboardCheckCountsDirect(userID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
+func loadDashboardCheckCountsDirect(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
 	var counts dashboardCheckCounts
-	if DB == nil || userID == 0 {
+	if DB == nil || workspaceID == 0 {
 		return counts, nil
 	}
 
@@ -279,7 +279,7 @@ func loadDashboardCheckCountsDirect(userID uint, weekAgo time.Time) (dashboardCh
 			weekAgo,
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
-		Where("up.workspace_id = ?", userID).
+		Where("up.workspace_id = ?", workspaceID).
 		Scan(&counts).Error
 	if err != nil {
 		return dashboardCheckCounts{}, err

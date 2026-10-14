@@ -95,7 +95,7 @@ func TestAddProxyStatistic_EnqueuesWhenCapacityAvailable(t *testing.T) {
 	}
 }
 
-func TestAddProxyStatisticForUsersCarriesWorkspaceAttribution(t *testing.T) {
+func TestAddProxyStatisticForWorkspacesCarriesWorkspaceAttribution(t *testing.T) {
 	originalQueue := proxyStatisticQueue
 	originalReady := proxyStatisticStreamReady.Load()
 	originalCfg := proxyStatisticStreamCfg
@@ -112,7 +112,7 @@ func TestAddProxyStatisticForUsersCarriesWorkspaceAttribution(t *testing.T) {
 	proxyStatisticStreamClient = nil
 	proxyStatisticQueue = make(chan domain.ProxyStatistic, 1)
 
-	AddProxyStatisticForUsers(domain.ProxyStatistic{ProxyID: 77}, []uint{4, 9})
+	AddProxyStatisticForWorkspaces(domain.ProxyStatistic{ProxyID: 77}, []uint{4, 9})
 	queued := <-proxyStatisticQueue
 	if len(queued.WorkspaceIDs) != 2 || queued.WorkspaceIDs[0] != 4 || queued.WorkspaceIDs[1] != 9 {
 		t.Fatalf("workspace attribution = %#v, want [4 9]", queued.WorkspaceIDs)
@@ -177,10 +177,10 @@ func TestAddProxyStatistic_EnqueuesWhenQueueFreedBeforeTimeout(t *testing.T) {
 	}
 }
 
-func TestResolveStatisticsOverloadPolicy_PrefersTenantOverride(t *testing.T) {
+func TestResolveStatisticsOverloadPolicy_PrefersWorkspaceOverride(t *testing.T) {
 	proxyStatisticStreamCfg = proxyStatisticStreamConfig{
 		overloadPolicy: statisticsOverloadPolicyDropNew,
-		tenantOverloadPolicies: map[uint]string{
+		workspaceOverloadPolicies: map[uint]string{
 			5: statisticsOverloadPolicyBlock,
 		},
 	}
@@ -219,7 +219,7 @@ func TestResolveProxyStatisticStreamConfig_DefaultsAndValidation(t *testing.T) {
 	t.Setenv(envProxyStatisticsRedisStreamGroup, "")
 	t.Setenv(envProxyStatisticsRedisStreamMaxLen, "0")
 	t.Setenv(envProxyStatisticsRedisStreamOverloadPolicy, "invalid")
-	t.Setenv(envProxyStatisticsTenantOverloadPolicies, "1=drop_new,2=block,bad=drop_new")
+	t.Setenv(envProxyStatisticsWorkspaceOverloadPolicies, "1=drop_new,2=block,bad=drop_new")
 
 	cfg := resolveProxyStatisticStreamConfig()
 	if !cfg.enabled {
@@ -237,14 +237,14 @@ func TestResolveProxyStatisticStreamConfig_DefaultsAndValidation(t *testing.T) {
 	if cfg.overloadPolicy != defaultProxyStatisticsStreamOverloadPolicy {
 		t.Fatalf("overload policy = %q, want %q", cfg.overloadPolicy, defaultProxyStatisticsStreamOverloadPolicy)
 	}
-	if len(cfg.tenantOverloadPolicies) != 2 {
-		t.Fatalf("tenant policies = %#v, want 2 entries", cfg.tenantOverloadPolicies)
+	if len(cfg.workspaceOverloadPolicies) != 2 {
+		t.Fatalf("workspace policies = %#v, want 2 entries", cfg.workspaceOverloadPolicies)
 	}
-	if cfg.tenantOverloadPolicies[1] != statisticsOverloadPolicyDropNew {
-		t.Fatalf("tenant 1 policy = %q, want %q", cfg.tenantOverloadPolicies[1], statisticsOverloadPolicyDropNew)
+	if cfg.workspaceOverloadPolicies[1] != statisticsOverloadPolicyDropNew {
+		t.Fatalf("workspace 1 policy = %q, want %q", cfg.workspaceOverloadPolicies[1], statisticsOverloadPolicyDropNew)
 	}
-	if cfg.tenantOverloadPolicies[2] != statisticsOverloadPolicyBlock {
-		t.Fatalf("tenant 2 policy = %q, want %q", cfg.tenantOverloadPolicies[2], statisticsOverloadPolicyBlock)
+	if cfg.workspaceOverloadPolicies[2] != statisticsOverloadPolicyBlock {
+		t.Fatalf("workspace 2 policy = %q, want %q", cfg.workspaceOverloadPolicies[2], statisticsOverloadPolicyBlock)
 	}
 }
 

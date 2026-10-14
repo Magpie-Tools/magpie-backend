@@ -8,7 +8,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func hydrateProxyCredentials(tx *gorm.DB, proxies []domain.Proxy, userID uint) error {
+func hydrateProxyCredentials(tx *gorm.DB, proxies []domain.Proxy, workspaceID uint) error {
 	if tx == nil {
 		return fmt.Errorf("hydrate proxy credentials: nil database")
 	}
@@ -29,8 +29,8 @@ func hydrateProxyCredentials(tx *gorm.DB, proxies []domain.Proxy, userID uint) e
 	query := tx.Session(&gorm.Session{NewDB: true}).
 		Where("proxy_id IN ?", proxyIDs).
 		Order("proxy_id ASC, workspace_id ASC")
-	if userID != 0 {
-		query = query.Where("workspace_id = ?", userID)
+	if workspaceID != 0 {
+		query = query.Where("workspace_id = ?", workspaceID)
 	}
 
 	var accesses []domain.ManagedProxy
@@ -57,12 +57,12 @@ func hydrateProxyCredentials(tx *gorm.DB, proxies []domain.Proxy, userID uint) e
 	return nil
 }
 
-func hydrateProxyCredential(tx *gorm.DB, proxy *domain.Proxy, userID uint) error {
+func hydrateProxyCredential(tx *gorm.DB, proxy *domain.Proxy, workspaceID uint) error {
 	if proxy == nil {
 		return nil
 	}
 	items := []domain.Proxy{*proxy}
-	if err := hydrateProxyCredentials(tx, items, userID); err != nil {
+	if err := hydrateProxyCredentials(tx, items, workspaceID); err != nil {
 		return err
 	}
 	*proxy = items[0]

@@ -1,11 +1,12 @@
 package judges
 
 import (
-	"magpie/internal/domain"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"magpie/internal/domain"
 )
 
 type judgeEntry struct {
@@ -17,22 +18,22 @@ type judgeEntry struct {
 
 var (
 	judgesMutex sync.Mutex
-	judges      atomic.Value // map[uint]map[string]*judgeEntry (userID -> protocol -> entry)
+	judges      atomic.Value // map[uint]map[string]*judgeEntry (workspaceID -> protocol -> entry)
 )
 
 func init() {
 	updateJudges(make(map[uint]map[string]*judgeEntry))
 }
 
-// GetNextJudge returns the next Judge and Regex for a user/protocol combination
-func GetNextJudge(userID uint, protocol string) (*domain.Judge, string) {
+// GetNextJudge returns the next judge and regex for a workspace and protocol.
+func GetNextJudge(workspaceID uint, protocol string) (*domain.Judge, string) {
 	currentMap, _ := judges.Load().(map[uint]map[string]*judgeEntry)
-	userMap, ok := currentMap[userID]
+	workspaceMap, ok := currentMap[workspaceID]
 	if !ok {
 		return nil, ""
 	}
 
-	je := userMap[protocol]
+	je := workspaceMap[protocol]
 	if je == nil || je.length == 0 {
 		return nil, ""
 	}
@@ -48,18 +49,18 @@ func updateJudges(newMap map[uint]map[string]*judgeEntry) {
 	judges.Store(newMap)
 }
 
-// AddUserJudge atomically adds a Judge with Regex to a user's protocol list
-func AddUserJudge(userID uint, judge *domain.Judge, regex string) {
+// AddWorkspaceJudge atomically adds a judge and regex to a workspace's protocol list.
+func AddWorkspaceJudge(workspaceID uint, judge *domain.Judge, regex string) {
 	judgesMutex.Lock()
 	defer judgesMutex.Unlock()
 
 	currentMap := judges.Load().(map[uint]map[string]*judgeEntry)
 	newMap := copyMap(currentMap)
 
-	protoMap := newMap[userID]
+	protoMap := newMap[workspaceID]
 	if protoMap == nil {
 		protoMap = make(map[string]*judgeEntry)
-		newMap[userID] = protoMap
+		newMap[workspaceID] = protoMap
 	}
 
 	entry := protoMap[judge.GetScheme()]
@@ -83,12 +84,12 @@ func AddUserJudge(userID uint, judge *domain.Judge, regex string) {
 
 func copyMap(src map[uint]map[string]*judgeEntry) map[uint]map[string]*judgeEntry {
 	dst := make(map[uint]map[string]*judgeEntry, len(src))
-	for userID, protoMap := range src {
+	for workspaceID, protoMap := range src {
 		dstProto := make(map[string]*judgeEntry, len(protoMap))
 		for proto, entry := range protoMap {
 			dstProto[proto] = entry
 		}
-		dst[userID] = dstProto
+		dst[workspaceID] = dstProto
 	}
 	return dst
 }
@@ -98,9 +99,9 @@ func GetSortedJudgesByID() []*domain.Judge {
 	currentMap, _ := judges.Load().(map[uint]map[string]*judgeEntry)
 	judgeSet := make(map[uint]*domain.Judge) // Judge ID as key for deduplication
 
-	// Iterate through all user and protocol entries to collect judges
-	for _, userMap := range currentMap {
-		for _, entry := range userMap {
+	// Collect judges from every workspace and protocol entry.
+	for _, workspaceMap := range currentMap {
+		for _, entry := range workspaceMap {
 			for _, jwr := range entry.list {
 				judge := jwr.Judge
 				judgeSet[judge.ID] = judge
@@ -122,35 +123,36 @@ func GetSortedJudgesByID() []*domain.Judge {
 	return sortedJudges
 }
 
-// AddJudgesToUsers adds a list of judges with regex to multiple users atomically.
-// Each user in the userIDs list receives all the provided judges.
-func AddJudgesToUsers(userIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
-	if len(userIDs) == 0 || len(judgesWithRegex) == 0 {
+// AddJudgesToWorkspaces atomically adds the judges and their regexes to each
+// workspace's local cache, then broadcasts the change to other instances.
+func AddJudgesToWorkspaces(workspaceIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
+	if len(workspaceIDs) == 0 || len(judgesWithRegex) == 0 {
 		return
 	}
 
-	addJudgesToUsersLocal(userIDs, judgesWithRegex)
-	broadcastAddJudgesToUsers(userIDs, judgesWithRegex)
+	addJudgesToWorkspacesLocal(workspaceIDs, judgesWithRegex)
+	broadcastAddJudgesToWorkspaces(workspaceIDs, judgesWithRegex)
 }
 
-// SetUserJudges replaces *all* judges for a single user, in one atomic swap.
-func SetUserJudges(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
-	setUserJudgesLocal(userID, judgesWithRegex)
-	broadcastSetUserJudges(userID, judgesWithRegex)
+// SetWorkspaceJudges replaces a workspace's local judge cache in one atomic
+// swap, then broadcasts the change to other instances.
+func SetWorkspaceJudges(workspaceID uint, judgesWithRegex []domain.JudgeWithRegex) {
+	setWorkspaceJudgesLocal(workspaceID, judgesWithRegex)
+	broadcastSetWorkspaceJudges(workspaceID, judgesWithRegex)
 }
 
-func addJudgesToUsersLocal(userIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
+func addJudgesToWorkspacesLocal(workspaceIDs []uint, judgesWithRegex []domain.JudgeWithRegex) {
 	judgesMutex.Lock()
 	defer judgesMutex.Unlock()
 
 	currentMap := judges.Load().(map[uint]map[string]*judgeEntry)
 	newMap := copyMap(currentMap)
 
-	for _, userID := range userIDs {
-		protoMap := newMap[userID]
+	for _, workspaceID := range workspaceIDs {
+		protoMap := newMap[workspaceID]
 		if protoMap == nil {
 			protoMap = make(map[string]*judgeEntry)
-			newMap[userID] = protoMap
+			newMap[workspaceID] = protoMap
 		}
 
 		for _, jwr := range judgesWithRegex {
@@ -179,7 +181,7 @@ func addJudgesToUsersLocal(userIDs []uint, judgesWithRegex []domain.JudgeWithReg
 	updateJudges(newMap)
 }
 
-func setUserJudgesLocal(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
+func setWorkspaceJudgesLocal(workspaceID uint, judgesWithRegex []domain.JudgeWithRegex) {
 	judgesMutex.Lock()
 	defer judgesMutex.Unlock()
 
@@ -209,6 +211,6 @@ func setUserJudgesLocal(userID uint, judgesWithRegex []domain.JudgeWithRegex) {
 		}
 	}
 
-	newMap[userID] = protoMap
+	newMap[workspaceID] = protoMap
 	updateJudges(newMap)
 }

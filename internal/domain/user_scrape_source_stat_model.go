@@ -24,4 +24,7 @@ func (WorkspaceScrapeSourceStat) TableName() string {
 	return "user_scrape_source_stats"
 }
 
+// UserScrapeSourceStat is the compatibility name for workspace source statistics.
+//
+// Deprecated: Use WorkspaceScrapeSourceStat.
 type UserScrapeSourceStat = WorkspaceScrapeSourceStat

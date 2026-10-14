@@ -202,7 +202,7 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 	return result, nil
 }
 
-func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
+func ListRotatingProxies(workspaceID uint) ([]dto.RotatingProxy, error) {
 	if DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
@@ -211,7 +211,7 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 	if err := DB.
 		Preload("Protocol").
 		Preload("ListenProtocol").
-		Where("workspace_id = ?", userID).
+		Where("workspace_id = ?", workspaceID).
 		Order("created_at DESC").
 		Find(&rows).Error; err != nil {
 		return nil, err
@@ -248,14 +248,14 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 		if instanceRegion == "" {
 			instanceRegion = defaultInstanceRegion
 		}
-		aliveCount, err := getAliveProxyCountCached(userID, row.ProtocolID, labels, uptimeFilterType, uptimePercentage, protocolCache)
+		aliveCount, err := getAliveProxyCountCached(workspaceID, row.ProtocolID, labels, uptimeFilterType, uptimePercentage, protocolCache)
 		if err != nil {
 			return nil, err
 		}
 
 		lastProxy := ""
 		if row.LastProxyID != nil {
-			lastProxy, err = getProxyAddressCached(userID, *row.LastProxyID, lastProxyCache)
+			lastProxy, err = getProxyAddressCached(workspaceID, *row.LastProxyID, lastProxyCache)
 			if err != nil {
 				return nil, err
 			}
@@ -288,18 +288,18 @@ func ListRotatingProxies(userID uint) ([]dto.RotatingProxy, error) {
 	return result, nil
 }
 
-func DeleteRotatingProxy(userID uint, rotatingProxyID uint64) error {
+func DeleteRotatingProxy(workspaceID uint, rotatingProxyID uint64) error {
 	if DB == nil {
 		return fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, userID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, workspaceID).Error; err != nil {
 			return err
 		}
 		var rules []domain.AlertRule
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("workspace_id = ? AND rotator_id = ?", userID, rotatingProxyID).Find(&rules).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("workspace_id = ? AND rotator_id = ?", workspaceID, rotatingProxyID).Find(&rules).Error; err != nil {
 			return err
 		}
 		for _, rule := range rules {
@@ -310,7 +310,7 @@ func DeleteRotatingProxy(userID uint, rotatingProxyID uint64) error {
 				return err
 			}
 		}
-		res := tx.Where("workspace_id = ? AND id = ?", userID, rotatingProxyID).Delete(&domain.RotatingProxy{})
+		res := tx.Where("workspace_id = ? AND id = ?", workspaceID, rotatingProxyID).Delete(&domain.RotatingProxy{})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -321,12 +321,12 @@ func DeleteRotatingProxy(userID uint, rotatingProxyID uint64) error {
 	})
 }
 
-// GetNextRotatingProxy selects a qualifying route for the workspace identified
-// by userID. Locking the rotator row serializes concurrent cursor updates.
+// GetNextRotatingProxy selects a qualifying route for the workspace.
+// Locking the rotator row serializes concurrent cursor updates.
 // Selection uses committed health evidence and advances the cursor before the
 // listener connects upstream; a failed connection does not undo the selection.
 // This call neither performs a live check nor reserves the upstream exclusively.
-func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingProxyNext, error) {
+func GetNextRotatingProxy(workspaceID uint, rotatingProxyID uint64) (*dto.RotatingProxyNext, error) {
 	if DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
@@ -338,7 +338,7 @@ func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingPro
 		if err := tx.
 			Preload("Protocol").
 			Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("workspace_id = ? AND id = ?", userID, rotatingProxyID).
+			Where("workspace_id = ? AND id = ?", workspaceID, rotatingProxyID).
 			First(&entity).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrRotatingProxyNotFound
@@ -348,7 +348,7 @@ func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingPro
 
 		labels := sanitizeRotatorReputationLabels(entity.ReputationLabels.Clone())
 		uptimeFilterType, uptimePercentage := normalizeRotatorUptimeFilter(entity.UptimeFilterType, entity.UptimePercentage)
-		selected, err := nextAliveProxyForProtocol(tx, userID, entity.ProtocolID, labels, uptimeFilterType, uptimePercentage, entity.LastProxyID)
+		selected, err := nextAliveProxyForProtocol(tx, workspaceID, entity.ProtocolID, labels, uptimeFilterType, uptimePercentage, entity.LastProxyID)
 		if err != nil {
 			return err
 		}
@@ -386,13 +386,13 @@ func GetNextRotatingProxy(userID uint, rotatingProxyID uint64) (*dto.RotatingPro
 	return result, nil
 }
 
-func getAliveProxyCountCached(userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, cache map[string]int) (int, error) {
+func getAliveProxyCountCached(workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, cache map[string]int) (int, error) {
 	normLabels := sanitizeRotatorReputationLabels(labels)
 	cacheKey := buildAliveProxyCacheKey(protocolID, normLabels, uptimeFilterType, uptimePercentage)
 	if count, ok := cache[cacheKey]; ok {
 		return count, nil
 	}
-	count, err := countAliveProxiesForProtocol(DB, userID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
+	count, err := countAliveProxiesForProtocol(DB, workspaceID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
 	if err != nil {
 		return 0, err
 	}
@@ -400,19 +400,19 @@ func getAliveProxyCountCached(userID uint, protocolID int, labels []string, upti
 	return count, nil
 }
 
-func countAliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) (int, error) {
+func countAliveProxiesForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) (int, error) {
 	var count int64
-	err := buildAliveProxyQuery(tx, userID, protocolID, labels, uptimeFilterType, uptimePercentage).
+	err := buildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage).
 		Select("COUNT(DISTINCT proxies.id)").Scan(&count).Error
 	return int(count), err
 }
 
-func getProxyAddressCached(userID uint, proxyID uint64, cache map[uint64]string) (string, error) {
+func getProxyAddressCached(workspaceID uint, proxyID uint64, cache map[uint64]string) (string, error) {
 	if cached, ok := cache[proxyID]; ok {
 		return cached, nil
 	}
 
-	proxy, err := fetchUserProxyByID(DB, userID, proxyID)
+	proxy, err := fetchWorkspaceProxyByID(DB, workspaceID, proxyID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			cache[proxyID] = ""
@@ -426,8 +426,8 @@ func getProxyAddressCached(userID uint, proxyID uint64, cache map[uint64]string)
 	return address, nil
 }
 
-func aliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) ([]domain.Proxy, error) {
-	query := buildAliveProxyQuery(tx, userID, protocolID, labels, uptimeFilterType, uptimePercentage)
+func aliveProxiesForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) ([]domain.Proxy, error) {
+	query := buildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage)
 
 	var proxies []domain.Proxy
 	err := query.
@@ -436,20 +436,20 @@ func aliveProxiesForProtocol(tx *gorm.DB, userID uint, protocolID int, labels []
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateProxyCredentials(tx, proxies, userID); err != nil {
+	if err := hydrateProxyCredentials(tx, proxies, workspaceID); err != nil {
 		return nil, err
 	}
 
 	return proxies, nil
 }
 
-func buildAliveProxyQuery(tx *gorm.DB, userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) *gorm.DB {
+func buildAliveProxyQuery(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) *gorm.DB {
 	filterLabels := sanitizeRotatorReputationLabels(labels)
 
 	query := tx.
 		Model(&domain.Proxy{}).
 		Select("proxies.*").
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", userID, domain.ManagedProxyStateActive).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", workspaceID, domain.ManagedProxyStateActive).
 		Joins("JOIN ("+currentLatestStatisticsSQL+") pls ON pls.proxy_id = proxies.id AND pls.checking_workspace_id = up.workspace_id AND pls.protocol_id = ? AND pls.alive = ? AND (pls.transport_protocol = 'tcp' OR pls.workspace_id = 0)", protocolID, true)
 
 	query = applyReputationFilter(query, filterLabels)
@@ -457,11 +457,11 @@ func buildAliveProxyQuery(tx *gorm.DB, userID uint, protocolID int, labels []str
 	return query
 }
 
-func nextAliveProxyForProtocol(tx *gorm.DB, userID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, lastProxyID *uint64) (*domain.Proxy, error) {
-	baseQuery := buildAliveProxyQuery(tx, userID, protocolID, labels, uptimeFilterType, uptimePercentage)
+func nextAliveProxyForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, lastProxyID *uint64) (*domain.Proxy, error) {
+	baseQuery := buildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage)
 
 	if lastProxyID != nil {
-		nextAfterCursor, err := fetchAliveProxyCandidate(baseQuery, *lastProxyID, true, userID)
+		nextAfterCursor, err := fetchAliveProxyCandidate(baseQuery, *lastProxyID, true, workspaceID)
 		if err == nil {
 			return nextAfterCursor, nil
 		}
@@ -470,7 +470,7 @@ func nextAliveProxyForProtocol(tx *gorm.DB, userID uint, protocolID int, labels 
 		}
 	}
 
-	first, err := fetchAliveProxyCandidate(baseQuery, 0, false, userID)
+	first, err := fetchAliveProxyCandidate(baseQuery, 0, false, workspaceID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrRotatingProxyNoAliveProxies
@@ -480,7 +480,7 @@ func nextAliveProxyForProtocol(tx *gorm.DB, userID uint, protocolID int, labels 
 	return first, nil
 }
 
-func fetchAliveProxyCandidate(baseQuery *gorm.DB, cursorProxyID uint64, applyCursor bool, userID uint) (*domain.Proxy, error) {
+func fetchAliveProxyCandidate(baseQuery *gorm.DB, cursorProxyID uint64, applyCursor bool, workspaceID uint) (*domain.Proxy, error) {
 	query := baseQuery.Session(&gorm.Session{})
 	if applyCursor {
 		query = query.Where("proxies.id > ?", cursorProxyID)
@@ -490,7 +490,7 @@ func fetchAliveProxyCandidate(baseQuery *gorm.DB, cursorProxyID uint64, applyCur
 	if err := query.Order("proxies.id").Limit(1).First(&proxy).Error; err != nil {
 		return nil, err
 	}
-	if err := hydrateProxyCredential(query, &proxy, userID); err != nil {
+	if err := hydrateProxyCredential(query, &proxy, workspaceID); err != nil {
 		return nil, err
 	}
 
@@ -543,17 +543,17 @@ func shouldApplyReputationFilter(labels []string) bool {
 	return len(labels) > 0 && len(labels) < len(reputationLabelOrder)
 }
 
-func fetchUserProxyByID(tx *gorm.DB, userID uint, proxyID uint64) (*domain.Proxy, error) {
+func fetchWorkspaceProxyByID(tx *gorm.DB, workspaceID uint, proxyID uint64) (*domain.Proxy, error) {
 	var proxy domain.Proxy
 	err := tx.
 		Model(&domain.Proxy{}).
 		Where("proxies.id = ?", proxyID).
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", userID, domain.ManagedProxyStateActive).
+		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", workspaceID, domain.ManagedProxyStateActive).
 		First(&proxy).Error
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateProxyCredential(tx, &proxy, userID); err != nil {
+	if err := hydrateProxyCredential(tx, &proxy, workspaceID); err != nil {
 		return nil, err
 	}
 	return &proxy, nil

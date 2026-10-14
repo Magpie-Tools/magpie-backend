@@ -11,23 +11,30 @@ import (
 	"gorm.io/gorm"
 )
 
-type UserJudgeAssignment struct {
+type WorkspaceJudgeAssignment struct {
 	JudgeID    uint
 	FullString string
 	Regex      string
 	CreatedAt  time.Time
 }
 
+// UserJudgeAssignment is the compatibility name for a workspace's judge assignment.
+//
+// Deprecated: Use WorkspaceJudgeAssignment.
+type UserJudgeAssignment = WorkspaceJudgeAssignment
+
 type WebsiteBlacklistCleanupResult struct {
 	JudgeRelationsRemoved  int64
 	ScrapeRelationsRemoved int64
 	BlockedScrapeSites     []domain.ScrapeSite
-	UpdatedUserJudges      map[uint][]UserJudgeAssignment
+	// Keep the historical Go field name for compatibility; keys identify workspaces.
+	UpdatedUserJudges map[uint][]WorkspaceJudgeAssignment
 }
 
-// RemoveBlockedWebsitesFromUsers deletes user associations to judges and scrape sites that
-// now resolve to blocked hosts. It returns enough detail for callers to refresh caches and queues.
-func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []string) (*WebsiteBlacklistCleanupResult, error) {
+// RemoveBlockedWebsitesFromWorkspaces deletes workspace judge assignments and
+// source subscriptions that resolve to blocked hosts. It returns enough detail
+// for callers to refresh caches and queues.
+func RemoveBlockedWebsitesFromWorkspaces(ctx context.Context, blockedWebsites []string) (*WebsiteBlacklistCleanupResult, error) {
 	if DB == nil {
 		return nil, errors.New("database not initialised")
 	}
@@ -45,18 +52,18 @@ func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []strin
 		db = db.WithContext(ctx)
 	}
 
-	judgeAffectedUsers := make(map[uint]struct{})
+	judgeAffectedWorkspaces := make(map[uint]struct{})
 
 	err := db.Transaction(func(tx *gorm.DB) error {
-		blockedJudgeIDs, affectedUsers, err := findBlockedJudgeIDs(tx, blockedSet)
+		blockedJudgeIDs, affectedWorkspaces, err := findBlockedJudgeIDs(tx, blockedSet)
 		if err != nil {
 			return err
 		}
-		for uid := range affectedUsers {
-			judgeAffectedUsers[uid] = struct{}{}
+		for workspaceID := range affectedWorkspaces {
+			judgeAffectedWorkspaces[workspaceID] = struct{}{}
 		}
 		if len(blockedJudgeIDs) > 0 {
-			if err := deleteUserJudgeRelations(tx, blockedJudgeIDs, &result.JudgeRelationsRemoved); err != nil {
+			if err := deleteWorkspaceJudgeRelations(tx, blockedJudgeIDs, &result.JudgeRelationsRemoved); err != nil {
 				return err
 			}
 		}
@@ -67,13 +74,13 @@ func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []strin
 		}
 		if len(blockedSites.siteIDs) > 0 {
 			result.BlockedScrapeSites = blockedSites.sites
-			if err := deleteUserScrapeRelations(tx, blockedSites.siteIDs, &result.ScrapeRelationsRemoved); err != nil {
+			if err := deleteWorkspaceScrapeRelations(tx, blockedSites.siteIDs, &result.ScrapeRelationsRemoved); err != nil {
 				return err
 			}
 		}
 
-		if len(judgeAffectedUsers) > 0 {
-			updates, err := loadRemainingUserJudges(tx, judgeAffectedUsers)
+		if len(judgeAffectedWorkspaces) > 0 {
+			updates, err := loadRemainingWorkspaceJudges(tx, judgeAffectedWorkspaces)
 			if err != nil {
 				return err
 			}
@@ -88,6 +95,13 @@ func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []strin
 	}
 
 	return result, nil
+}
+
+// RemoveBlockedWebsitesFromUsers is the compatibility name for workspace cleanup.
+//
+// Deprecated: Use RemoveBlockedWebsitesFromWorkspaces.
+func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []string) (*WebsiteBlacklistCleanupResult, error) {
+	return RemoveBlockedWebsitesFromWorkspaces(ctx, blockedWebsites)
 }
 
 func findBlockedJudgeIDs(tx *gorm.DB, blockedSet map[string]struct{}) ([]uint, map[uint]struct{}, error) {
@@ -105,17 +119,17 @@ func findBlockedJudgeIDs(tx *gorm.DB, blockedSet map[string]struct{}) ([]uint, m
 	}
 
 	blocked := make(map[uint]struct{}, len(rows))
-	affectedUsers := make(map[uint]struct{})
+	affectedWorkspaces := make(map[uint]struct{})
 
 	for _, row := range rows {
 		if !config.IsWebsiteBlockedForSet(row.URL, blockedSet) {
 			continue
 		}
 		blocked[row.JudgeID] = struct{}{}
-		affectedUsers[row.WorkspaceID] = struct{}{}
+		affectedWorkspaces[row.WorkspaceID] = struct{}{}
 	}
 
-	return mapKeysUint(blocked), affectedUsers, nil
+	return mapKeysUint(blocked), affectedWorkspaces, nil
 }
 
 type blockedScrapeSites struct {
@@ -160,7 +174,7 @@ func findBlockedScrapeSites(tx *gorm.DB, blockedSet map[string]struct{}) (blocke
 	}, nil
 }
 
-func deleteUserJudgeRelations(tx *gorm.DB, judgeIDs []uint, totalRemoved *int64) error {
+func deleteWorkspaceJudgeRelations(tx *gorm.DB, judgeIDs []uint, totalRemoved *int64) error {
 	if len(judgeIDs) == 0 {
 		return nil
 	}
@@ -191,7 +205,7 @@ func deleteUserJudgeRelations(tx *gorm.DB, judgeIDs []uint, totalRemoved *int64)
 	return nil
 }
 
-func deleteUserScrapeRelations(tx *gorm.DB, siteIDs []uint64, totalRemoved *int64) error {
+func deleteWorkspaceScrapeRelations(tx *gorm.DB, siteIDs []uint64, totalRemoved *int64) error {
 	if len(siteIDs) == 0 {
 		return nil
 	}
@@ -222,9 +236,9 @@ func deleteUserScrapeRelations(tx *gorm.DB, siteIDs []uint64, totalRemoved *int6
 	return nil
 }
 
-func loadRemainingUserJudges(tx *gorm.DB, userSet map[uint]struct{}) (map[uint][]UserJudgeAssignment, error) {
-	userIDs := mapKeysUint(userSet)
-	if len(userIDs) == 0 {
+func loadRemainingWorkspaceJudges(tx *gorm.DB, workspaceSet map[uint]struct{}) (map[uint][]WorkspaceJudgeAssignment, error) {
+	workspaceIDs := mapKeysUint(workspaceSet)
+	if len(workspaceIDs) == 0 {
 		return nil, nil
 	}
 
@@ -239,18 +253,18 @@ func loadRemainingUserJudges(tx *gorm.DB, userSet map[uint]struct{}) (map[uint][
 	if err := tx.Table("user_judges").
 		Select("user_judges.workspace_id, judges.id AS judge_id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON judges.id = user_judges.judge_id").
-		Where("user_judges.workspace_id IN ?", userIDs).
+		Where("user_judges.workspace_id IN ?", workspaceIDs).
 		Order("user_judges.workspace_id, judges.id").
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	result := make(map[uint][]UserJudgeAssignment, len(userIDs))
-	for _, id := range userIDs {
+	result := make(map[uint][]WorkspaceJudgeAssignment, len(workspaceIDs))
+	for _, id := range workspaceIDs {
 		result[id] = nil
 	}
 	for _, row := range rows {
-		result[row.WorkspaceID] = append(result[row.WorkspaceID], UserJudgeAssignment{
+		result[row.WorkspaceID] = append(result[row.WorkspaceID], WorkspaceJudgeAssignment{
 			JudgeID:    row.JudgeID,
 			FullString: row.FullString,
 			Regex:      row.Regex,

@@ -73,8 +73,8 @@ func SaveProxySnapshots(ctx context.Context) error {
 	return nil
 }
 
-// GetProxySnapshotEntries returns the most recent proxy snapshot entries for a user/metric combination.
-func GetProxySnapshotEntries(userID uint, metric string, limit int) []dto.ProxySnapshotEntry {
+// GetProxySnapshotEntries returns the most recent snapshots for a workspace and metric.
+func GetProxySnapshotEntries(workspaceID uint, metric string, limit int) []dto.ProxySnapshotEntry {
 	if DB == nil {
 		return nil
 	}
@@ -87,7 +87,7 @@ func GetProxySnapshotEntries(userID uint, metric string, limit int) []dto.ProxyS
 
 	rows := make([]domain.ProxySnapshot, 0, limit)
 
-	DB.Where("workspace_id = ? AND metric = ?", userID, metric).
+	DB.Where("workspace_id = ? AND metric = ?", workspaceID, metric).
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&rows)
@@ -173,7 +173,7 @@ func scrapedProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]in
 	return counts, nil
 }
 
-// GetCurrentAliveProxyCount returns the latest alive proxy count for a user based on proxy statistics.
+// GetCurrentAliveProxyCount returns the workspace's latest alive proxy count based on proxy statistics.
 func GetCurrentAliveProxyCount(workspaceID uint) int64 {
 	if DB == nil {
 		return 0
@@ -206,14 +206,14 @@ type proxySnapshotCountSummary struct {
 	Found    bool
 }
 
-func getProxySnapshotCountSummary(userID uint, metric string, since time.Time) proxySnapshotCountSummary {
-	if DB == nil || userID == 0 {
+func getProxySnapshotCountSummary(workspaceID uint, metric string, since time.Time) proxySnapshotCountSummary {
+	if DB == nil || workspaceID == 0 {
 		return proxySnapshotCountSummary{}
 	}
 
 	var latest domain.ProxySnapshot
 	latestResult := DB.
-		Where("workspace_id = ? AND metric = ?", userID, metric).
+		Where("workspace_id = ? AND metric = ?", workspaceID, metric).
 		Order("created_at DESC, id DESC").
 		Limit(1).
 		Find(&latest)
@@ -223,7 +223,7 @@ func getProxySnapshotCountSummary(userID uint, metric string, since time.Time) p
 
 	var baseline domain.ProxySnapshot
 	baselineResult := DB.
-		Where("workspace_id = ? AND metric = ? AND created_at >= ?", userID, metric, since).
+		Where("workspace_id = ? AND metric = ? AND created_at >= ?", workspaceID, metric, since).
 		Order("created_at ASC, id ASC").
 		Limit(1).
 		Find(&baseline)

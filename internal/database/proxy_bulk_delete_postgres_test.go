@@ -101,7 +101,7 @@ SELECT workspace_id,proxy_id,? FROM user_proxies WHERE workspace_id=? AND proxy_
 	if err := db.Exec("ANALYZE").Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := refreshAllUserScrapeSourceStats(db); err != nil {
+	if err := refreshAllWorkspaceScrapeSourceStats(db); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshWorkspaceUsageActiveRoutes(db, a.ID); err != nil {
