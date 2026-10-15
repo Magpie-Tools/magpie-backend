@@ -12,6 +12,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
       postgres:
         image: postgres:17
         env:
@@ -27,6 +31,8 @@ jobs:
           --health-retries 5
     env:
       MAGPIE_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 user=magpie_ci password=magpie_ci dbname=magpie_ci sslmode=disable
+      MAGPIE_TEST_REDIS_URL: redis://127.0.0.1:6379
+      MAGPIE_TEST_QUEUE_REDIS_URL: redis://127.0.0.1:6379/13
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -34,7 +40,10 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test ./... -count=1
+      - run: go build -race -o "$RUNNER_TEMP/magpie-race" ./cmd/magpie
       - run: go test -race ./... -count=1
+        env:
+          MAGPIE_TEST_BACKEND_BINARY: ${{ runner.temp }}/magpie-race
       - run: go vet ./...
       - run: go build ./cmd/magpie
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...

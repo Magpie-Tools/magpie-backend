@@ -40,6 +40,7 @@ const (
 var (
 	postProcessQueue       chan scrapedHTMLJob
 	startOnce              sync.Once
+	postProcessWorkers     sync.WaitGroup
 	scrapePopErrorLogState struct {
 		mu         sync.Mutex
 		lastLogAt  time.Time
@@ -70,6 +71,13 @@ func ThreadDispatcher(ctx context.Context) {
 		ctx = context.Background()
 	}
 	StartInfrastructure()
+	var workers sync.WaitGroup
+	defer func() {
+		workers.Wait()
+		close(postProcessQueue)
+		postProcessWorkers.Wait()
+		sharedBrowser().close()
+	}()
 
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -92,7 +100,7 @@ func ThreadDispatcher(ctx context.Context) {
 
 		activeThreads := currentThreads.Load()
 		for activeThreads < target {
-			launchScraperWorker(ctx)
+			launchScraperWorker(ctx, &workers)
 			activeThreads = currentThreads.Load()
 		}
 		// Non-blocking stop requests avoid dispatcher stalls when counts drift.
@@ -112,9 +120,11 @@ func ThreadDispatcher(ctx context.Context) {
 	}
 }
 
-func launchScraperWorker(ctx context.Context) {
+func launchScraperWorker(ctx context.Context, workers *sync.WaitGroup) {
 	currentThreads.Add(1)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				log.Error("scraper worker panicked", "panic", recovered)
@@ -322,7 +332,9 @@ func autoThreadCount(cfg config.Config) uint32 {
 
 func startScrapedHTMLWorkers(count int) {
 	for i := 0; i < count; i++ {
+		postProcessWorkers.Add(1)
 		go func() {
+			defer postProcessWorkers.Done()
 			for job := range postProcessQueue {
 				processScrapedHTMLJob(job)
 			}

@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
@@ -83,13 +85,9 @@ func Run() error {
 	}
 
 	heartbeatCancel := runtime.LaunchInstanceHeartbeat(rootCtx, redisClient)
-	defer heartbeatCancel()
-
-	if err := bootstrap.Setup(rootCtx); err != nil {
-		return err
-	}
-
+	running, setupErr := bootstrap.Setup(rootCtx)
 	defer func() {
+		heartbeatCancel()
 		if err := proxyqueue.PublicProxyQueue.Close(); err != nil {
 			log.Warn("error closing proxy queue", "error", err)
 		}
@@ -98,7 +96,23 @@ func Run() error {
 		}
 	}()
 
-	return server.OpenRoutes(rootCtx, backendPort)
+	err = setupErr
+	if err == nil {
+		err = server.OpenRoutes(rootCtx, backendPort)
+	}
+	stop()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), resolveBackgroundShutdownTimeout())
+	defer cancel()
+	log.Info("Waiting for background jobs and final usage/statistics flushes")
+	return errors.Join(err, running.Shutdown(shutdownCtx))
+}
+
+func resolveBackgroundShutdownTimeout() time.Duration {
+	seconds := support.GetEnvInt("BACKGROUND_SHUTDOWN_TIMEOUT_SECONDS", 60)
+	if seconds <= 0 {
+		seconds = 60
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func resolvePort(primaryEnv, legacyEnv string, fallback int) int {

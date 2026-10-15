@@ -620,8 +620,8 @@ func TestResolveUserRegistrationPolicy_LocalOverrideAllowsLegacyOpenDefaults(t *
 	if policy.DisablePublicRegistration {
 		t.Fatal("expected DisablePublicRegistration=false when insecure local override is enabled")
 	}
-	if !policy.DisablePublicFirstAdminBootstrap {
-		t.Fatal("expected DisablePublicFirstAdminBootstrap=true unless explicitly enabled")
+	if policy.DisablePublicFirstAdminBootstrap {
+		t.Fatal("expected local setup override to enable first-admin bootstrap")
 	}
 }
 

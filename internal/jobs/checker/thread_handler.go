@@ -67,6 +67,8 @@ func ThreadDispatcher(ctx context.Context) {
 
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
+	var workers sync.WaitGroup
+	defer workers.Wait()
 
 	for {
 		select {
@@ -86,7 +88,7 @@ func ThreadDispatcher(ctx context.Context) {
 
 		activeThreads := currentThreads.Load()
 		for activeThreads < targetThreads {
-			launchCheckerWorker(ctx)
+			launchCheckerWorker(ctx, &workers)
 			activeThreads = currentThreads.Load()
 		}
 
@@ -107,9 +109,11 @@ func ThreadDispatcher(ctx context.Context) {
 	}
 }
 
-func launchCheckerWorker(ctx context.Context) {
+func launchCheckerWorker(ctx context.Context, workers *sync.WaitGroup) {
 	currentThreads.Add(1)
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				log.Error("checker worker panicked", "panic", recovered)

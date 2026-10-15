@@ -66,11 +66,29 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 		return "", err
 	}
 	defer release()
-	session, err := instance.browser.Context(ctx).Incognito()
+	var guardMu sync.Mutex
+	var guardErr error
+	reject := func(e error) {
+		guardMu.Lock()
+		if guardErr == nil {
+			guardErr = e
+		}
+		guardMu.Unlock()
+	}
+	egress, err := startBrowserEgressProxy(ctx, reject)
+	if err != nil {
+		return "", fmt.Errorf("start browser egress proxy: %w", err)
+	}
+	defer egress.close()
+	session := instance.browser.Context(ctx)
+	created, err := (proto.TargetCreateBrowserContext{
+		ProxyServer: egress.address, ProxyBypassList: "<-loopback>",
+	}).Call(session)
 	if err != nil {
 		manager.invalidate(instance)
 		return "", fmt.Errorf("%w: create browser context: %v", errBrowserUnavailable, err)
 	}
+	session.BrowserContextID = created.BrowserContextID
 	// Dispose the complete context with a fresh, bounded deadline, even when the
 	// navigation deadline expired. No page recycling or shared cookie state.
 	defer func() {
@@ -95,15 +113,6 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 	}
 
 	eventCtx, cancelEvents := context.WithCancel(ctx)
-	var guardMu sync.Mutex
-	var guardErr error
-	reject := func(e error) {
-		guardMu.Lock()
-		if guardErr == nil {
-			guardErr = e
-		}
-		guardMu.Unlock()
-	}
 	waitEvents := page.Context(eventCtx).EachEvent(
 		func(e *proto.FetchRequestPaused) {
 			if e == nil || e.Request == nil {
@@ -133,9 +142,6 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 			}
 			if e.Response.Status >= 400 {
 				reject(&scrapeHTTPStatusError{code: e.Response.Status})
-			}
-			if e := validateScrapeRemoteIP(e.Response.RemoteIPAddress); e != nil {
-				reject(e)
 			}
 		},
 	)

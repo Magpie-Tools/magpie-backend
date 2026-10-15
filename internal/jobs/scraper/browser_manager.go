@@ -129,13 +129,30 @@ func (m *browserManager) invalidate(b *browserInstance) {
 	b.close()
 }
 
+func (m *browserManager) close() {
+	m.mu.Lock()
+	starting := m.starting
+	m.mu.Unlock()
+	if starting != nil {
+		<-starting
+	}
+	m.mu.Lock()
+	b := m.current
+	m.current = nil
+	m.mu.Unlock()
+	if b != nil {
+		b.close()
+	}
+}
+
 func launchScraperBrowser(ctx context.Context) (*browserInstance, error) {
 	profile, err := os.MkdirTemp("", "magpie-chromium-")
 	if err != nil {
 		return nil, err
 	}
 	l := launcher.New().Context(ctx).UserDataDir(profile).Leakless(true).Headless(true).
-		Set("disable-background-timer-throttling").Set("disable-backgrounding-occluded-windows").Set("disable-renderer-backgrounding")
+		Set("disable-background-timer-throttling").Set("disable-backgrounding-occluded-windows").Set("disable-renderer-backgrounding").
+		Set("disable-quic").Set("force-webrtc-ip-handling-policy", "disable_non_proxied_udp")
 	url, err := l.Launch()
 	if err != nil {
 		if l.PID() > 0 {

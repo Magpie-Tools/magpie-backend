@@ -21,6 +21,7 @@ type rotatorConnections struct {
 	upstreams map[net.Conn]struct{}
 	ctx       context.Context
 	cancel    context.CancelFunc
+	active    sync.WaitGroup
 }
 
 func newRotatorConnections() *rotatorConnections {
@@ -46,6 +47,7 @@ func (c *rotatorConnections) add(conn net.Conn, upstream bool) bool {
 		c.upstreams[conn] = struct{}{}
 	} else {
 		c.clients[conn] = struct{}{}
+		c.active.Add(1)
 	}
 	return true
 }
@@ -55,9 +57,26 @@ func (c *rotatorConnections) remove(conn net.Conn) {
 		return
 	}
 	c.mu.Lock()
+	if _, exists := c.clients[conn]; exists {
+		c.active.Done()
+	}
 	delete(c.clients, conn)
 	delete(c.upstreams, conn)
 	c.mu.Unlock()
+}
+
+func (c *rotatorConnections) wait(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	done := make(chan struct{})
+	go func() { c.active.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *rotatorConnections) stop() {

@@ -182,6 +182,7 @@ func OpenRoutes(ctx context.Context, port int) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), resolveServerShutdownTimeout())
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
 			return fmt.Errorf("api server shutdown failed: %w", err)
 		}
 		return <-serverErrCh

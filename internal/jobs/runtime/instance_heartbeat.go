@@ -97,7 +97,9 @@ func StartInstanceHeartbeat(ctx context.Context, client *redis.Client, keyPrefix
 
 func LaunchInstanceHeartbeat(parent context.Context, client *redis.Client) context.CancelFunc {
 	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		activeClient := client
 		loggedUnavailable := false
 
@@ -128,7 +130,7 @@ func LaunchInstanceHeartbeat(parent context.Context, client *redis.Client) conte
 			return
 		}
 	}()
-	return cancel
+	return func() { cancel(); <-done }
 }
 
 func currentInstanceID() string {

@@ -35,7 +35,15 @@ const startupQueueBootstrapRetryDelay = 10 * time.Second
 var startupQueueBootstrapCompleted atomic.Bool
 var startupQueueBootstrapRunning atomic.Bool
 
-func Setup(ctx context.Context) error {
+func Setup(ctx context.Context) (*Runtime, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	running := newRuntime(ctx)
+	return running, running.setup(ctx)
+}
+
+func (running *Runtime) setup(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -67,16 +75,16 @@ func Setup(ctx context.Context) error {
 		if err := database.RefreshDashboardCaches(ctx); err != nil {
 			return fmt.Errorf("prewarm fixture dashboard: %w", err)
 		}
-		go database.StartReadModelRefreshRoutine(ctx)
-		go jobruntime.StartDashboardCacheRoutine(ctx)
+		running.producers.start(database.StartReadModelRefreshRoutine)
+		running.producers.start(jobruntime.StartDashboardCacheRoutine)
 		startupQueueBootstrapCompleted.Store(true)
 		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
 		return nil
 	}
-	go maintainRuntimeCaches(ctx)
+	running.producers.start(maintainRuntimeCaches)
 	config.SetBetweenTime()
-	go proxyqueue.PublicProxyQueue.StartIntervalUpdates(ctx)
-	go sitequeue.PublicScrapeSiteQueue.StartIntervalUpdates(ctx)
+	running.producers.start(proxyqueue.PublicProxyQueue.StartIntervalUpdates)
+	running.producers.start(sitequeue.PublicScrapeSiteQueue.StartIntervalUpdates)
 
 	if err := blacklist.Initialize(ctx); err != nil {
 		log.Warn("Blacklist initialisation failed", "error", err)
@@ -93,7 +101,7 @@ func Setup(ctx context.Context) error {
 		return fmt.Errorf("load checker settings snapshots: %w", err)
 	}
 
-	go recoverRedisSynchronization(ctx)
+	running.producers.start(recoverRedisSynchronization)
 
 	pausedForFailure, inactiveProxies, refreshProxies, cleanupErr := database.CleanupAutoRemovalViolations(ctx)
 	if cleanupErr != nil {
@@ -139,28 +147,27 @@ func Setup(ctx context.Context) error {
 		}
 	}
 
-	go refreshPublicIP(ctx)
+	running.producers.start(refreshPublicIP)
 
 	startupQueueBootstrapCompleted.Store(false)
 	if support.GetEnvBool(envStartupQueueBootstrapAsync, true) {
-		startBootstrapStartupQueuesAsync(ctx)
+		running.producers.start(startBootstrapStartupQueuesAsync)
 	} else {
 		if err := waitForStartupQueues(ctx); err != nil {
 			return err
 		}
 	}
-	go monitorQueueState(ctx)
+	running.producers.start(monitorQueueState)
 
 	rotatingproxy.GlobalManager.StartAll()
-	go func() {
-		<-ctx.Done()
-		rotatingproxy.GlobalManager.StopAll()
-	}()
 	syncIntervalSeconds := support.GetEnvInt("ROTATING_PROXY_SYNC_INTERVAL_SECONDS", 10)
 	if syncIntervalSeconds <= 0 {
 		syncIntervalSeconds = 10
 	}
-	go rotatingproxy.GlobalManager.StartSyncLoop(ctx, time.Duration(syncIntervalSeconds)*time.Second)
+	running.producers.start(func(ctx context.Context) {
+		rotatingproxy.GlobalManager.StartSyncLoop(ctx, time.Duration(syncIntervalSeconds)*time.Second)
+		rotatingproxy.GlobalManager.StopAll()
+	})
 
 	dashboardCacheStart := time.Now()
 	if err := database.RefreshDashboardCaches(ctx); err != nil {
@@ -171,29 +178,28 @@ func Setup(ctx context.Context) error {
 
 	// Routines
 
-	go judges.StartJudgeRoutine(ctx)
-	go database.StartReadModelRefreshRoutine(ctx)
-	go jobruntime.StartDashboardCacheRoutine(ctx)
-	go jobruntime.StartProxyStatisticsRoutine(ctx)
-	go jobruntime.StartWorkspaceUsageRoutine(ctx)
-	go jobruntime.StartProxyStatisticsRetentionRoutine(ctx)
-	go jobruntime.StartProxyTimelineRetentionRoutine(ctx)
-	go jobruntime.StartProxyHistoryRoutine(ctx)
-	go jobruntime.StartProxySnapshotRoutine(ctx)
-	go jobruntime.StartProxyGeoRefreshRoutine(ctx)
-	go maintenance.StartOrphanCleanupRoutine(ctx)
-	go maintenance.StartPasswordResetCleanupRoutine(ctx)
-	go maintenance.StartWorkspaceInvitationCleanupRoutine(ctx)
-	go jobruntime.StartGeoLiteUpdateRoutine(ctx)
-	go jobruntime.StartAbuseIPDBRoutine(ctx)
-	go jobruntime.StartEmailDeliveryRoutine(ctx)
-	go jobruntime.StartAlertEvaluationRoutine(ctx)
-	go jobruntime.StartAlertDeliveryRoutine(ctx)
-	go jobruntime.StartEmailDeliveryMaintenanceRoutine(ctx)
-	go blacklist.StartRefreshRoutine(ctx)
-	go checker.ThreadDispatcher(ctx)
-	scraper.StartInfrastructure()
-	go scraper.ThreadDispatcher(ctx)
+	running.producers.start(judges.StartJudgeRoutine)
+	running.producers.start(database.StartReadModelRefreshRoutine)
+	running.producers.start(jobruntime.StartDashboardCacheRoutine)
+	running.consumers.start(jobruntime.StartProxyStatisticsRoutine)
+	running.consumers.start(jobruntime.StartWorkspaceUsageRoutine)
+	running.producers.start(jobruntime.StartProxyStatisticsRetentionRoutine)
+	running.producers.start(jobruntime.StartProxyTimelineRetentionRoutine)
+	running.producers.start(jobruntime.StartProxyHistoryRoutine)
+	running.producers.start(jobruntime.StartProxySnapshotRoutine)
+	running.producers.start(jobruntime.StartProxyGeoRefreshRoutine)
+	running.producers.start(maintenance.StartOrphanCleanupRoutine)
+	running.producers.start(maintenance.StartPasswordResetCleanupRoutine)
+	running.producers.start(maintenance.StartWorkspaceInvitationCleanupRoutine)
+	running.producers.start(jobruntime.StartGeoLiteUpdateRoutine)
+	running.producers.start(jobruntime.StartAbuseIPDBRoutine)
+	running.producers.start(jobruntime.StartEmailDeliveryRoutine)
+	running.producers.start(jobruntime.StartAlertEvaluationRoutine)
+	running.producers.start(jobruntime.StartAlertDeliveryRoutine)
+	running.producers.start(jobruntime.StartEmailDeliveryMaintenanceRoutine)
+	running.producers.start(blacklist.StartRefreshRoutine)
+	running.producers.start(checker.ThreadDispatcher)
+	running.producers.start(scraper.ThreadDispatcher)
 
 	return nil
 }
@@ -212,26 +218,24 @@ func startBootstrapStartupQueuesAsync(ctx context.Context) {
 		return
 	}
 
-	go func() {
-		defer startupQueueBootstrapRunning.Store(false)
-		for {
-			err := initializeRuntimeQueues(ctx)
-			if err == nil {
-				log.Info("Startup queue bootstrap completed")
-				return
-			}
-			if errors.Is(err, context.Canceled) {
-				return
-			}
-
-			log.Error("Startup queue bootstrap failed; retrying", "error", err, "retry_in", startupQueueBootstrapRetryDelay)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(startupQueueBootstrapRetryDelay):
-			}
+	defer startupQueueBootstrapRunning.Store(false)
+	for {
+		err := initializeRuntimeQueues(ctx)
+		if err == nil {
+			log.Info("Startup queue bootstrap completed")
+			return
 		}
-	}()
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+
+		log.Error("Startup queue bootstrap failed; retrying", "error", err, "retry_in", startupQueueBootstrapRetryDelay)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(startupQueueBootstrapRetryDelay):
+		}
+	}
 }
 
 func waitForStartupQueues(ctx context.Context) error {

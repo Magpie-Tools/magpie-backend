@@ -168,46 +168,50 @@ func NewRestrictedOutboundHTTPClient(timeout time.Duration) *http.Client {
 	}
 	transport.Proxy = nil
 
-	dialer := &net.Dialer{}
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		if PrivateNetworkEgressAllowed() {
-			return dialer.DialContext(ctx, network, address)
-		}
-
-		host, port, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
-		}
-
-		allowedIPs, err := resolveAllowedOutboundIPs(ctx, host, outboundResolver)
-		if err != nil {
-			return nil, err
-		}
-
-		var dialErr error
-		for _, ip := range allowedIPs {
-			conn, attemptErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-			if attemptErr == nil {
-				return conn, nil
-			}
-			dialErr = attemptErr
-		}
-
-		if dialErr != nil {
-			return nil, dialErr
-		}
-
-		return nil, &OutboundTargetError{
-			Host:   host,
-			Reason: "no allowed upstream addresses",
-		}
-	}
+	transport.DialContext = DialRestrictedOutboundContext
 
 	client := &http.Client{Transport: transport}
 	if timeout > 0 {
 		client.Timeout = timeout
 	}
 	return client
+}
+
+// DialRestrictedOutboundContext resolves and validates once, then dials those
+// literal addresses. Callers must never resolve the hostname again after this.
+func DialRestrictedOutboundContext(ctx context.Context, network, address string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	if PrivateNetworkEgressAllowed() {
+		return dialer.DialContext(ctx, network, address)
+	}
+
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+
+	allowedIPs, err := resolveAllowedOutboundIPs(ctx, host, outboundResolver)
+	if err != nil {
+		return nil, err
+	}
+
+	var dialErr error
+	for _, ip := range allowedIPs {
+		conn, attemptErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if attemptErr == nil {
+			return conn, nil
+		}
+		dialErr = attemptErr
+	}
+
+	if dialErr != nil {
+		return nil, dialErr
+	}
+
+	return nil, &OutboundTargetError{
+		Host:   host,
+		Reason: "no allowed upstream addresses",
+	}
 }
 
 func parseOutboundHTTPURL(raw string) (*url.URL, error) {

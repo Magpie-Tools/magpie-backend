@@ -162,10 +162,13 @@ func (m *Manager) Remove(rotatorID uint64) {
 func (m *Manager) StopAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var stopped sync.WaitGroup
 	for id, server := range m.servers {
-		server.Stop()
+		stopped.Add(1)
+		go func() { defer stopped.Done(); server.Stop() }()
 		delete(m.servers, id)
 	}
+	stopped.Wait()
 }
 
 type proxyServer struct {
@@ -306,6 +309,7 @@ func (ps *proxyServer) Stop() {
 		defer cancel()
 		if ps.httpServer != nil {
 			if err := ps.httpServer.Shutdown(ctx); err != nil {
+				_ = ps.httpServer.Close()
 				log.Error("rotating proxy server shutdown", "rotator_id", ps.rotator.ID, "error", err)
 			}
 		}
@@ -316,6 +320,9 @@ func (ps *proxyServer) Stop() {
 		}
 		if ps.listener != nil {
 			_ = ps.listener.Close()
+		}
+		if err := ps.connections.wait(ctx); err != nil {
+			log.Error("rotating proxy client shutdown", "rotator_id", ps.rotator.ID, "error", err)
 		}
 	})
 }

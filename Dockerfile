@@ -24,6 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-liberation  ca-certificates  xdg-utils \
   && rm -rf /var/lib/apt/lists/*
 
+# Docker copies these permissions into new named volumes.
+RUN mkdir -p /runtime-data /runtime-browser-cache \
+  && chown 65532:65532 /runtime-data /runtime-browser-cache \
+  && chmod 700 /runtime-data /runtime-browser-cache
+
 ############ Stage 3 – tiny runtime image ##########################
 FROM gcr.io/distroless/base-debian12:nonroot
 
@@ -35,6 +40,8 @@ COPY --from=chromium-deps /usr/share/chromium /usr/share/chromium
 
 WORKDIR /app
 COPY --from=backend-build /backend/server .
+COPY --from=chromium-deps --chown=65532:65532 /runtime-data /app/data
+COPY --from=chromium-deps --chown=65532:65532 /runtime-browser-cache /home/nonroot/.cache/rod
 
 USER 65532:65532
 

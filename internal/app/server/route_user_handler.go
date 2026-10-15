@@ -672,16 +672,13 @@ func createUserWithFirstAdminRole(user *domain.User, policy userRegistrationPoli
 }
 
 func resolveUserRegistrationPolicy() userRegistrationPolicy {
-	disablePublicDefault := true
-	if !config.InProductionMode && support.GetEnvBool(envAllowInsecureRegistrationDefaults, false) {
-		disablePublicDefault = false
-	}
+	localSetup := !config.InProductionMode && support.GetEnvBool(envAllowInsecureRegistrationDefaults, false)
 
 	policy := userRegistrationPolicy{
-		DisablePublicRegistration: support.GetEnvBool(envDisablePublicRegistration, disablePublicDefault),
+		DisablePublicRegistration: support.GetEnvBool(envDisablePublicRegistration, !localSetup),
 	}
 
-	bootstrapEnabled := support.GetEnvBool(envEnablePublicFirstAdminBootstrap, false)
+	bootstrapEnabled := support.GetEnvBool(envEnablePublicFirstAdminBootstrap, localSetup)
 	policy.DisablePublicFirstAdminBootstrap = !bootstrapEnabled
 
 	return policy

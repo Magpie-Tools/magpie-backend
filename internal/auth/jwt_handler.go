@@ -61,9 +61,14 @@ func RequireJWTTTLConfigured() error {
 func jwtSigningKey() ([]byte, error) {
 	jwtSecretOnce.Do(func() {
 		raw := strings.TrimSpace(os.Getenv(jwtSecretEnv))
-		if raw == "" {
-			jwtKeyErr = fmt.Errorf("jwt secret not configured: %s", jwtSecretEnv)
-			return
+		if raw == "" || raw == legacyComposeJWTSecret {
+			if raw == legacyComposeJWTSecret {
+				log.Warn("Replacing the published Compose JWT secret; existing sessions must sign in again")
+			}
+			raw, jwtKeyErr = loadOrCreateJWTSecret("data/jwt_secret")
+			if jwtKeyErr != nil {
+				return
+			}
 		}
 		if err := validateJWTSecret(raw); err != nil {
 			jwtKeyErr = err
