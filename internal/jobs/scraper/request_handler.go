@@ -75,6 +75,16 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 		}
 		guardMu.Unlock()
 	}
+	// Apply scrape rejections after browser cleanup, so only DevTools errors
+	// from browser operations can invalidate the shared instance.
+	defer func() {
+		guardMu.Lock()
+		defer guardMu.Unlock()
+		if guardErr != nil {
+			html = ""
+			err = guardErr
+		}
+	}()
 	egress, err := startBrowserEgressProxy(ctx, reject)
 	if err != nil {
 		return "", fmt.Errorf("start browser egress proxy: %w", err)
@@ -122,9 +132,9 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 			if config.IsWebsiteBlocked(e.Request.URL) {
 				requestErr = fmt.Errorf("browser request blocked by website blacklist")
 			} else {
-				validationCtx, cancel := context.WithTimeout(eventCtx, 2*time.Second)
-				_, requestErr = support.ValidateOutboundHTTPURLContext(validationCtx, e.Request.URL)
-				cancel()
+				// The egress proxy validates DNS results when it connects. Keep
+				// DNS failures local to a resource instead of rejecting the page.
+				_, requestErr = support.ValidateOutboundHTTPLiteral(e.Request.URL)
 			}
 			if requestErr != nil {
 				reject(requestErr)
@@ -152,12 +162,6 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 	defer func() {
 		cancelEvents()
 		<-eventsDone
-		guardMu.Lock()
-		defer guardMu.Unlock()
-		if guardErr != nil {
-			html = ""
-			err = guardErr
-		}
 	}()
 	waitIdle := page.WaitRequestIdle(300*time.Millisecond, nil, nil, nil)
 	if err := page.Navigate(url); err != nil {

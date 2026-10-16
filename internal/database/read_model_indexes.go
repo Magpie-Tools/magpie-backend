@@ -222,12 +222,17 @@ func StartReadModelRefreshRoutine(ctx context.Context) {
 		defer sourcesWG.Done()
 		runSourceStatsRefresh(ctx)
 	}()
-	defer sourcesWG.Wait()
 
 	for {
 		select {
 		case <-ctx.Done():
-			flushReadModelDirtyProxyIDs(context.Background(), true)
+			// A canceled source query can requeue its batch. Join it before
+			// the proxy drain generates the final source invalidations.
+			sourcesWG.Wait()
+			drainCtx := context.Background()
+			flushReadModelDirtyProxyIDs(drainCtx, true)
+			for flushDirtySourceStats(drainCtx) {
+			}
 			return
 		case <-ticker.C:
 			flushReadModelDirtyProxyIDs(ctx, false)
@@ -600,9 +605,11 @@ func runSourceStatsRefresh(ctx context.Context) {
 	}
 }
 
-func flushDirtySourceStats(ctx context.Context) {
+// flushDirtySourceStats persists at most one batch. False means the queue is
+// empty or a failed batch was requeued, so a shutdown drain must stop retrying.
+func flushDirtySourceStats(ctx context.Context) bool {
 	if DB == nil {
-		return
+		return false
 	}
 	limit := max(1, min(1000, support.GetEnvInt("SCRAPE_SOURCE_STATS_REFRESH_BATCH_SIZE", 100)))
 	sourceStatsDirtyMu.Lock()
@@ -616,7 +623,7 @@ func flushDirtySourceStats(ctx context.Context) {
 	}
 	sourceStatsDirtyMu.Unlock()
 	if len(pairs) == 0 {
-		return
+		return false
 	}
 	values := make([][]any, len(pairs))
 	for i, pair := range pairs {
@@ -624,6 +631,11 @@ func flushDirtySourceStats(ctx context.Context) {
 	}
 	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	err := refreshWorkspaceScrapeSourceStats(DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
+	// HasTable can hide a canceled schema lookup behind a false result. Keep
+	// the batch even if cancellation raced an otherwise successful refresh.
+	if err == nil {
+		err = refreshCtx.Err()
+	}
 	cancel()
 	if err != nil {
 		sourceStatsDirtyMu.Lock()
@@ -632,7 +644,9 @@ func flushDirtySourceStats(ctx context.Context) {
 		}
 		sourceStatsDirtyMu.Unlock()
 		log.Warn("read model: coalesced source stats refresh failed", "error", err, "pairs", len(pairs))
+		return false
 	}
+	return true
 }
 
 func refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {

@@ -19,10 +19,12 @@ import (
 )
 
 // The overlaid main injects work, then sends SIGTERM to the real app.Run.
-// Application startup/shutdown code is unchanged by the overlay.
+// The read-model regression also registers a draining producer through a setup
+// overlay; the application's shutdown implementation runs unchanged.
 const shutdownProbeMain = `package main
 import (
  "fmt"
+ "context"
  "magpie/internal/app"
  "magpie/internal/database"
  "magpie/internal/domain"
@@ -40,15 +42,25 @@ func main() {
    if err == nil { response.Body.Close(); if response.StatusCode == 200 { break } }
    time.Sleep(50*time.Millisecond)
   }
-  workspace := domain.Workspace{Name: "Shutdown probe"}
+  workspace := domain.Workspace{Name: "Shutdown probe", HTTPProtocol: true}
   proxy := domain.Proxy{IP: "8.8.8.8", Port: 8080}
   judge := domain.Judge{FullString: "http://shutdown.invalid/judge"}
   protocol := domain.Protocol{}
   for _, err := range []error{database.DB.Create(&workspace).Error, database.DB.Create(&proxy).Error, database.DB.Create(&judge).Error, database.DB.First(&protocol).Error} {
    if err != nil { panic(err) }
   }
+  if err := database.DB.Create(&domain.ManagedProxy{WorkspaceID: workspace.ID, ProxyID: proxy.ID}).Error; err != nil { panic(err) }
+  for i := 0; i < 3; i++ {
+   site := domain.ScrapeSite{URL: fmt.Sprintf("http://shutdown.invalid/source/%d", i)}
+   if err := database.DB.Create(&site).Error; err != nil { panic(err) }
+   if err := database.DB.Create(&domain.WorkspaceScrapeSite{WorkspaceID: workspace.ID, ScrapeSiteID: site.ID, FetchMode: domain.ScrapeFetchHTTP}).Error; err != nil { panic(err) }
+   if err := database.DB.Create(&domain.ProxyScrapeSite{ProxyID: proxy.ID, ScrapeSiteID: site.ID}).Error; err != nil { panic(err) }
+  }
+  snapshot, err := database.LoadCheckerWorkspace(context.Background(), workspace.ID)
+  if err != nil { panic(err) }
+  if err := database.RefreshReadModelIndexes(context.Background()); err != nil { panic(err) }
   jobs.AddWorkspaceManagedTraffic(workspace.ID, 1, 123)
-  jobs.AddProxyStatistic(domain.ProxyStatistic{Alive: true, Attempt: 1, ResponseTime: 10, TransportProtocol: "tcp", ProxyID: proxy.ID, JudgeID: judge.ID, ProtocolID: protocol.ID, CreatedAt: time.Now().UTC()})
+  jobs.AddProxyStatistic(domain.ProxyStatistic{CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: workspace.ID, ConfigKey: snapshot.Default.Keys[protocol.ID-1], Alive: true}}, Alive: true, Attempt: 1, ResponseTime: 10, TransportProtocol: "tcp", ProxyID: proxy.ID, JudgeID: judge.ID, ProtocolID: protocol.ID, CreatedAt: time.Now().UTC()})
   fmt.Println("SHUTDOWN_PROBE submitted usage and statistic")
   _ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
  }()
@@ -57,6 +69,15 @@ func main() {
 `
 
 func TestApplicationSIGTERMFlushesUsageAndMemoryStatistics(t *testing.T) {
+	testApplicationSIGTERM(t, false)
+}
+
+func TestApplicationSIGTERMDrainsReadModelsAfterReputation(t *testing.T) {
+	testApplicationSIGTERM(t, true)
+}
+
+func testApplicationSIGTERM(t *testing.T, drainReputation bool) {
+	t.Helper()
 	dsn, redisURL := os.Getenv("MAGPIE_TEST_POSTGRES_DSN"), os.Getenv("MAGPIE_TEST_REDIS_URL")
 	if dsn == "" || redisURL == "" {
 		t.Skip("set disposable PostgreSQL and Redis test services")
@@ -72,7 +93,45 @@ func TestApplicationSIGTERMFlushesUsageAndMemoryStatistics(t *testing.T) {
 	if err := os.WriteFile(mainFile, []byte(shutdownProbeMain), 0600); err != nil {
 		t.Fatal(err)
 	}
-	overlay, _ := json.Marshal(map[string]any{"Replace": map[string]string{filepath.Join(root, "cmd/magpie/main.go"): mainFile}})
+	replacements := map[string]string{filepath.Join(root, "cmd/magpie/main.go"): mainFile}
+	if drainReputation {
+		// Model a slow producer draining in-flight work. Let statistics and
+		// reputation commit and delete their recovery jobs before producers
+		// finish. Only the read-model cancellation flush can update the filters
+		// and the scrape-source counters.
+		setupPath := filepath.Join(root, "internal/app/bootstrap/setup.go")
+		setup, err := os.ReadFile(setupPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const marker = "\t// Routines"
+		if strings.Count(string(setup), marker) != 1 {
+			t.Fatal("cannot locate routine registration for shutdown fixture")
+		}
+		const producer = `
+	running.producers.start(func(ctx context.Context) {
+		<-ctx.Done()
+		drainCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		for {
+			var complete bool
+			err := database.DB.WithContext(drainCtx).Raw("SELECT EXISTS (SELECT 1 FROM proxy_latest_statistics WHERE workspace_id > 0 AND alive) AND NOT EXISTS (SELECT 1 FROM proxy_reputation_refreshes)").Scan(&complete).Error
+			if err != nil { panic(err) }
+			if complete { return }
+			select {
+			case <-drainCtx.Done(): panic("shutdown fixture timed out waiting for reputation")
+			case <-time.After(50*time.Millisecond):
+			}
+		}
+	})
+`
+		setupFile := filepath.Join(buildDir, "setup.go")
+		if err := os.WriteFile(setupFile, []byte(strings.Replace(string(setup), marker, marker+producer, 1)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		replacements[setupPath] = setupFile
+	}
+	overlay, _ := json.Marshal(map[string]any{"Replace": replacements})
 	if err := os.WriteFile(overlayFile, overlay, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +219,12 @@ func TestApplicationSIGTERMFlushesUsageAndMemoryStatistics(t *testing.T) {
 				"APP_ENV": "development", "ENVIRONMENT": "development", "GO_ENV": "development", "MAGPIE_ENV": "development",
 				"ALLOW_PUBLIC_OBSERVABILITY_ENDPOINTS": "true", "PROXY_STATISTICS_REDIS_STREAM_ENABLED": stream, "LOG_LEVEL": "info",
 			}
+			if drainReputation {
+				// Force both indexes to rely on the final drain, not a timer.
+				overrides["READ_MODEL_REFRESH_INTERVAL_SECONDS"] = "3600"
+				overrides["SCRAPE_SOURCE_STATS_REFRESH_INTERVAL_SECONDS"] = "3600"
+				overrides["SCRAPE_SOURCE_STATS_REFRESH_BATCH_SIZE"] = "1"
+			}
 			var environment []string
 			for _, value := range os.Environ() {
 				key, _, _ := strings.Cut(value, "=")
@@ -204,6 +269,31 @@ CREATE TRIGGER delay_statistics BEFORE INSERT ON proxy_statistics FOR EACH ROW E
 			}
 			if requests != 1 || bytes != 123 || (stream == "false" && statistics != 1) {
 				t.Fatalf("shutdown lost work: requests=%d bytes=%d memory_statistics=%d\n%s", requests, bytes, statistics, output)
+			}
+			if drainReputation {
+				var alive, indexed bool
+				if err := db.QueryRow(ctx, "SELECT alive FROM proxy_latest_statistics WHERE workspace_id > 0").Scan(&alive); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRow(ctx, "SELECT alive FROM user_proxy_filter_indexes").Scan(&indexed); err != nil {
+					t.Fatal(err)
+				}
+				var pending int64
+				if err := db.QueryRow(ctx, "SELECT COUNT(*) FROM proxy_reputation_refreshes").Scan(&pending); err != nil {
+					t.Fatal(err)
+				}
+				if !alive || !indexed || pending != 0 {
+					t.Fatalf("shutdown left stale filters: alive=%v indexed=%v pending_reputation=%d\n%s", alive, indexed, pending, output)
+				}
+				var sources, proxies, sourceAlive, sourceDead, sourceUnknown int64
+				if err := db.QueryRow(ctx, "SELECT COUNT(*), COALESCE(SUM(proxy_count),0), COALESCE(SUM(alive_count),0), COALESCE(SUM(dead_count),0), COALESCE(SUM(unknown_count),0) FROM user_scrape_source_stats").Scan(&sources, &proxies, &sourceAlive, &sourceDead, &sourceUnknown); err != nil {
+					t.Fatal(err)
+				}
+				if sources != 3 || proxies != 3 || sourceAlive != 3 || sourceDead != 0 || sourceUnknown != 0 {
+					t.Fatalf("shutdown left stale source counters: sources=%d proxies=%d alive=%d dead=%d unknown=%d pending_reputation=%d\n%s", sources, proxies, sourceAlive, sourceDead, sourceUnknown, pending, output)
+				}
+				t.Logf("SIGTERM drained all source batches: sources=%d alive=%d unknown=%d", sources, sourceAlive, sourceUnknown)
+				t.Logf("SIGTERM drained read models after reputation: alive=%v indexed=%v pending=%d", alive, indexed, pending)
 			}
 			t.Logf("SIGTERM persisted requests=%d bytes=%d statistics=%d with delayed inserts", requests, bytes, statistics)
 		})

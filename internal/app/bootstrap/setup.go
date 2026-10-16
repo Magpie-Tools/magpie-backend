@@ -75,7 +75,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		if err := database.RefreshDashboardCaches(ctx); err != nil {
 			return fmt.Errorf("prewarm fixture dashboard: %w", err)
 		}
-		running.producers.start(database.StartReadModelRefreshRoutine)
+		running.readModels.start(database.StartReadModelRefreshRoutine)
 		running.producers.start(jobruntime.StartDashboardCacheRoutine)
 		startupQueueBootstrapCompleted.Store(true)
 		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
@@ -179,7 +179,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 	// Routines
 
 	running.producers.start(judges.StartJudgeRoutine)
-	running.producers.start(database.StartReadModelRefreshRoutine)
+	running.readModels.start(database.StartReadModelRefreshRoutine)
 	running.producers.start(jobruntime.StartDashboardCacheRoutine)
 	running.consumers.start(jobruntime.StartProxyStatisticsRoutine)
 	running.consumers.start(jobruntime.StartWorkspaceUsageRoutine)

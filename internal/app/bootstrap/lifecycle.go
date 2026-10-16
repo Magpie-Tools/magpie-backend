@@ -37,25 +37,34 @@ func (g *routineGroup) stop(ctx context.Context) error {
 	}
 }
 
-// Runtime keeps result consumers alive until every managed producer has stopped.
+// Runtime stops producers, then result consumers, then their read-model refreshes.
 // The API is drained before Shutdown; shared clients are closed after it returns.
 type Runtime struct {
-	producers *routineGroup
-	consumers *routineGroup
+	producers  *routineGroup
+	consumers  *routineGroup
+	readModels *routineGroup
 }
 
 func newRuntime(parent context.Context) *Runtime {
-	return &Runtime{producers: newRoutineGroup(parent), consumers: newRoutineGroup(parent)}
+	return &Runtime{
+		producers:  newRoutineGroup(parent),
+		consumers:  newRoutineGroup(parent),
+		readModels: newRoutineGroup(parent),
+	}
 }
 
 func (r *Runtime) Shutdown(ctx context.Context) error {
 	producerErr := r.producers.stop(ctx)
 	consumerErr := r.consumers.stop(ctx)
+	readModelErr := r.readModels.stop(ctx)
 	if producerErr != nil {
 		return fmt.Errorf("stop background producers: %w", producerErr)
 	}
 	if consumerErr != nil {
 		return fmt.Errorf("flush background consumers: %w", consumerErr)
+	}
+	if readModelErr != nil {
+		return fmt.Errorf("drain read models: %w", readModelErr)
 	}
 	return nil
 }

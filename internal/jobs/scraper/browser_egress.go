@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -60,6 +61,16 @@ func (p *browserEgressProxy) fail(w http.ResponseWriter, err error) {
 	http.Error(w, "browser destination denied", http.StatusForbidden)
 }
 
+func (p *browserEgressProxy) upstreamFailure(w http.ResponseWriter, err error) {
+	if errors.Is(err, support.ErrUnsafeOutboundTarget) {
+		p.fail(w, err)
+		return
+	}
+	// Network failures belong to this resource. Only policy violations reject
+	// the whole scrape; an upstream EOF does not mean DevTools disconnected.
+	http.Error(w, "browser upstream unavailable", http.StatusBadGateway)
+}
+
 func (p *browserEgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		p.connect(w, r)
@@ -82,7 +93,7 @@ func (p *browserEgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	removeBrowserProxyHeaders(req.Header)
 	resp, err := p.transport.RoundTrip(req)
 	if err != nil {
-		p.fail(w, err)
+		p.upstreamFailure(w, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -110,13 +121,12 @@ func (p *browserEgressProxy) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	upstream, err := support.DialRestrictedOutboundContext(r.Context(), "tcp", r.Host)
 	if err != nil {
-		p.fail(w, err)
+		p.upstreamFailure(w, err)
 		return
 	}
 	defer upstream.Close()
 	client, buffered, err := w.(http.Hijacker).Hijack()
 	if err != nil {
-		p.reject(err)
 		return
 	}
 	defer client.Close()

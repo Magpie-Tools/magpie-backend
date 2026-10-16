@@ -3,7 +3,9 @@ package scraper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +14,63 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"magpie/internal/support"
 )
+
+func TestBrowserEgressSeparatesNetworkFailuresFromPolicyDenials(t *testing.T) {
+	t.Setenv("ALLOW_PRIVATE_NETWORK_EGRESS", "false")
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+		denied bool
+	}{
+		{name: "EOF", err: io.EOF, status: http.StatusBadGateway},
+		{name: "timeout", err: context.DeadlineExceeded, status: http.StatusBadGateway},
+		{name: "DNS", err: &net.DNSError{Err: "no such host", Name: "source.invalid", IsNotFound: true}, status: http.StatusBadGateway},
+		{name: "resolved private address", err: fmt.Errorf("dial: %w", &support.OutboundTargetError{IP: "127.0.0.1", Reason: "loopback"}), status: http.StatusForbidden, denied: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var rejected error
+			proxy, err := startBrowserEgressProxy(context.Background(), func(err error) { rejected = err })
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer proxy.close()
+			proxy.transport.DialContext = func(context.Context, string, string) (net.Conn, error) { return nil, test.err }
+			response := httptest.NewRecorder()
+			proxy.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://source.example/image.png", nil))
+			if response.Code != test.status || (rejected != nil) != test.denied {
+				t.Fatalf("status=%d rejection=%v, want status=%d denied=%v", response.Code, rejected, test.status, test.denied)
+			}
+			if test.denied && !errors.Is(rejected, support.ErrUnsafeOutboundTarget) {
+				t.Fatalf("lost policy error: %v", rejected)
+			}
+		})
+	}
+}
+
+func TestBrowserEgressCONNECTFailureDoesNotRejectScrape(t *testing.T) {
+	t.Setenv("ALLOW_PRIVATE_NETWORK_EGRESS", "true")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	listener.Close()
+	proxy, err := startBrowserEgressProxy(context.Background(), func(err error) { t.Errorf("network failure rejected scrape: %v", err) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.close()
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodConnect, "http://"+address, nil)
+	proxy.ServeHTTP(response, request)
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("CONNECT status=%d, want 502", response.Code)
+	}
+}
 
 func TestBrowserEgressRejectsPrivateHTTPAndCONNECTBeforeDial(t *testing.T) {
 	t.Setenv("ALLOW_PRIVATE_NETWORK_EGRESS", "false")

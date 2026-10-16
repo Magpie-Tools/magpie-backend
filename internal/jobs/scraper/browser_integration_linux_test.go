@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/defaults"
@@ -100,6 +101,114 @@ func TestBrowserRendersJavaScriptAndIsolatesCookies(t *testing.T) {
 	html, err = fetchBrowser(ctx, server.URL+"/cookies", manager)
 	if err != nil || strings.Contains(html, "secret=first") {
 		t.Fatalf("cookie isolation: HTML=%q err=%v", html, err)
+	}
+}
+
+func TestBrowserOptionalResourceFailuresKeepConcurrentScrapesAlive(t *testing.T) {
+	for _, failure := range []string{"EOF", "HTTP refused", "HTTPS refused", "DNS"} {
+		t.Run(failure, func(t *testing.T) {
+			manager, _ := browserFixture(t)
+			original := manager.current
+			broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				conn.Close()
+			}))
+			defer broken.Close()
+			imageURL := broken.URL + "/image.png"
+			if failure == "HTTP refused" || failure == "HTTPS refused" {
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				imageURL = "http://" + listener.Addr().String() + "/image.png"
+				listener.Close()
+				if failure == "HTTPS refused" {
+					imageURL = strings.Replace(imageURL, "http://", "https://", 1)
+				}
+			} else if failure == "DNS" {
+				imageURL = "http://missing-scraper-resource.invalid/image.png"
+			}
+			started, release := make(chan struct{}), make(chan struct{})
+			var arrived, released sync.Once
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/healthy" {
+					arrived.Do(func() { close(started) })
+					select {
+					case <-release:
+					case <-r.Context().Done():
+						return
+					}
+					w.Header().Set("Content-Type", "text/html")
+					fmt.Fprint(w, "<html><body>8.8.8.8:8080</body></html>")
+					return
+				}
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprintf(w, `<html><body>8.8.8.8:8080<img src="%s"></body></html>`, imageURL)
+			}))
+			defer server.Close()
+			defer released.Do(func() { close(release) })
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			type result struct {
+				html string
+				err  error
+			}
+			finished := make(chan result, 1)
+			go func() {
+				html, err := fetchBrowser(ctx, server.URL+"/healthy", manager)
+				finished <- result{html: html, err: err}
+			}()
+			select {
+			case <-started:
+			case result := <-finished:
+				t.Fatalf("concurrent scrape did not reach fixture: %v", result.err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			html, err := fetchBrowser(ctx, server.URL, manager)
+			released.Do(func() { close(release) })
+			other := <-finished
+			if err != nil || !strings.Contains(html, "8.8.8.8:8080") {
+				t.Fatalf("optional resource discarded proxy HTML=%q err=%v", html, err)
+			}
+			if other.err != nil || !strings.Contains(other.html, "8.8.8.8:8080") {
+				t.Fatalf("resource failure interrupted concurrent scrape: HTML=%q err=%v", other.html, other.err)
+			}
+			manager.mu.Lock()
+			current := manager.current
+			manager.mu.Unlock()
+			if current != original || len(manager.slots) != 0 {
+				t.Fatal("resource failure invalidated the shared browser or leaked a slot")
+			}
+		})
+	}
+}
+
+func TestBrowserMainDocumentFailureStillRejectsScrape(t *testing.T) {
+	manager, _ := browserFixture(t)
+	original := manager.current
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	html, err := fetchBrowser(ctx, server.URL, manager)
+	var status *scrapeHTTPStatusError
+	if html != "" || !errors.As(err, &status) || status.code != http.StatusBadGateway || !shouldRetryScrape(err) {
+		t.Fatalf("failed document HTML=%q err=%v, want retryable 502", html, err)
+	}
+	if manager.current != original {
+		t.Fatal("upstream document failure invalidated the shared browser")
 	}
 }
 
