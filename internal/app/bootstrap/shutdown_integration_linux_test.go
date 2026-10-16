@@ -33,6 +33,7 @@ import (
  "os"
  "syscall"
  "time"
+ "gorm.io/gorm"
 )
 func main() {
  go func() {
@@ -46,16 +47,21 @@ func main() {
   proxy := domain.Proxy{IP: "8.8.8.8", Port: 8080}
   judge := domain.Judge{FullString: "http://shutdown.invalid/judge"}
   protocol := domain.Protocol{}
-  for _, err := range []error{database.DB.Create(&workspace).Error, database.DB.Create(&proxy).Error, database.DB.Create(&judge).Error, database.DB.First(&protocol).Error} {
-   if err != nil { panic(err) }
-  }
-  if err := database.DB.Create(&domain.ManagedProxy{WorkspaceID: workspace.ID, ProxyID: proxy.ID}).Error; err != nil { panic(err) }
-  for i := 0; i < 3; i++ {
-   site := domain.ScrapeSite{URL: fmt.Sprintf("http://shutdown.invalid/source/%d", i)}
-   if err := database.DB.Create(&site).Error; err != nil { panic(err) }
-   if err := database.DB.Create(&domain.WorkspaceScrapeSite{WorkspaceID: workspace.ID, ScrapeSiteID: site.ID, FetchMode: domain.ScrapeFetchHTTP}).Error; err != nil { panic(err) }
-   if err := database.DB.Create(&domain.ProxyScrapeSite{ProxyID: proxy.ID, ScrapeSiteID: site.ID}).Error; err != nil { panic(err) }
-  }
+  // Commit fixture rows with their ownership so startup cleanup cannot see them as orphans.
+  if err := database.DB.Transaction(func(tx *gorm.DB) error {
+   for _, fixture := range []any{&workspace, &proxy, &judge} {
+    if err := tx.Create(fixture).Error; err != nil { return err }
+   }
+   if err := tx.First(&protocol).Error; err != nil { return err }
+   if err := tx.Create(&domain.ManagedProxy{WorkspaceID: workspace.ID, ProxyID: proxy.ID}).Error; err != nil { return err }
+   for i := 0; i < 3; i++ {
+    site := domain.ScrapeSite{URL: fmt.Sprintf("http://shutdown.invalid/source/%d", i)}
+    if err := tx.Create(&site).Error; err != nil { return err }
+    if err := tx.Create(&domain.WorkspaceScrapeSite{WorkspaceID: workspace.ID, ScrapeSiteID: site.ID, FetchMode: domain.ScrapeFetchHTTP}).Error; err != nil { return err }
+    if err := tx.Create(&domain.ProxyScrapeSite{ProxyID: proxy.ID, ScrapeSiteID: site.ID}).Error; err != nil { return err }
+   }
+   return nil
+  }); err != nil { panic(err) }
   snapshot, err := database.LoadCheckerWorkspace(context.Background(), workspace.ID)
   if err != nil { panic(err) }
   if err := database.RefreshReadModelIndexes(context.Background()); err != nil { panic(err) }
