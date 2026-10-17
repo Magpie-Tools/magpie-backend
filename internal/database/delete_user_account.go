@@ -96,6 +96,11 @@ func DeleteUserAccountWithResult(ctx context.Context, userID uint) (DeleteUserAc
 				return err
 			}
 		}
+		if tx.Migrator().HasTable(&domain.NotificationRead{}) {
+			if err := tx.Where("user_id = ?", userID).Delete(&domain.NotificationRead{}).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Delete(&domain.User{}, userID).Error; err != nil {
 			return err
 		}

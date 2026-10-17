@@ -193,6 +193,7 @@ func silentLogger() logger.Interface {
 func defaultMigrations() []any {
 	return []any{
 		domain.User{},
+		domain.NotificationRead{},
 		domain.Workspace{},
 		domain.WorkspaceMembership{},
 		domain.WorkspaceInvitation{},
