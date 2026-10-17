@@ -25,12 +25,14 @@ func TestCreateRotatingProxyFixtureMode(t *testing.T) {
 		t.Setenv(key, "development")
 	}
 	for _, test := range []struct {
-		name      string
-		fixtures  string
-		protocol  string
-		transport string
+		name                 string
+		fixtures             string
+		protocol             string
+		transport            string
+		disableDefaultChecks bool
 	}{
 		{name: "default starts HTTP listener", protocol: "http", transport: "tcp"},
+		{name: "no Default checks still starts HTTP listener", protocol: "http", transport: "tcp", disableDefaultChecks: true},
 		{name: "fixture HTTP", fixtures: "true", protocol: "http", transport: "tcp"},
 		{name: "fixture SOCKS", fixtures: "true", protocol: "socks5", transport: "tcp"},
 		{name: "fixture HTTP3", fixtures: "true", protocol: "http", transport: "http3"},
@@ -52,6 +54,14 @@ func TestCreateRotatingProxyFixtureMode(t *testing.T) {
 			_, workspace := createWorkspaceMiddlewareTestUser(t, "rotator@example.test")
 			if err := database.DB.Model(&workspace).Update("http_protocol", true).Error; err != nil {
 				t.Fatal(err)
+			}
+			if test.disableDefaultChecks {
+				if err := database.DB.Model(&workspace).Updates(map[string]any{
+					"http_protocol": false, "http_s_protocol": false,
+					"socks4_protocol": false, "socks5_protocol": false,
+				}).Error; err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := database.DB.Create(&[]domain.Protocol{{Name: "http"}, {Name: "socks5"}}).Error; err != nil {
 				t.Fatal(err)

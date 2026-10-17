@@ -71,6 +71,79 @@ func setupRotatingProxyTestDBWithDSN(t *testing.T, dsn string) *gorm.DB {
 	return db
 }
 
+func TestCreateRotatingProxy_DefaultCheckerProtocolsDoNotRestrictCreation(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	workspace := domain.Workspace{Name: "Configure rotators before checking"}
+	if err := db.Create(&workspace).Error; err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	for _, name := range domain.CheckerProtocols {
+		if err := db.Create(&domain.Protocol{Name: name}).Error; err != nil {
+			t.Fatalf("create protocol: %v", err)
+		}
+	}
+
+	for _, defaultsEnabled := range []bool{false, true} {
+		if err := db.Model(&workspace).Updates(map[string]any{
+			"http_protocol": false, "http_s_protocol": defaultsEnabled,
+			"socks4_protocol": false, "socks5_protocol": false,
+		}).Error; err != nil {
+			t.Fatalf("set Default checker protocols: %v", err)
+		}
+		for _, protocol := range domain.CheckerProtocols {
+			t.Run(fmt.Sprintf("https_default_%t/%s", defaultsEnabled, protocol), func(t *testing.T) {
+				created, err := CreateRotatingProxy(workspace.ID, dto.RotatingProxyCreateRequest{
+					Name: fmt.Sprintf("ready-%t-%s", defaultsEnabled, protocol), Protocol: protocol,
+				})
+				if err != nil {
+					t.Fatalf("create without Default checks or healthy proxies: %v", err)
+				}
+				if created.Protocol != protocol || created.AliveProxyCount != 0 || created.ListenPort == 0 {
+					t.Fatalf("unexpected created rotator: %+v", created)
+				}
+				if _, err := GetRotatingProxyByID(created.ID); err != nil {
+					t.Fatalf("reload saved rotator: %v", err)
+				}
+				if _, err := GetNextRotatingProxy(workspace.ID, created.ID); !errors.Is(err, ErrRotatingProxyNoAliveProxies) {
+					t.Fatalf("selection with no healthy upstreams: got %v, want %v", err, ErrRotatingProxyNoAliveProxies)
+				}
+			})
+		}
+	}
+}
+
+func TestCreateRotatingProxy_RejectsUnsupportedProtocols(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	workspace := domain.Workspace{Name: "Protocol validation"}
+	if err := db.Create(&workspace).Error; err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	// A database row alone must not make an unsupported protocol usable.
+	if err := db.Create(&[]domain.Protocol{{Name: "http"}, {Name: "ftp"}}).Error; err != nil {
+		t.Fatalf("create protocols: %v", err)
+	}
+	for _, tc := range []struct {
+		name     string
+		protocol string
+		listen   string
+		want     error
+	}{
+		{name: "missing upstream", want: ErrRotatingProxyProtocolMissing},
+		{name: "unsupported upstream", protocol: "ftp", want: ErrRotatingProxyProtocolUnsupported},
+		{name: "unsupported listener", protocol: "http", listen: "ftp", want: ErrRotatingProxyProtocolUnsupported},
+		{name: "missing protocol record", protocol: "socks5", want: ErrRotatingProxyProtocolUnsupported},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := CreateRotatingProxy(workspace.ID, dto.RotatingProxyCreateRequest{
+				Name: tc.name, Protocol: tc.protocol, ListenProtocol: tc.listen,
+			})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("create: got %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCreateRotatingProxy_AllowsDistinctListenProtocol(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
 

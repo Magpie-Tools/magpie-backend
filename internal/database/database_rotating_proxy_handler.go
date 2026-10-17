@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,20 +18,20 @@ import (
 )
 
 var (
-	ErrRotatingProxyNotFound           = errors.New("rotating proxy not found")
-	ErrRotatingProxyNameRequired       = errors.New("rotating proxy name is required")
-	ErrRotatingProxyNameTooLong        = errors.New("rotating proxy name is too long")
-	ErrRotatingProxyNameConflict       = errors.New("rotating proxy name already exists")
-	ErrRotatingProxyProtocolMissing    = errors.New("rotating proxy protocol is required")
-	ErrRotatingProxyProtocolDenied     = errors.New("protocol is not enabled for this workspace")
-	ErrRotatingProxyNoAliveProxies     = errors.New("no alive proxies are available for the selected protocol")
-	ErrRotatingProxyAuthUsernameNeeded = errors.New("authentication username is required when authentication is enabled")
-	ErrRotatingProxyAuthPasswordNeeded = errors.New("authentication password is required when authentication is enabled")
-	ErrRotatingProxyPortExhausted      = errors.New("no available ports for rotating proxies")
-	ErrRotatingProxyUptimeTypeInvalid  = errors.New("uptime filter type must be either min or max")
-	ErrRotatingProxyUptimeTypeMissing  = errors.New("uptime filter type is required when uptime percentage is set")
-	ErrRotatingProxyUptimeValueMissing = errors.New("uptime percentage is required when uptime filter type is set")
-	ErrRotatingProxyUptimeOutOfRange   = errors.New("uptime percentage must be between 0 and 100")
+	ErrRotatingProxyNotFound            = errors.New("rotating proxy not found")
+	ErrRotatingProxyNameRequired        = errors.New("rotating proxy name is required")
+	ErrRotatingProxyNameTooLong         = errors.New("rotating proxy name is too long")
+	ErrRotatingProxyNameConflict        = errors.New("rotating proxy name already exists")
+	ErrRotatingProxyProtocolMissing     = errors.New("rotating proxy protocol is required")
+	ErrRotatingProxyProtocolUnsupported = errors.New("unsupported rotating proxy protocol")
+	ErrRotatingProxyNoAliveProxies      = errors.New("no alive proxies are available for the selected protocol")
+	ErrRotatingProxyAuthUsernameNeeded  = errors.New("authentication username is required when authentication is enabled")
+	ErrRotatingProxyAuthPasswordNeeded  = errors.New("authentication password is required when authentication is enabled")
+	ErrRotatingProxyPortExhausted       = errors.New("no available ports for rotating proxies")
+	ErrRotatingProxyUptimeTypeInvalid   = errors.New("uptime filter type must be either min or max")
+	ErrRotatingProxyUptimeTypeMissing   = errors.New("uptime filter type is required when uptime percentage is set")
+	ErrRotatingProxyUptimeValueMissing  = errors.New("uptime percentage is required when uptime filter type is set")
+	ErrRotatingProxyUptimeOutOfRange    = errors.New("uptime percentage must be between 0 and 100")
 )
 
 var (
@@ -69,6 +70,9 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 	listenProtocolName := strings.ToLower(strings.TrimSpace(payload.ListenProtocol))
 	if listenProtocolName == "" {
 		listenProtocolName = protocolName
+	}
+	if !slices.Contains(domain.CheckerProtocols[:], protocolName) || !slices.Contains(domain.CheckerProtocols[:], listenProtocolName) {
+		return nil, ErrRotatingProxyProtocolUnsupported
 	}
 	transportProtocol := support.NormalizeTransportProtocol(payload.TransportProtocol)
 	listenTransportProtocol := support.NormalizeTransportProtocol(payload.ListenTransportProtocol)
@@ -116,18 +120,14 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 		proxyProtocol, err := fetchProtocolByName(tx, protocolName)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrRotatingProxyProtocolDenied
+				return ErrRotatingProxyProtocolUnsupported
 			}
 			return err
 		}
-		if !isProtocolEnabledForWorkspace(workspace, protocolName) {
-			return ErrRotatingProxyProtocolDenied
-		}
-
 		listenProtocol, err := fetchProtocolByName(tx, listenProtocolName)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrRotatingProxyProtocolDenied
+				return ErrRotatingProxyProtocolUnsupported
 			}
 			return err
 		}
@@ -566,21 +566,6 @@ func fetchProtocolByName(tx *gorm.DB, name string) (domain.Protocol, error) {
 		Where("LOWER(name) = ?", strings.ToLower(name)).
 		First(&protocol).Error
 	return protocol, err
-}
-
-func isProtocolEnabledForWorkspace(workspace domain.Workspace, protocolName string) bool {
-	switch protocolName {
-	case "http":
-		return workspace.HTTPProtocol
-	case "https":
-		return workspace.HTTPSProtocol
-	case "socks4":
-		return workspace.SOCKS4Protocol
-	case "socks5":
-		return workspace.SOCKS5Protocol
-	default:
-		return false
-	}
 }
 
 func isUniqueConstraintError(err error) bool {
