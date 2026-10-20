@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
@@ -15,6 +16,12 @@ var updateScrapeSourceSubscriptionSettings = database.UpdateScrapeSourceSettings
 
 var enqueueScrapeSites = func(sites []domain.ScrapeSite) error {
 	return sitequeue.PublicScrapeSiteQueue.AddToQueue(sites)
+}
+var forceScrapeSite = func(site domain.ScrapeSite) error {
+	return sitequeue.PublicScrapeSiteQueue.ForceScrapeSite(site)
+}
+var getScrapeSchedule = func(ctx context.Context, url, mode string) (time.Time, string, error) {
+	return sitequeue.PublicScrapeSiteQueue.GetScrapeSchedule(ctx, url, mode)
 }
 var getScrapeSourceDetailForUser = func(userID uint, sourceID uint64) (*dto.ScrapeSiteDetail, error) {
 	return database.GetScrapeSiteDetail(userID, sourceID)

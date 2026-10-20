@@ -16,6 +16,8 @@ type ScrapeSiteDetail struct {
 	LastScrapeStatus     string     `json:"last_scrape_status"`
 	LastScrapeError      string     `json:"last_scrape_error"`
 	LastScrapeProxyCount int        `json:"last_scrape_proxy_count"`
+	NextScrapeAt         *time.Time `json:"next_scrape_at,omitempty"`
+	ScrapeScheduleReason string     `json:"scrape_schedule_reason,omitempty"`
 
 	Id                  uint64                        `json:"id"`
 	Url                 string                        `json:"url"`

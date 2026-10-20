@@ -133,6 +133,22 @@ Scraping joins the same path in `handleScrapedHTML` in the
 source's subscribed workspaces, records source associations, applies source tags
 and adds the routes to the proxy queue.
 
+Every completed source fetch uses the configured scrape interval after success
+or failure, without failure multipliers. Redis stores the next attempt for each
+URL and fetch mode separately from the source payload. A pending browser fetch
+therefore cannot repeat completed HTTP work. Local browser or subscription-lookup
+failures defer pending work without replacing the last scrape result. Valid
+`Retry-After` deadlines postpone both modes for the URL and survive explicit
+requeues. Requeueing a source with an active claim joins its current attempt.
+Workers renew the five-minute lease during long fetches and blocked HTML
+handoffs, and cancel work if renewal fails. Claim tokens fence mode progress
+against newer workers, while completion merges provider deadlines by maximum
+even if the observing worker lost its claim. Removed sources stay removed.
+Source details expose the next attempt time and its reason.
+
+These changes are confined to source scheduling. They add no cryptographic
+operations, JSON encodes, Redis commands, or database queries per proxy check.
+
 ## Redis scheduling and worker leases
 
 `AddToQueue` writes a compact payload at `proxy:<hash>`. Current payloads carry

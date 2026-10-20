@@ -54,15 +54,48 @@ func TestHTTPRejectsPrivateNetwork(t *testing.T) {
 	}
 }
 
-func TestScrapeRetryPolicy(t *testing.T) {
-	for _, err := range []error{errBrowserBusy, errBrowserUnavailable, context.DeadlineExceeded, &scrapeHTTPStatusError{429}, &scrapeHTTPStatusError{503}} {
-		if !shouldRetryScrape(err) {
-			t.Fatalf("transient failure was not retried: %v", err)
+func TestOnlyLocalBrowserFailuresAreDeferred(t *testing.T) {
+	for _, err := range []error{errBrowserBusy, fmt.Errorf("launch: %w", errBrowserUnavailable)} {
+		if !isScrapeDeferred(err) {
+			t.Fatalf("local capacity failure was not deferred: %v", err)
 		}
 	}
-	for _, err := range []error{nil, &scrapeHTTPStatusError{404}, support.ErrUnsafeOutboundTarget, support.ErrResponseBodyTooLarge} {
-		if shouldRetryScrape(err) {
-			t.Fatalf("permanent failure was scheduled for rapid retry: %v", err)
+	for _, err := range []error{nil, context.DeadlineExceeded, &scrapeHTTPStatusError{code: 429}, &scrapeHTTPStatusError{code: 503}, &scrapeHTTPStatusError{code: 404}, support.ErrUnsafeOutboundTarget, support.ErrResponseBodyTooLarge} {
+		if isScrapeDeferred(err) {
+			t.Fatalf("completed fetch was scheduled for an early retry: %v", err)
 		}
+	}
+}
+
+func TestScrapeRetryAfter(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		header string
+		want   time.Time
+	}{
+		{"7200", now.Add(2 * time.Hour)},
+		{" 120 ", now.Add(2 * time.Minute)},
+		{"0", now},
+		{now.Add(30 * time.Hour).Format(http.TimeFormat), now.Add(30 * time.Hour)},
+		{"", time.Time{}}, {"-1", time.Time{}}, {"1.5", time.Time{}},
+		{"bad", time.Time{}}, {"18446744073709551615", time.Time{}},
+		{now.Add(-time.Hour).Format(http.TimeFormat), time.Time{}},
+	} {
+		if got := parseScrapeRetryAfter(tc.header, now); !got.Equal(tc.want) {
+			t.Errorf("Retry-After %q = %v, want %v", tc.header, got, tc.want)
+		}
+	}
+	t.Setenv("ALLOW_PRIVATE_NETWORK_EGRESS", "true")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "108000")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	before := time.Now()
+	_, err := ScraperRequest(server.URL, time.Second)
+	var status *scrapeHTTPStatusError
+	if !errors.As(err, &status) || status.retryAfter.Before(before.Add(30*time.Hour)) ||
+		!strings.Contains(err.Error(), "provider requested no retry before") {
+		t.Fatalf("Retry-After deadline was lost: %v", err)
 	}
 }

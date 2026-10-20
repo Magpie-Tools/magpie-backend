@@ -9,7 +9,9 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/support"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +61,8 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 		if recovered := recover(); recovered != nil {
 			html = ""
 			err = fmt.Errorf("%w: %v", errBrowserUnavailable, recovered)
+		} else if isConnClosed(err) {
+			err = fmt.Errorf("%w: %v", errBrowserUnavailable, err)
 		}
 	}()
 	instance, release, err := manager.acquire(ctx)
@@ -87,7 +91,7 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 	}()
 	egress, err := startBrowserEgressProxy(ctx, reject)
 	if err != nil {
-		return "", fmt.Errorf("start browser egress proxy: %w", err)
+		return "", fmt.Errorf("%w: start browser egress proxy: %v", errBrowserUnavailable, err)
 	}
 	defer egress.close()
 	session := instance.browser.Context(ctx)
@@ -113,13 +117,13 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 	}()
 	page, err := stealth.Page(session)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: create page: %v", errBrowserUnavailable, err)
 	}
 	if err := (proto.BrowserSetDownloadBehavior{Behavior: proto.BrowserSetDownloadBehaviorBehaviorDeny, BrowserContextID: session.BrowserContextID}).Call(session); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: disable downloads: %v", errBrowserUnavailable, err)
 	}
 	if err := (proto.FetchEnable{Patterns: []*proto.FetchRequestPattern{{URLPattern: "http://*"}, {URLPattern: "https://*"}}}).Call(page); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: enable request guard: %v", errBrowserUnavailable, err)
 	}
 
 	eventCtx, cancelEvents := context.WithCancel(ctx)
@@ -151,7 +155,14 @@ func fetchBrowser(ctx context.Context, url string, manager *browserManager) (htm
 				return
 			}
 			if e.Response.Status >= 400 {
-				reject(&scrapeHTTPStatusError{code: e.Response.Status})
+				var retryAfter string
+				for name, value := range e.Response.Headers {
+					if strings.EqualFold(name, "Retry-After") {
+						retryAfter = value.Str()
+						break
+					}
+				}
+				reject(&scrapeHTTPStatusError{code: e.Response.Status, retryAfter: parseScrapeRetryAfter(retryAfter, time.Now())})
 			}
 		},
 	)
@@ -196,14 +207,38 @@ var directHTTPClient = func() *http.Client {
 	return client
 }()
 
-type scrapeHTTPStatusError struct{ code int }
+type scrapeHTTPStatusError struct {
+	code       int
+	retryAfter time.Time
+}
 
-func (e *scrapeHTTPStatusError) Error() string { return fmt.Sprintf("source returned HTTP %d", e.code) }
-func shouldRetryScrape(err error) bool {
-	var status *scrapeHTTPStatusError
-	return errors.Is(err, errBrowserBusy) || errors.Is(err, errBrowserUnavailable) ||
-		errors.Is(err, context.DeadlineExceeded) || isConnClosed(err) ||
-		(errors.As(err, &status) && (status.code == 429 || status.code >= 500))
+func (e *scrapeHTTPStatusError) Error() string {
+	message := fmt.Sprintf("source returned HTTP %d", e.code)
+	if !e.retryAfter.IsZero() {
+		message += "; provider requested no retry before " + e.retryAfter.UTC().Format(time.RFC3339)
+	}
+	return message
+}
+
+// Local browser failures leave the fetch pending. Upstream errors, including
+// timeouts and HTTP 429/5xx, complete an attempt and use the normal interval.
+func isScrapeDeferred(err error) bool {
+	return errors.Is(err, errBrowserBusy) || errors.Is(err, errBrowserUnavailable)
+}
+
+func parseScrapeRetryAfter(raw string, now time.Time) time.Time {
+	raw = strings.TrimSpace(raw)
+	if seconds, err := strconv.ParseUint(raw, 10, 64); err == nil {
+		// Reject values that cannot be represented as a Go duration.
+		if seconds > uint64(math.MaxInt64/int64(time.Second)) {
+			return time.Time{}
+		}
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	if deadline, err := http.ParseTime(raw); err == nil && deadline.After(now) {
+		return deadline
+	}
+	return time.Time{}
 }
 
 func fetchDirectContext(ctx context.Context, url string) (string, error) {
@@ -225,7 +260,7 @@ func fetchDirectContext(ctx context.Context, url string) (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return "", &scrapeHTTPStatusError{code: resp.StatusCode}
+		return "", &scrapeHTTPStatusError{code: resp.StatusCode, retryAfter: parseScrapeRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	body, err := support.ReadAllWithLimit(resp.Body, scraperFallbackMaxResponseBodyBytes())
 	if err != nil {

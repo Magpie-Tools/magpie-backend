@@ -47,13 +47,18 @@ type RedisScrapeSiteQueue struct {
 	popScript      *redis.Script
 	queueShardKeys []string
 	popQueueKeys   []string
+	leaseDuration  time.Duration
 }
 
 type scrapePopResult struct {
-	Found       bool
-	SiteJSON    string
-	ScoreMs     int64
-	NextReadyMs int64
+	Found        bool
+	SiteJSON     string
+	ScoreMs      int64
+	NextReadyMs  int64
+	LeaseScoreMS int64
+	ScheduleJSON string
+	QueueKey     string
+	ClaimID      int64
 }
 
 var PublicScrapeSiteQueue RedisScrapeSiteQueue
@@ -325,7 +330,9 @@ func (rssq *RedisScrapeSiteQueue) RemoveFromQueue(sites []domain.ScrapeSite) err
 		queueKey := rssq.queueKeyForMember(site.URL)
 
 		pipe.Del(ctx, key)
-		opCount++
+		pipe.Del(ctx, scrapeScheduleKeyPrefix+site.URL)
+		pipe.Del(ctx, scrapeLeaseKeyPrefix+site.URL)
+		opCount += 3
 		pipe.ZRem(ctx, queueKey, site.URL)
 		opCount++
 		if queueKey != legacyScrapesiteQueueKey {
@@ -343,17 +350,17 @@ func (rssq *RedisScrapeSiteQueue) RemoveFromQueue(sites []domain.ScrapeSite) err
 	return flush()
 }
 
-func (rssq *RedisScrapeSiteQueue) GetNextScrapeSite() (domain.ScrapeSite, time.Time, error) {
+func (rssq *RedisScrapeSiteQueue) GetNextScrapeSite() (ScrapeSiteJob, error) {
 	return rssq.GetNextScrapeSiteContext(rssq.baseContext())
 }
 
-func (rssq *RedisScrapeSiteQueue) GetNextScrapeSiteContext(ctx context.Context) (domain.ScrapeSite, time.Time, error) {
+func (rssq *RedisScrapeSiteQueue) GetNextScrapeSiteContext(ctx context.Context) (ScrapeSiteJob, error) {
 	if ctx == nil {
 		ctx = rssq.baseContext()
 	}
 	client, err := rssq.clientOrErr()
 	if err != nil {
-		return domain.ScrapeSite{}, time.Time{}, err
+		return ScrapeSiteJob{}, err
 	}
 	popScript := rssq.popScript
 	if popScript == nil {
@@ -363,7 +370,7 @@ func (rssq *RedisScrapeSiteQueue) GetNextScrapeSiteContext(ctx context.Context) 
 	for {
 		select {
 		case <-ctx.Done():
-			return domain.ScrapeSite{}, time.Time{}, ctx.Err()
+			return ScrapeSiteJob{}, ctx.Err()
 		default:
 		}
 
@@ -373,32 +380,39 @@ func (rssq *RedisScrapeSiteQueue) GetNextScrapeSiteContext(ctx context.Context) 
 			client,
 			[]string{scrapesiteQueueHeadKey},
 			currentTimeMs,
-			int64(processingLease/time.Millisecond),
+			rssq.leasePeriod().Milliseconds(),
 			scrapesiteKeyPrefix,
+			scrapeScheduleKeyPrefix,
+			scrapeLeaseKeyPrefix,
+			scrapeClaimSequenceKey,
 		).Result()
 
 		if err != nil {
-			return domain.ScrapeSite{}, time.Time{}, fmt.Errorf("lua script failed: %w", err)
+			return ScrapeSiteJob{}, fmt.Errorf("lua script failed: %w", err)
 		}
 
 		popResult, err := parseScrapePopResult(result)
 		if err != nil {
-			return domain.ScrapeSite{}, time.Time{}, fmt.Errorf("invalid lua response: %w", err)
+			return ScrapeSiteJob{}, fmt.Errorf("invalid lua response: %w", err)
 		}
 		if !popResult.Found {
 			waitDuration := dequeueWaitDuration(popResult.NextReadyMs, currentTimeMs)
 			if err := waitForNextScrapePoll(ctx, waitDuration); err != nil {
-				return domain.ScrapeSite{}, time.Time{}, err
+				return ScrapeSiteJob{}, err
 			}
 			continue
 		}
 
 		var site domain.ScrapeSite
 		if err := json.Unmarshal([]byte(popResult.SiteJSON), &site); err != nil {
-			return domain.ScrapeSite{}, time.Time{}, fmt.Errorf("failed to unmarshal scrapesite: %w", err)
+			return ScrapeSiteJob{}, fmt.Errorf("failed to unmarshal scrapesite: %w", err)
 		}
-
-		return site, time.UnixMilli(popResult.ScoreMs), nil
+		var schedule ScrapeSchedule
+		if err := json.Unmarshal([]byte(popResult.ScheduleJSON), &schedule); err != nil {
+			return ScrapeSiteJob{}, fmt.Errorf("failed to unmarshal scrape schedule: %w", err)
+		}
+		return ScrapeSiteJob{Site: site, Interval: rssq.getEffectiveScrapeInterval(), Schedule: schedule,
+			queueKey: popResult.QueueKey, leaseScoreMS: popResult.LeaseScoreMS, claimID: popResult.ClaimID}, nil
 	}
 }
 
@@ -407,7 +421,7 @@ func parseScrapePopResult(result interface{}) (scrapePopResult, error) {
 	if !ok {
 		return scrapePopResult{}, fmt.Errorf("unexpected lua result type %T", result)
 	}
-	if len(resSlice) != 5 {
+	if len(resSlice) != 8 {
 		return scrapePopResult{}, fmt.Errorf("unexpected lua result length %d", len(resSlice))
 	}
 
@@ -436,12 +450,32 @@ func parseScrapePopResult(result interface{}) (scrapePopResult, error) {
 	if err != nil {
 		return scrapePopResult{}, fmt.Errorf("invalid score: %w", err)
 	}
+	lease, err := coerceLuaInt64(resSlice[4])
+	if err != nil {
+		return scrapePopResult{}, fmt.Errorf("invalid lease: %w", err)
+	}
+	schedule, err := coerceLuaString(resSlice[5])
+	if err != nil {
+		return scrapePopResult{}, fmt.Errorf("invalid schedule: %w", err)
+	}
+	queueKey, err := coerceLuaString(resSlice[6])
+	if err != nil {
+		return scrapePopResult{}, fmt.Errorf("invalid queue key: %w", err)
+	}
+	claimID, err := coerceLuaInt64(resSlice[7])
+	if err != nil {
+		return scrapePopResult{}, fmt.Errorf("invalid claim ID: %w", err)
+	}
 
 	return scrapePopResult{
-		Found:       true,
-		SiteJSON:    siteJSON,
-		ScoreMs:     score,
-		NextReadyMs: -1,
+		Found:        true,
+		SiteJSON:     siteJSON,
+		ScoreMs:      score,
+		NextReadyMs:  -1,
+		LeaseScoreMS: lease,
+		ScheduleJSON: schedule,
+		QueueKey:     queueKey,
+		ClaimID:      claimID,
 	}, nil
 }
 
@@ -525,57 +559,6 @@ func coerceLuaInt64(value interface{}) (int64, error) {
 	default:
 		return 0, fmt.Errorf("expected numeric lua response, got %T", value)
 	}
-}
-
-func (rssq *RedisScrapeSiteQueue) RequeueScrapeSite(site domain.ScrapeSite, lastCheckTime time.Time) error {
-	return rssq.requeueScrapeSite(site, lastCheckTime, rssq.getEffectiveScrapeInterval())
-}
-
-// Retry transient failures promptly, without delaying sources whose configured
-// scrape interval is already shorter than the retry delay.
-func (rssq *RedisScrapeSiteQueue) RetryScrapeSite(site domain.ScrapeSite, delay time.Duration) error {
-	return rssq.requeueScrapeSite(site, time.Now(), min(delay, rssq.getEffectiveScrapeInterval()))
-}
-
-func (rssq *RedisScrapeSiteQueue) requeueScrapeSite(site domain.ScrapeSite, lastCheckTime time.Time, interval time.Duration) error {
-	client, err := rssq.clientOrErr()
-	if err != nil {
-		return err
-	}
-	ctx := rssq.baseContext()
-
-	base := lastCheckTime
-	if now := time.Now(); now.After(base) {
-		base = now
-	}
-	nextCheck := base.Add(interval)
-	siteKey := scrapesiteKeyPrefix + site.URL
-	queueKey := rssq.queueKeyForMember(site.URL)
-
-	proxyJSON, err := json.Marshal(site)
-	if err != nil {
-		return fmt.Errorf("failed to marshal proxy: %w", err)
-	}
-
-	pipe := client.Pipeline()
-	pipe.Set(ctx, siteKey, proxyJSON, 0)
-	if queueKey != legacyScrapesiteQueueKey {
-		pipe.ZRem(ctx, legacyScrapesiteQueueKey, site.URL)
-	}
-	pipe.ZAdd(ctx, queueKey, redis.Z{
-		Score:  float64(nextCheck.UnixMilli()),
-		Member: site.URL,
-	})
-	pipe.ZAddArgs(ctx, scrapesiteQueueHeadKey, redis.ZAddArgs{
-		LT: true,
-		Members: []redis.Z{{
-			Score:  float64(nextCheck.UnixMilli()),
-			Member: queueKey,
-		}},
-	})
-
-	_, err = pipe.Exec(ctx)
-	return err
 }
 
 func (rssq *RedisScrapeSiteQueue) getEffectiveScrapeInterval() time.Duration {
@@ -678,10 +661,7 @@ func (rssq *RedisScrapeSiteQueue) RequeueAll() (int64, error) {
 				position := int64(start + index)
 				offset := (interval * time.Duration(position)) / time.Duration(count)
 				nextCheck := now.Add(offset)
-				pipe.ZAddXX(ctx, key, redis.Z{
-					Score:  float64(nextCheck.UnixMilli()),
-					Member: member,
-				})
+				pipe.Eval(ctx, luaScrapeForceScript, rssq.forceKeys(key, member), member, nextCheck.UnixMilli(), "")
 			}
 
 			if _, err := pipe.Exec(ctx); err != nil {

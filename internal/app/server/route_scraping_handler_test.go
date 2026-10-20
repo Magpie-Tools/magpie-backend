@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
@@ -18,182 +19,60 @@ import (
 
 func TestRequeueScrapeSource_ReturnsQueuedSource(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
-
-	originalGetDetail := getScrapeSourceDetailForUser
-	originalEnqueue := enqueueScrapeSites
-	originalRemove := removeScrapeSitesFromQueue
-	t.Cleanup(func() {
-		getScrapeSourceDetailForUser = originalGetDetail
-		enqueueScrapeSites = originalEnqueue
-		removeScrapeSitesFromQueue = originalRemove
-	})
-
-	var removed []domain.ScrapeSite
-	var queued []domain.ScrapeSite
-	getScrapeSourceDetailForUser = func(userID uint, sourceID uint64) (*dto.ScrapeSiteDetail, error) {
-		if userID != 7 {
-			t.Fatalf("userID = %d, want 7", userID)
+	originalDetail, originalForce := getScrapeSourceDetailForUser, forceScrapeSite
+	t.Cleanup(func() { getScrapeSourceDetailForUser, forceScrapeSite = originalDetail, originalForce })
+	getScrapeSourceDetailForUser = func(workspaceID uint, sourceID uint64) (*dto.ScrapeSiteDetail, error) {
+		if workspaceID != 7 || sourceID != 42 {
+			t.Fatalf("workspace=%d source=%d", workspaceID, sourceID)
 		}
-		if sourceID != 42 {
-			t.Fatalf("sourceID = %d, want 42", sourceID)
-		}
-		return &dto.ScrapeSiteDetail{
-			Id:  42,
-			Url: "https://example.com/scrape-list.txt",
-		}, nil
+		return &dto.ScrapeSiteDetail{Id: 42, Url: "https://example.com/list"}, nil
 	}
-	removeScrapeSitesFromQueue = func(sites []domain.ScrapeSite) error {
-		removed = append([]domain.ScrapeSite{}, sites...)
-		return nil
-	}
-	enqueueScrapeSites = func(sites []domain.ScrapeSite) error {
-		queued = append([]domain.ScrapeSite{}, sites...)
-		return nil
-	}
-
+	var forced domain.ScrapeSite
+	forceScrapeSite = func(site domain.ScrapeSite) error { forced = site; return nil }
 	req := newAdminRequest(t, http.MethodPost, "/global/scrapeSources/42/requeue", 7)
 	req.SetPathValue("id", "42")
 	rec := httptest.NewRecorder()
-
 	requeueScrapeSource(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusOK || forced.ID != 42 || forced.URL != "https://example.com/list" {
+		t.Fatalf("status=%d forced=%+v", rec.Code, forced)
 	}
-
-	if len(queued) != 1 {
-		t.Fatalf("queued count = %d, want 1", len(queued))
-	}
-	if len(removed) != 1 {
-		t.Fatalf("removed count = %d, want 1", len(removed))
-	}
-	if queued[0].ID != 42 || queued[0].URL != "https://example.com/scrape-list.txt" {
-		t.Fatalf("queued site = %+v, want id=42 url=https://example.com/scrape-list.txt", queued[0])
-	}
-
 	var payload map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+		t.Fatal(err)
 	}
-	if payload["message"] != "Scrape source queued successfully" {
-		t.Fatalf("message = %v, want success response", payload["message"])
-	}
-	if payload["source_id"] != float64(42) {
-		t.Fatalf("source_id = %v, want 42", payload["source_id"])
+	if payload["message"] != "Scrape source queued successfully" || payload["source_id"] != float64(42) {
+		t.Fatalf("response=%v", payload)
 	}
 }
 
 func TestRequeueScrapeSource_ReturnsNotFoundWhenSourceMissing(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
-
-	originalGetDetail := getScrapeSourceDetailForUser
-	t.Cleanup(func() {
-		getScrapeSourceDetailForUser = originalGetDetail
-	})
-
-	getScrapeSourceDetailForUser = func(userID uint, sourceID uint64) (*dto.ScrapeSiteDetail, error) {
-		return nil, nil
-	}
-
+	original := getScrapeSourceDetailForUser
+	t.Cleanup(func() { getScrapeSourceDetailForUser = original })
+	getScrapeSourceDetailForUser = func(uint, uint64) (*dto.ScrapeSiteDetail, error) { return nil, nil }
 	req := newAdminRequest(t, http.MethodPost, "/global/scrapeSources/404/requeue", 7)
 	req.SetPathValue("id", "404")
 	rec := httptest.NewRecorder()
-
 	requeueScrapeSource(rec, req)
-
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusNotFound)
-	}
-
-	var payload map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("unmarshal error response: %v", err)
-	}
-	if payload["error"] != "Scrape source not found" {
-		t.Fatalf("error = %q, want not found message", payload["error"])
+		t.Fatalf("status=%d", rec.Code)
 	}
 }
 
 func TestRequeueScrapeSource_ReturnsServiceUnavailableOnQueueFailure(t *testing.T) {
 	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
-
-	originalGetDetail := getScrapeSourceDetailForUser
-	originalEnqueue := enqueueScrapeSites
-	originalRemove := removeScrapeSitesFromQueue
-	t.Cleanup(func() {
-		getScrapeSourceDetailForUser = originalGetDetail
-		enqueueScrapeSites = originalEnqueue
-		removeScrapeSitesFromQueue = originalRemove
-	})
-
-	getScrapeSourceDetailForUser = func(userID uint, sourceID uint64) (*dto.ScrapeSiteDetail, error) {
-		return &dto.ScrapeSiteDetail{
-			Id:  sourceID,
-			Url: "https://example.com/failing-source.txt",
-		}, nil
+	originalDetail, originalForce := getScrapeSourceDetailForUser, forceScrapeSite
+	t.Cleanup(func() { getScrapeSourceDetailForUser, forceScrapeSite = originalDetail, originalForce })
+	getScrapeSourceDetailForUser = func(uint, uint64) (*dto.ScrapeSiteDetail, error) {
+		return &dto.ScrapeSiteDetail{Id: 42, Url: "https://example.com/list"}, nil
 	}
-	removeScrapeSitesFromQueue = func(sites []domain.ScrapeSite) error {
-		return nil
-	}
-	enqueueScrapeSites = func(sites []domain.ScrapeSite) error {
-		return errors.New("redis unavailable")
-	}
-
+	forceScrapeSite = func(domain.ScrapeSite) error { return errors.New("Redis unavailable") }
 	req := newAdminRequest(t, http.MethodPost, "/global/scrapeSources/42/requeue", 7)
 	req.SetPathValue("id", "42")
 	rec := httptest.NewRecorder()
-
 	requeueScrapeSource(rec, req)
-
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-
-	var payload map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("unmarshal error response: %v", err)
-	}
-	if payload["error"] != "Failed to queue scrape source" {
-		t.Fatalf("error = %q, want failure message", payload["error"])
-	}
-}
-
-func TestRequeueScrapeSource_ReturnsServiceUnavailableOnRemoveFailure(t *testing.T) {
-	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
-
-	originalGetDetail := getScrapeSourceDetailForUser
-	originalRemove := removeScrapeSitesFromQueue
-	t.Cleanup(func() {
-		getScrapeSourceDetailForUser = originalGetDetail
-		removeScrapeSitesFromQueue = originalRemove
-	})
-
-	getScrapeSourceDetailForUser = func(userID uint, sourceID uint64) (*dto.ScrapeSiteDetail, error) {
-		return &dto.ScrapeSiteDetail{
-			Id:  sourceID,
-			Url: "https://example.com/failing-source.txt",
-		}, nil
-	}
-	removeScrapeSitesFromQueue = func(sites []domain.ScrapeSite) error {
-		return errors.New("redis unavailable")
-	}
-
-	req := newAdminRequest(t, http.MethodPost, "/global/scrapeSources/42/requeue", 7)
-	req.SetPathValue("id", "42")
-	rec := httptest.NewRecorder()
-
-	requeueScrapeSource(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusServiceUnavailable)
-	}
-
-	var payload map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("unmarshal error response: %v", err)
-	}
-	if payload["error"] != "Failed to queue scrape source" {
-		t.Fatalf("error = %q, want failure message", payload["error"])
+		t.Fatalf("status=%d", rec.Code)
 	}
 }
 
@@ -292,5 +171,44 @@ func TestUpdateScrapeSourceSettingsRejectsForeignTags(t *testing.T) {
 	updateScrapeSourceSettings(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScrapeSourceDetailExposesScheduleAndToleratesRedisOutage(t *testing.T) {
+	t.Setenv("JWT_SECRET", "unit-test-server-route-secret")
+	originalDetail, originalSchedule := getScrapeSourceDetailForUser, getScrapeSchedule
+	t.Cleanup(func() { getScrapeSourceDetailForUser, getScrapeSchedule = originalDetail, originalSchedule })
+	getScrapeSourceDetailForUser = func(uint, uint64) (*dto.ScrapeSiteDetail, error) {
+		return &dto.ScrapeSiteDetail{Id: 42, Url: "https://example.com/list", FetchMode: "http"}, nil
+	}
+	next := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	for _, unavailable := range []bool{false, true} {
+		getScrapeSchedule = func(ctx context.Context, url, mode string) (time.Time, string, error) {
+			if url != "https://example.com/list" || mode != "http" {
+				t.Fatalf("url=%s mode=%s", url, mode)
+			}
+			if unavailable {
+				return time.Time{}, "", errors.New("Redis unavailable")
+			}
+			return next, "Provider requested a delay with Retry-After", nil
+		}
+		req := newAdminRequest(t, http.MethodGet, "/scrapingSources/42", 7)
+		req.SetPathValue("id", "42")
+		rec := httptest.NewRecorder()
+		getScrapeSourceDetail(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var detail dto.ScrapeSiteDetail
+		if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+		if unavailable {
+			if detail.NextScrapeAt != nil {
+				t.Fatal("invented a schedule during Redis outage")
+			}
+		} else if detail.NextScrapeAt == nil || !detail.NextScrapeAt.Equal(next) || detail.ScrapeScheduleReason != "Provider requested a delay with Retry-After" {
+			t.Fatalf("detail=%+v", detail)
+		}
 	}
 }

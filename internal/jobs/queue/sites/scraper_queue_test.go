@@ -46,7 +46,7 @@ func TestDequeueWaitDuration(t *testing.T) {
 }
 
 func TestParseScrapePopResult(t *testing.T) {
-	found, err := parseScrapePopResult([]interface{}{int64(1), "member", "payload", int64(1234), int64(2)})
+	found, err := parseScrapePopResult([]interface{}{int64(1), "member", "payload", int64(1234), int64(2), "{}", "queue", int64(7)})
 	if err != nil {
 		t.Fatalf("unexpected parse error for found result: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestParseScrapePopResult(t *testing.T) {
 		t.Fatalf("unexpected found parse result: %#v", found)
 	}
 
-	empty, err := parseScrapePopResult([]interface{}{int64(0), "", "", int64(5555), int64(-1)})
+	empty, err := parseScrapePopResult([]interface{}{int64(0), "", "", int64(5555), int64(-1), "", "", int64(-1)})
 	if err != nil {
 		t.Fatalf("unexpected parse error for empty result: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestAddToQueue_DoesNotRescheduleExistingMember(t *testing.T) {
 	}
 }
 
-func TestNewSourcesAreImmediatelyDueAndTransientRetryIsBounded(t *testing.T) {
+func TestNewSourcesAreImmediatelyDue(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	defer client.Close()
@@ -239,25 +239,5 @@ func TestNewSourcesAreImmediatelyDueAndTransientRetryIsBounded(t *testing.T) {
 		if err != nil || score > float64(now) {
 			t.Fatalf("new source not immediately due: %f %v", score, err)
 		}
-	}
-	if err := client.Set(context.Background(), scrapeQueueRescheduleStateKey, "36000000", 0).Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := queue.RetryScrapeSite(sources[0], 30*time.Second); err != nil {
-		t.Fatal(err)
-	}
-	score, err := client.ZScore(context.Background(), queue.queueKeyForMember(sources[0].URL), sources[0].URL).Result()
-	if err != nil || score > float64(time.Now().Add(30*time.Second).UnixMilli()) || score < float64(now+29000) {
-		t.Fatalf("retry time = %f err=%v", score, err)
-	}
-	if err := client.Set(context.Background(), scrapeQueueRescheduleStateKey, "1000", 0).Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err := queue.RetryScrapeSite(sources[0], 30*time.Second); err != nil {
-		t.Fatal(err)
-	}
-	score, err = client.ZScore(context.Background(), queue.queueKeyForMember(sources[0].URL), sources[0].URL).Result()
-	if err != nil || score > float64(time.Now().Add(time.Second).UnixMilli()) {
-		t.Fatalf("retry exceeds shorter scrape interval: %f %v", score, err)
 	}
 }

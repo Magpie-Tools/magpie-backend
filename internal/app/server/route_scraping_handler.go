@@ -211,7 +211,7 @@ func getScrapeSourceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detail, dbErr := database.GetScrapeSiteDetail(userID, sourceID)
+	detail, dbErr := getScrapeSourceDetailForUser(userID, sourceID)
 	if dbErr != nil {
 		log.Error("error retrieving scrape source detail", "error", dbErr.Error(), "scrape_source_id", sourceID)
 		writeError(w, "Failed to retrieve scrape source", http.StatusInternalServerError)
@@ -223,6 +223,12 @@ func getScrapeSourceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if next, reason, err := getScrapeSchedule(r.Context(), detail.Url, detail.FetchMode); err != nil {
+		log.Debug("read scrape schedule", "site_id", detail.Id, "err", err)
+	} else if !next.IsZero() {
+		detail.NextScrapeAt = &next
+		detail.ScrapeScheduleReason = reason
+	}
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -262,13 +268,7 @@ func requeueScrapeSource(w http.ResponseWriter, r *http.Request) {
 		URL: detail.Url,
 	}
 
-	if err := removeScrapeSitesFromQueue([]domain.ScrapeSite{site}); err != nil {
-		log.Error("failed to remove scrape source from queue before requeue", "error", err, "scrape_source_id", sourceID, "user_id", userID)
-		writeError(w, "Failed to queue scrape source", http.StatusServiceUnavailable)
-		return
-	}
-
-	if err := enqueueScrapeSites([]domain.ScrapeSite{site}); err != nil {
+	if err := forceScrapeSite(site); err != nil {
 		log.Error("failed to queue scrape source", "error", err, "scrape_source_id", sourceID, "user_id", userID)
 		writeError(w, "Failed to queue scrape source", http.StatusServiceUnavailable)
 		return

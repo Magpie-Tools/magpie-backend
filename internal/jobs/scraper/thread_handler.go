@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"magpie/internal/blacklist"
 	"magpie/internal/config"
@@ -161,7 +162,7 @@ func scrapeWorker(ctx context.Context) {
 		}
 	}()
 	for ctx.Err() == nil {
-		site, due, err := sitequeue.PublicScrapeSiteQueue.GetNextScrapeSiteContext(ctx)
+		job, err := sitequeue.PublicScrapeSiteQueue.GetNextScrapeSiteContext(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -174,38 +175,65 @@ func scrapeWorker(ctx context.Context) {
 			}
 			continue
 		}
-		retry, queued := scrapeSite(ctx, site)
-		if !queued {
-			continue
-		}
-		if ctx.Err() != nil {
-			return
-		} // The processing lease recovers interrupted work.
-		if retry {
-			err = sitequeue.PublicScrapeSiteQueue.RetryScrapeSite(site, browserRetryDelay)
-		} else {
-			err = sitequeue.PublicScrapeSiteQueue.RequeueScrapeSite(site, due)
-		}
-		if err != nil {
-			log.Error("requeue scrape source", "site_id", site.ID, "err", err)
-		}
+		processScrapeSiteJob(ctx, job)
 	}
 }
 
-func scrapeSite(ctx context.Context, site domain.ScrapeSite) (retry bool, queued bool) {
+func processScrapeSiteJob(ctx context.Context, job sitequeue.ScrapeSiteJob) {
+	workCtx, stopRenewal := sitequeue.PublicScrapeSiteQueue.MaintainScrapeSiteLease(ctx, job)
+	defer stopRenewal() // Also join the renewal goroutine if a worker panics.
+	queued := scrapeSite(workCtx, &job)
+	renewalErr := stopRenewal()
+	if !queued {
+		return
+	}
+	if renewalErr != nil {
+		log.Warn("scrape source lease renewal failed", "site_id", job.Site.ID, "err", renewalErr)
+	}
+	// Save completed modes even during shutdown. Provider deadlines remain useful
+	// observations when renewal failed or another worker took over.
+	completed, err := sitequeue.PublicScrapeSiteQueue.CompleteScrapeSite(job)
+	if err != nil {
+		log.Error("requeue scrape source", "site_id", job.Site.ID, "err", err)
+	} else if !completed && renewalErr == nil {
+		log.Warn("scrape source lease lost before schedule completion", "site_id", job.Site.ID)
+	}
+}
+
+func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool) {
+	site := job.Site
+	if job.Schedule.RetryAfterMS > time.Now().UnixMilli() {
+		return true
+	}
 	lookupCtx, cancelLookup := context.WithTimeout(ctx, 5*time.Second)
 	subscriptions, err := database.GetScrapeSiteSubscriptions(lookupCtx, site.ID)
 	cancelLookup()
 	if err != nil {
 		log.Error("load scrape subscriptions", "site_id", site.ID, "err", err)
-		return true, true
+		job.Schedule.DeferredUntilMS = time.Now().Add(min(browserRetryDelay, job.Interval)).UnixMilli()
+		job.Schedule.DeferredReason = "Waiting for source settings to become available"
+		return true
 	}
 	if len(subscriptions) == 0 || config.IsWebsiteBlocked(site.URL) {
 		if err := sitequeue.PublicScrapeSiteQueue.RemoveFromQueue([]domain.ScrapeSite{site}); err != nil {
 			log.Error("remove unused scrape source", "err", err)
 		}
 		// Caller must not recreate the removed queue member.
-		return false, false
+		return false
+	}
+	job.Schedule.DeferredUntilMS = 0
+	job.Schedule.DeferredReason = ""
+	if job.Schedule.Modes == nil {
+		job.Schedule.Modes = make(map[string]sitequeue.ScrapeModeSchedule)
+	}
+	requestedModes := make(map[string]bool)
+	for _, subscription := range subscriptions {
+		requestedModes[subscription.FetchMode] = true
+	}
+	for mode := range job.Schedule.Modes {
+		if !requestedModes[mode] {
+			delete(job.Schedule.Modes, mode)
+		}
 	}
 	cfg := config.GetConfig()
 	timeout := effectiveScrapeTimeout(time.Duration(cfg.Scraper.Timeout) * time.Millisecond)
@@ -217,8 +245,10 @@ func scrapeSite(ctx context.Context, site domain.ScrapeSite) (retry bool, queued
 		}
 		robotsBlocked = result.RobotsFound && !result.Allowed
 	}
-	retry = false
 	for _, mode := range []string{domain.ScrapeFetchHTTP, domain.ScrapeFetchBrowser} {
+		if job.Schedule.Modes[mode].NextAttemptMS > time.Now().UnixMilli() {
+			continue
+		}
 		group := site
 		group.Workspaces = nil
 		for _, subscription := range subscriptions {
@@ -232,20 +262,48 @@ func scrapeSite(ctx context.Context, site domain.ScrapeSite) (retry bool, queued
 		attemptedAt := time.Now()
 		if robotsBlocked {
 			recordScrapeResult(group, mode, "blocked", 0, nil, attemptedAt)
+			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(job.Interval).UnixMilli()}
 			continue
 		}
 		html, err := ScraperRequestContext(ctx, site.URL, mode, timeout)
 		if err != nil {
+			// Retain an observed provider deadline even if cancellation or lease
+			// loss prevents this worker from committing its normal mode progress.
+			var status *scrapeHTTPStatusError
+			if errors.As(err, &status) && !status.retryAfter.IsZero() {
+				job.Schedule.RetryAfterMS = max(job.Schedule.RetryAfterMS, status.retryAfter.UnixMilli())
+			}
+			if isScrapeDeferred(err) {
+				job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{
+					NextAttemptMS:  time.Now().Add(min(browserRetryDelay, job.Interval)).UnixMilli(),
+					DeferredReason: "Waiting for browser capacity or availability",
+				}
+				continue
+			}
+			if ctx.Err() != nil {
+				break
+			}
 			log.Warn("scrape failed", "url", site.URL, "mode", mode, "err", err)
 			recordScrapeResult(group, mode, "error", 0, err, attemptedAt)
-			retry = retry || shouldRetryScrape(err)
+			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(job.Interval).UnixMilli()}
+			if job.Schedule.RetryAfterMS > time.Now().UnixMilli() {
+				// Both modes fetch the same URL and must honor this deadline.
+				break
+			}
 			continue
 		}
 		if err := enqueueScrapedHTML(ctx, group, html, mode, attemptedAt); err != nil {
-			retry = true
+			break
+		}
+		job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(job.Interval).UnixMilli()}
+	}
+	// Modes deferred by Retry-After remain pending even if no fetch ran yet.
+	for mode := range requestedModes {
+		if _, ok := job.Schedule.Modes[mode]; !ok {
+			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{}
 		}
 	}
-	return retry, true
+	return true
 }
 
 func recordScrapeResult(site domain.ScrapeSite, mode, status string, count int, scrapeErr error, attemptedAt time.Time) {

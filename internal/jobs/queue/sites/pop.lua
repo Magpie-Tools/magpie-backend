@@ -2,6 +2,9 @@ local queue_heads_key = KEYS[1]
 local current_time = tonumber(ARGV[1])
 local lease_milliseconds = tonumber(ARGV[2])
 local site_key_prefix = ARGV[3]
+local schedule_key_prefix = ARGV[4]
+local lease_key_prefix = ARGV[5]
+local claim_sequence_key = ARGV[6]
 
 local function refresh_head(queue_key)
   local current = redis.call('ZRANGE', queue_key, 0, 0, 'WITHSCORES')
@@ -18,7 +21,7 @@ end
 for _ = 1, 8 do
   local head = redis.call('ZRANGE', queue_heads_key, 0, 0, 'WITHSCORES')
   if #head == 0 then
-    return {0, "", "", -1, -1}
+    return {0, "", "", -1, -1, "", "", -1}
   end
 
   local queue_key = head[1]
@@ -34,7 +37,7 @@ for _ = 1, 8 do
     if score ~= indexed_score then
       redis.call('ZADD', queue_heads_key, score, queue_key)
     elseif score > current_time then
-      return {0, "", "", score, -1}
+      return {0, "", "", score, -1, "", "", -1}
     else
       local site_key = site_key_prefix .. member
       local site_data = redis.call('GET', site_key)
@@ -43,12 +46,15 @@ for _ = 1, 8 do
         refresh_head(queue_key)
       else
         local lease_score = current_time + lease_milliseconds
+        local claim = redis.call('INCR', claim_sequence_key)
+        redis.call('SET', lease_key_prefix .. member, claim, 'PX', lease_milliseconds)
         redis.call('ZADD', queue_key, lease_score, member)
         refresh_head(queue_key)
-        return {1, member, site_data, score, -1}
+        local schedule = redis.call('GET', schedule_key_prefix .. member) or '{}'
+        return {1, member, site_data, score, lease_score, schedule, queue_key, claim}
       end
     end
   end
 end
 
-return {0, "", "", -1, -1}
+return {0, "", "", -1, -1, "", "", -1}

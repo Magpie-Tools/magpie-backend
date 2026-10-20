@@ -204,11 +204,30 @@ func TestBrowserMainDocumentFailureStillRejectsScrape(t *testing.T) {
 	defer cancel()
 	html, err := fetchBrowser(ctx, server.URL, manager)
 	var status *scrapeHTTPStatusError
-	if html != "" || !errors.As(err, &status) || status.code != http.StatusBadGateway || !shouldRetryScrape(err) {
-		t.Fatalf("failed document HTML=%q err=%v, want retryable 502", html, err)
+	if html != "" || !errors.As(err, &status) || status.code != http.StatusBadGateway || isScrapeDeferred(err) {
+		t.Fatalf("failed document HTML=%q err=%v, want completed upstream 502", html, err)
 	}
 	if manager.current != original {
 		t.Fatal("upstream document failure invalidated the shared browser")
+	}
+}
+
+func TestBrowserPreservesRetryAfter(t *testing.T) {
+	manager, _ := browserFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "108000")
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "<html><body>Unavailable</body></html>")
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	before := time.Now()
+	_, err := fetchBrowser(ctx, server.URL, manager)
+	var status *scrapeHTTPStatusError
+	if !errors.As(err, &status) || status.retryAfter.Before(before.Add(30*time.Hour)) {
+		t.Fatalf("browser lost provider deadline: %v", err)
 	}
 }
 
