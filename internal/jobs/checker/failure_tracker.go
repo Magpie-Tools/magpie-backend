@@ -337,7 +337,7 @@ func execResetChunk(pairs []failurePair) error {
 	if !isPostgresDialect(db) {
 		for _, pair := range pairs {
 			if err := db.Model(&domain.ManagedProxy{}).
-				Where("workspace_id = ? AND proxy_id = ?", pair.workspaceID, pair.proxyID).
+				Where("workspace_id = ? AND proxy_id = ? AND consecutive_failures <> 0", pair.workspaceID, pair.proxyID).
 				Update("consecutive_failures", 0).Error; err != nil {
 				return err
 			}
@@ -360,7 +360,9 @@ func execResetChunk(pairs []failurePair) error {
 		args = append(args, p.workspaceID, p.proxyID)
 		argPos += 2
 	}
-	builder.WriteString(")\nUPDATE user_proxies up SET consecutive_failures = 0 FROM targets WHERE up.workspace_id = targets.workspace_id AND up.proxy_id = targets.proxy_id")
+	// Successful checks normally find an already-zero streak. Keep that case
+	// from creating another tuple version and contending with ownership writes.
+	builder.WriteString(")\nUPDATE user_proxies up SET consecutive_failures = 0 FROM targets WHERE up.workspace_id = targets.workspace_id AND up.proxy_id = targets.proxy_id AND up.consecutive_failures <> 0")
 
 	return db.WithContext(ctx).Exec(builder.String(), args...).Error
 }

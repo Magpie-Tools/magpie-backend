@@ -31,7 +31,22 @@ func seedCheckerTag(t *testing.T, db *gorm.DB, workspaceID uint, name string) do
 
 func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	a, _, proxy, _ := seedCheckerEvidenceTest(t, db)
+	a, _, proxy, judge := seedCheckerEvidenceTest(t, db)
+	// This fixture writes real evidence below. Keep its asynchronous notification
+	// out of later tests without discarding any work that predates this fixture.
+	readModelDirtyMu.Lock()
+	previousDirty, previousBatch := readModelDirtyProxyIDs, readModelPendingBatch
+	previousRound := readModelDirtyRound
+	readModelDirtyProxyIDs = make(map[uint64]struct{})
+	readModelDirtyRound = nil
+	readModelPendingBatch = nil
+	readModelDirtyMu.Unlock()
+	t.Cleanup(func() {
+		readModelDirtyMu.Lock()
+		readModelDirtyProxyIDs, readModelPendingBatch = previousDirty, previousBatch
+		readModelDirtyRound = previousRound
+		readModelDirtyMu.Unlock()
+	})
 	ruleTag := seedCheckerTag(t, db, a.ID, "Checker")
 	classTag := seedCheckerTag(t, db, a.ID, "Classification")
 	a.CheckerConfig.Rules = []dto.TagCheckerRule{{TagID: ruleTag.ID, Mode: "remove", Protocols: []string{"http"}}}
@@ -45,8 +60,57 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 	if err := db.Exec(`INSERT INTO user_proxies (workspace_id,proxy_id,state) SELECT ?, n,'active' FROM generate_series(100,10099) n`, a.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadCheckerWorkspace(context.Background(), a.ID); err != nil {
+	snapshot, err := LoadCheckerWorkspace(context.Background(), a.ID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	checkedAt := time.Now().UTC().Truncate(time.Microsecond)
+	stat := domain.ProxyStatistic{
+		ProxyID: proxy.ID, ProtocolID: 1, JudgeID: judge.ID, Alive: true,
+		TransportProtocol: "tcp", CheckTimeout: 1000, CreatedAt: checkedAt,
+		WorkspaceIDs:  []uint{a.ID},
+		CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: a.ID, ConfigKey: snapshot.Default.Keys[0], Alive: true}},
+	}
+	if err := InsertProxyStatistics(context.Background(), []domain.ProxyStatistic{stat}, 100); err != nil {
+		t.Fatal(err)
+	}
+	// Give the tag-removal path genuine current health to invalidate. Without
+	// evidence, unknown-to-unknown reconciliation correctly performs no update.
+	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, a.ID, []uint64{proxy.ID}); err != nil {
+		t.Fatal(err)
+	}
+	assertHealth := func(healthy bool) {
+		t.Helper()
+		var indexed domain.WorkspaceProxyFilterIndex
+		if err := db.First(&indexed, "workspace_id=? AND proxy_id=?", a.ID, proxy.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if indexed.Alive != healthy || indexed.AliveHTTP != healthy || (indexed.HealthOverall != nil) != healthy || (indexed.HealthHTTP != nil) != healthy {
+			t.Fatalf("indexed HTTP health=%+v want healthy=%t", indexed, healthy)
+		}
+		if healthy && (*indexed.HealthOverall != 100 || *indexed.HealthHTTP != 100) {
+			t.Fatal("successful single-protocol evidence did not project 100% health", indexed.HealthOverall, indexed.HealthHTTP)
+		}
+		// Exercise the public health query without launching an unrelated,
+		// asynchronous missing-reputation backfill past fixture teardown.
+		rows, total := GetProxyInfoPageWithFiltersAndOptions(a.ID, 1, 40, proxy.GetIp(), dto.ProxyListFilters{}, ProxyPageQueryOptions{
+			IncludeHealth: true, IncludeReputation: false,
+		})
+		if total != 1 || len(rows) != 1 || rows[0].Id != int(proxy.ID) || rows[0].Alive != healthy || rows[0].HealthKnown != healthy {
+			t.Fatalf("visible tag health=%+v total=%d want healthy=%t", rows, total, healthy)
+		}
+		if healthy {
+			if !indexed.LatestCheck.Equal(checkedAt) || !rows[0].LatestCheck.Equal(checkedAt) {
+				t.Fatal("matching current evidence was not projected", indexed.LatestCheck, rows[0].LatestCheck, checkedAt)
+			}
+		} else if !indexed.LatestCheck.IsZero() || !rows[0].LatestCheck.IsZero() {
+			t.Fatal("disabled HTTP check retained visible evidence", indexed.LatestCheck, rows[0].LatestCheck)
+		}
+	}
+	assertHealth(true)
+	var projected int64
+	if err := db.Model(&domain.WorkspaceProxyFilterIndex{}).Where("workspace_id=?", a.ID).Count(&projected).Error; err != nil || projected != 10001 {
+		t.Fatal("untouched control population was not projected before auditing", projected, err)
 	}
 	for _, sql := range []string{
 		`CREATE TABLE checker_projection_updates (proxy_id bigint)`,
@@ -66,6 +130,10 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 		if got != want {
 			t.Fatalf("filter rows rewritten=%d want=%d", got, want)
 		}
+		var unrelated int64
+		if err := db.Table("checker_projection_updates").Where("proxy_id <> ?", proxy.ID).Count(&unrelated).Error; err != nil || unrelated != 0 {
+			t.Fatal("tag edit rewrote an unrelated route", unrelated, err)
+		}
 		if err := db.Exec("TRUNCATE checker_projection_updates").Error; err != nil {
 			t.Fatal(err)
 		}
@@ -81,6 +149,7 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertUpdates(0)
+	assertHealth(true)
 	t.Logf("classification edit plus explicit reconciliation, 10,001 routes: %s; filter writes=0", time.Since(start))
 	if err := AddProxyTagsToProxies(a.ID, []uint64{proxy.ID}, []uint64{ruleTag.ID}); err != nil {
 		t.Fatal(err)
@@ -89,6 +158,7 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertUpdates(1)
+	assertHealth(false)
 	// Keep the checker tag while editing only classification membership.
 	if _, err := ReplaceProxyTags(a.ID, proxy.ID, []uint64{ruleTag.ID}); err != nil {
 		t.Fatal(err)
@@ -100,6 +170,7 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertUpdates(0)
+	assertHealth(false)
 	if _, err := ReplaceProxyTags(a.ID, proxy.ID, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +178,13 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertUpdates(1)
+	assertHealth(true)
 	// A fresh process reading the already-projected generation writes nothing.
 	if _, err := LoadCheckerWorkspace(context.Background(), a.ID); err != nil {
 		t.Fatal(err)
 	}
 	assertUpdates(0)
+	assertHealth(true)
 }
 
 func TestCheckerSharedDefaultReversionReloadsAllOverridesPostgres(t *testing.T) {

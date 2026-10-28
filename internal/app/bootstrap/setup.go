@@ -47,6 +47,9 @@ func (running *Runtime) setup(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	fixtures, err := config.DevelopmentFixturesEnabled()
 	if err != nil {
 		return err
@@ -54,6 +57,9 @@ func (running *Runtime) setup(ctx context.Context) error {
 
 	if err := config.ReadSettings(); err != nil {
 		return fmt.Errorf("failed to load settings: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	if redisClient, err := support.GetRedisClient(); err != nil {
@@ -67,13 +73,22 @@ func (running *Runtime) setup(ctx context.Context) error {
 	if _, err := database.SetupDB(); err != nil {
 		return fmt.Errorf("failed to set up database: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if fixtures {
 		redisClient, _ := support.GetRedisClient()
 		if err := checkerconfig.Initialize(ctx, redisClient, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
 			return fmt.Errorf("load fixture checker settings: %w", err)
 		}
-		if err := database.RefreshDashboardCaches(ctx); err != nil {
+		if err := refreshDashboardCachesWithin(ctx, dashboardCachePrewarmTimeout, database.RefreshDashboardCaches); err != nil {
+			if parentErr := ctx.Err(); parentErr != nil {
+				return parentErr
+			}
 			return fmt.Errorf("prewarm fixture dashboard: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		running.readModels.start(database.StartReadModelRefreshRoutine)
 		running.producers.start(jobruntime.StartDashboardCacheRoutine)
@@ -89,6 +104,9 @@ func (running *Runtime) setup(ctx context.Context) error {
 	if err := blacklist.Initialize(ctx); err != nil {
 		log.Warn("Blacklist initialisation failed", "error", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if redisClient, err := support.GetRedisClient(); err != nil {
 		log.Warn("Blacklist synchronization disabled", "error", err)
@@ -100,10 +118,16 @@ func (running *Runtime) setup(ctx context.Context) error {
 	if err := checkerconfig.Initialize(ctx, nil, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
 		return fmt.Errorf("load checker settings snapshots: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	running.producers.start(recoverRedisSynchronization)
 
 	pausedForFailure, inactiveProxies, refreshProxies, cleanupErr := database.CleanupAutoRemovalViolations(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if cleanupErr != nil {
 		log.Error("auto-pause cleanup failed", "error", cleanupErr)
 	} else if pausedForFailure > 0 {
@@ -126,6 +150,9 @@ func (running *Runtime) setup(ctx context.Context) error {
 	}
 
 	capacityPaused, capacityInactiveProxies, capacityRefreshProxies, limitCleanupErr := database.CleanupProxyLimitViolations(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if limitCleanupErr != nil {
 		log.Error("workspace capacity cleanup failed", "error", limitCleanupErr)
 	} else if capacityPaused > 0 {
@@ -147,6 +174,9 @@ func (running *Runtime) setup(ctx context.Context) error {
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	running.producers.start(refreshPublicIP)
 
 	startupQueueBootstrapCompleted.Store(false)
@@ -159,6 +189,22 @@ func (running *Runtime) setup(ctx context.Context) error {
 	}
 	running.producers.start(monitorQueueState)
 
+	if err := prewarmDashboardCaches(ctx); err != nil {
+		return err
+	}
+
+	// Routines
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Register final drains before opening listeners or starting check producers.
+	running.readModels.start(database.StartReadModelRefreshRoutine)
+	running.consumers.start(jobruntime.StartProxyStatisticsRoutine)
+	running.consumers.start(jobruntime.StartWorkspaceUsageRoutine)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	rotatingproxy.GlobalManager.StartAll()
 	syncIntervalSeconds := support.GetEnvInt("ROTATING_PROXY_SYNC_INTERVAL_SECONDS", 10)
 	if syncIntervalSeconds <= 0 {
@@ -169,37 +215,32 @@ func (running *Runtime) setup(ctx context.Context) error {
 		rotatingproxy.GlobalManager.StopAll()
 	})
 
-	dashboardCacheStart := time.Now()
-	if err := database.RefreshDashboardCaches(ctx); err != nil {
-		log.Warn("Dashboard cache prewarm failed; first request may be slower", "error", err)
-	} else {
-		log.Info("Dashboard caches prewarmed", "duration", time.Since(dashboardCacheStart))
+	for _, routine := range []func(context.Context){
+		judges.StartJudgeRoutine,
+		jobruntime.StartDashboardCacheRoutine,
+		jobruntime.StartProxyStatisticsRetentionRoutine,
+		jobruntime.StartProxyTimelineRetentionRoutine,
+		jobruntime.StartProxyHistoryRoutine,
+		jobruntime.StartProxySnapshotRoutine,
+		jobruntime.StartProxyGeoRefreshRoutine,
+		maintenance.StartOrphanCleanupRoutine,
+		maintenance.StartPasswordResetCleanupRoutine,
+		maintenance.StartWorkspaceInvitationCleanupRoutine,
+		jobruntime.StartGeoLiteUpdateRoutine,
+		jobruntime.StartAbuseIPDBRoutine,
+		jobruntime.StartEmailDeliveryRoutine,
+		jobruntime.StartAlertEvaluationRoutine,
+		jobruntime.StartAlertDeliveryRoutine,
+		jobruntime.StartEmailDeliveryMaintenanceRoutine,
+		blacklist.StartRefreshRoutine,
+		checker.ThreadDispatcher,
+		scraper.ThreadDispatcher,
+	} {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		running.producers.start(routine)
 	}
-
-	// Routines
-
-	running.producers.start(judges.StartJudgeRoutine)
-	running.readModels.start(database.StartReadModelRefreshRoutine)
-	running.producers.start(jobruntime.StartDashboardCacheRoutine)
-	running.consumers.start(jobruntime.StartProxyStatisticsRoutine)
-	running.consumers.start(jobruntime.StartWorkspaceUsageRoutine)
-	running.producers.start(jobruntime.StartProxyStatisticsRetentionRoutine)
-	running.producers.start(jobruntime.StartProxyTimelineRetentionRoutine)
-	running.producers.start(jobruntime.StartProxyHistoryRoutine)
-	running.producers.start(jobruntime.StartProxySnapshotRoutine)
-	running.producers.start(jobruntime.StartProxyGeoRefreshRoutine)
-	running.producers.start(maintenance.StartOrphanCleanupRoutine)
-	running.producers.start(maintenance.StartPasswordResetCleanupRoutine)
-	running.producers.start(maintenance.StartWorkspaceInvitationCleanupRoutine)
-	running.producers.start(jobruntime.StartGeoLiteUpdateRoutine)
-	running.producers.start(jobruntime.StartAbuseIPDBRoutine)
-	running.producers.start(jobruntime.StartEmailDeliveryRoutine)
-	running.producers.start(jobruntime.StartAlertEvaluationRoutine)
-	running.producers.start(jobruntime.StartAlertDeliveryRoutine)
-	running.producers.start(jobruntime.StartEmailDeliveryMaintenanceRoutine)
-	running.producers.start(blacklist.StartRefreshRoutine)
-	running.producers.start(checker.ThreadDispatcher)
-	running.producers.start(scraper.ThreadDispatcher)
 
 	return nil
 }

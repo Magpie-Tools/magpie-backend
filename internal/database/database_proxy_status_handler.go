@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"magpie/internal/domain"
@@ -101,11 +102,27 @@ func latestProxyStatusEntries(stats []domain.ProxyStatistic) ([]domain.ProxyLate
 	for _, entry := range latest {
 		entries = append(entries, entry)
 	}
+	// Concurrent batches may overlap after stream reclaim. Use the conflict-key
+	// order rather than map iteration order when acquiring latest-row locks.
+	sort.Slice(entries, func(i, j int) bool {
+		a, b := entries[i], entries[j]
+		if a.WorkspaceID != b.WorkspaceID {
+			return a.WorkspaceID < b.WorkspaceID
+		}
+		if a.ConfigKey != b.ConfigKey {
+			return a.ConfigKey < b.ConfigKey
+		}
+		if a.ProxyID != b.ProxyID {
+			return a.ProxyID < b.ProxyID
+		}
+		return a.ProtocolID < b.ProtocolID
+	})
 
 	proxyIDs := make([]uint64, 0, len(proxyIDSet))
 	for id := range proxyIDSet {
 		proxyIDs = append(proxyIDs, id)
 	}
+	sort.Slice(proxyIDs, func(i, j int) bool { return proxyIDs[i] < proxyIDs[j] })
 
 	return entries, proxyIDs
 }
@@ -169,6 +186,7 @@ SELECT
 FROM proxy_latest_statistics pls
 WHERE pls.proxy_id IN ? AND pls.workspace_id = 0
 GROUP BY pls.proxy_id
+ORDER BY pls.proxy_id
 ON CONFLICT (proxy_id) DO UPDATE
 SET overall_alive = excluded.overall_alive,
 	last_checked_at = excluded.last_checked_at,

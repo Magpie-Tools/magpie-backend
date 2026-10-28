@@ -112,11 +112,7 @@ var PublicProxyQueue RedisProxyQueue
 var runLeaderTaskOnce = support.RunLeaderTaskOnce
 
 func init() {
-	client, err := support.GetRedisClient()
-	if err != nil {
-		log.Warn("Redis unavailable during proxy queue init; continuing in degraded mode", "error", err)
-	}
-	PublicProxyQueue = *NewRedisProxyQueue(client)
+	PublicProxyQueue = *NewRedisProxyQueue(nil)
 }
 
 // StartIntervalUpdates runs after settings load. Package initialization must

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -20,8 +21,9 @@ import (
 )
 
 type dashboardInfoCacheEntry struct {
-	version checkerHealthVersion
-	info    dto.DashboardInfo
+	version     checkerHealthVersion
+	info        dto.DashboardInfo
+	completedAt time.Time
 }
 
 var dashboardInfoCache sync.Map
@@ -478,37 +480,99 @@ func GetUserJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
 }
 
 func GetDashboardInfo(userid uint) dto.DashboardInfo {
-	version := currentCheckerHealthVersion(userid)
-	if cached, ok := dashboardInfoCache.Load(userid); ok {
-		entry := cached.(dashboardInfoCacheEntry)
-		if !version.Dirty && entry.version == version {
-			return entry.info
-		}
-	}
-	return RefreshDashboardInfoCache(userid)
-}
-
-func RefreshDashboardInfoCache(userid uint) dto.DashboardInfo {
-	version := currentCheckerHealthVersion(userid)
-	info := loadDashboardInfo(userid)
-	if version.Dirty || currentCheckerHealthVersion(userid) != version {
-		info.JudgeValidProxies = nil
-		return info
-	}
-	dashboardInfoCache.Store(userid, dashboardInfoCacheEntry{version: version, info: info})
+	info, _ := GetDashboardInfoContext(context.Background(), userid)
 	return info
 }
 
-func RefreshDashboardCaches(ctx context.Context) error {
+func GetDashboardInfoContext(ctx context.Context, workspaceID uint) (dto.DashboardInfo, error) {
+	value, err := getDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardInfoComponent})
+	if err != nil {
+		return dto.DashboardInfo{}, err
+	}
+	return value.(dto.DashboardInfo), nil
+}
+
+func RefreshDashboardInfoCache(userid uint) dto.DashboardInfo {
+	value, err := refreshDashboardComponent(context.Background(), dashboardCacheKey{workspaceID: userid, component: dashboardInfoComponent})
+	if err != nil {
+		return dto.DashboardInfo{}
+	}
+	return value.(dto.DashboardInfo)
+}
+
+func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
+	if db == nil {
+		return dto.DashboardInfo{}, fmt.Errorf("dashboard info: database connection was not initialised")
+	}
+	key := dashboardCacheKey{workspaceID: userid, component: dashboardInfoComponent}
+	revision := dashboardCaches.revision(key)
+	version, err := currentCheckerHealthVersionWithDB(db, userid)
+	if err != nil {
+		return dto.DashboardInfo{}, err
+	}
+	// Own the delayed legacy backfill as well as the six loader queries. On
+	// success keep the context live until the backfill finishes; on failure
+	// cancel it and join before returning. Fast cold reads can take two seconds.
+	var info dto.DashboardInfo
+	if owner, _ := db.Statement.Context.Value(dashboardBackfillContextKey{}).(*dashboardBackfillWork); owner != nil {
+		// Explicit all-workspace prewarm joins these children as one outer
+		// group, so their existing two-second delays do not become serial.
+		info, err = loadDashboardInfo(db, userid)
+	} else {
+		loadCtx, cancel := context.WithCancel(dashboardDBContext(db.Statement.Context))
+		backfills := &dashboardBackfillWork{ctx: loadCtx}
+		loadCtx = context.WithValue(loadCtx, dashboardBackfillContextKey{}, backfills)
+		info, err = loadDashboardInfo(db.WithContext(loadCtx), userid)
+		if err != nil {
+			cancel()
+		}
+		backfills.Wait()
+		if err == nil {
+			err = loadCtx.Err()
+		}
+		cancel()
+	}
+	if err != nil {
+		return dto.DashboardInfo{}, err
+	}
+	currentVersion, err := currentCheckerHealthVersionWithDB(db, userid)
+	if err != nil {
+		return dto.DashboardInfo{}, err
+	}
+	if version.Dirty || currentVersion != version {
+		info.JudgeValidProxies = nil
+		return info, nil
+	}
+	dashboardCaches.publish(key, revision, func() {
+		dashboardInfoCache.Store(userid, dashboardInfoCacheEntry{version: version, info: info, completedAt: dashboardCaches.now()})
+	})
+	return info, nil
+}
+
+func RefreshDashboardCaches(ctx context.Context) (returnErr error) {
 	if DB == nil {
 		return fmt.Errorf("dashboard cache: database connection was not initialised")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	groupCtx, cancel := context.WithCancel(ctx)
+	backfills := &dashboardBackfillWork{ctx: groupCtx}
+	ctx = context.WithValue(groupCtx, dashboardBackfillContextKey{}, backfills)
+	defer func() {
+		if returnErr != nil {
+			cancel()
+		}
+		backfills.Wait()
+		if returnErr == nil {
+			returnErr = groupCtx.Err()
+		}
+		cancel()
+	}()
 
 	var workspaceIDs []uint
-	if err := DB.WithContext(ctx).Model(&domain.Workspace{}).Order("id").Pluck("id", &workspaceIDs).Error; err != nil {
+	db := DB.WithContext(ctx)
+	if err := db.Model(&domain.Workspace{}).Order("id").Pluck("id", &workspaceIDs).Error; err != nil {
 		return fmt.Errorf("dashboard cache: load workspace ids: %w", err)
 	}
 
@@ -517,21 +581,22 @@ func RefreshDashboardCaches(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			RefreshDashboardInfoCache(workspaceID)
-			RefreshRecentProxyChecksCache(workspaceID, defaultRecentProxyChecksLimit)
-			RefreshFastestAliveProxiesCache(workspaceID, dashboardFastestAliveLimit)
+			if _, err := refreshDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardInfoComponent}); err != nil {
+				return fmt.Errorf("dashboard cache: workspace %d info: %w", workspaceID, err)
+			}
+			if _, err := refreshDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: defaultRecentProxyChecksLimit}); err != nil {
+				return fmt.Errorf("dashboard cache: workspace %d recent checks: %w", workspaceID, err)
+			}
+			if _, err := refreshDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: dashboardFastestAliveLimit}); err != nil {
+				return fmt.Errorf("dashboard cache: workspace %d fastest proxies: %w", workspaceID, err)
+			}
 		}
 	}
 	return nil
 }
 
-func loadDashboardInfo(userid uint) dto.DashboardInfo {
+func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 	weekAgo := time.Now().AddDate(0, 0, -7)
-
-	type countryCount struct {
-		Country string `gorm:"column:country"`
-		Count   uint   `gorm:"column:count"`
-	}
 
 	type jvp struct {
 		JudgeUrl           string `json:"judge_url"`
@@ -539,101 +604,82 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		AnonymousProxies   uint   `json:"anonymous_proxies"`
 		TransparentProxies uint   `json:"transparent_proxies"`
 	}
-	type reputationCount struct {
-		Label string `gorm:"column:label"`
-		Count uint   `gorm:"column:count"`
-	}
-
-	type topProxyRow struct {
-		ProxyID uint64  `gorm:"column:proxy_id"`
-		IP      string  `gorm:"column:ip"`
-		Port    uint    `gorm:"column:port"`
-		Score   float32 `gorm:"column:score"`
-		Label   string  `gorm:"column:label"`
-	}
-
 	var (
 		checks          dashboardCheckCounts
 		scrapedSnapshot proxySnapshotCountSummary
-		countries       []countryCount
+		inventory       dashboardInventorySummary
 		judges          []jvp
-		repCounts       []reputationCount
-		topRow          topProxyRow
-		topRowFound     bool
 		wg              sync.WaitGroup
 	)
+	queryErrors := make(chan error, 4)
+	recordError := func(label string, err error) {
+		if err != nil {
+			queryErrors <- fmt.Errorf("%s: %w", label, err)
+		}
+	}
 
-	wg.Add(6)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		var err error
-		checks, err = loadDashboardCheckCounts(userid, weekAgo)
+		checks, err = loadDashboardCheckCountsWithDB(db, userid, weekAgo)
 		if err == nil {
 			return
 		}
 
 		log.Error("dashboard: failed to load pre-aggregated check counts", "user_id", userid, "error", err)
-		checks, err = loadDashboardCheckCountsDirect(userid, weekAgo)
+		if db.Statement.Context.Err() != nil {
+			recordError("check counts", db.Statement.Context.Err())
+			return
+		}
+		checks, err = loadDashboardCheckCountsDirectWithDB(db, userid, weekAgo)
 		if err != nil {
 			log.Error("dashboard: failed to load fallback check counts", "user_id", userid, "error", err)
 		}
+		recordError("check counts", err)
 	}()
 
 	go func() {
 		defer wg.Done()
-		scrapedSnapshot = getProxySnapshotCountSummary(userid, domain.ProxySnapshotMetricScraped, weekAgo)
+		var err error
+		scrapedSnapshot, err = getProxySnapshotCountSummaryWithDB(db, userid, domain.ProxySnapshotMetricScraped, weekAgo)
+		recordError("scraped snapshot", err)
 	}()
 
 	go func() {
 		defer wg.Done()
-		const countryExpr = "CASE WHEN ufi.country_key IN ('n/a', 'unknown', 'unk') THEN 'Unknown' ELSE ufi.country END"
-		DB.Table("user_proxy_filter_indexes ufi").
-			Select(countryExpr+" AS country, COUNT(*) AS count").
-			Where("ufi.workspace_id = ? AND ufi.state = ?", userid, domain.ManagedProxyStateActive).
-			Group(countryExpr).
-			Order("count DESC, country ASC").
-			Scan(&countries)
+		var err error
+		inventory, err = loadDashboardInventorySummary(db, userid)
+		recordError("inventory summary", err)
 	}()
 
 	go func() {
 		defer wg.Done()
-		currentLatestStatistics(DB, userid).
+		err := dashboardLatestStatistics(db, userid).
 			Select(
 				"j.full_string AS judge_url, "+
 					"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+
 					"SUM(CASE WHEN al.name = 'anonymous' THEN 1 ELSE 0 END)   AS anonymous_proxies, "+
 					"SUM(CASE WHEN al.name = 'transparent' THEN 1 ELSE 0 END) AS transparent_proxies",
 			).
-			Joins("JOIN user_proxies up ON up.proxy_id = pls.proxy_id AND up.workspace_id = ? AND up.state = ?", userid, domain.ManagedProxyStateActive).
 			Joins("JOIN user_judges uj ON uj.judge_id = pls.judge_id AND uj.workspace_id = ?", userid).
 			Joins("JOIN judges j ON j.id = pls.judge_id").
 			Joins("JOIN anonymity_levels al ON al.id = pls.level_id").
 			Where("pls.alive = TRUE").
 			Group("j.id, j.full_string").
-			Scan(&judges)
-	}()
-
-	go func() {
-		defer wg.Done()
-		DB.Table("user_proxy_filter_indexes ufi").
-			Select("ufi.reputation_label AS label, COUNT(*) AS count").
-			Where("ufi.workspace_id = ? AND ufi.state = ?", userid, domain.ManagedProxyStateActive).
-			Group("label").
-			Scan(&repCounts)
-	}()
-
-	go func() {
-		defer wg.Done()
-		result := DB.Table("user_proxy_filter_indexes ufi").
-			Select("ufi.proxy_id, ufi.reputation_score AS score, ufi.reputation_label AS label, ufi.host AS ip, ufi.port").
-			Where("ufi.workspace_id = ? AND ufi.state = ? AND ufi.reputation_score IS NOT NULL", userid, domain.ManagedProxyStateActive).
-			Order("ufi.reputation_score DESC, ufi.proxy_id ASC").
-			Limit(1).
-			Scan(&topRow)
-		topRowFound = result.Error == nil && result.RowsAffected > 0 && topRow.ProxyID != 0
+			Scan(&judges).Error
+		recordError("judge anonymity", err)
 	}()
 
 	wg.Wait()
+	close(queryErrors)
+	var loadErrors []error
+	for err := range queryErrors {
+		loadErrors = append(loadErrors, err)
+	}
+	if len(loadErrors) > 0 {
+		return dto.DashboardInfo{}, errors.Join(loadErrors...)
+	}
 
 	var info dto.DashboardInfo
 	info.TotalChecks = checks.TotalChecks
@@ -643,10 +689,14 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		info.TotalScraped = scrapedSnapshot.Current
 		info.TotalScrapedWeek = scrapedSnapshot.Increase
 	} else {
-		info.TotalScraped = GetCurrentScrapedProxyCount(userid)
+		counts, err := scrapedProxyCountByWorkspace(db, []uint{userid})
+		if err != nil {
+			return dto.DashboardInfo{}, fmt.Errorf("current scraped count: %w", err)
+		}
+		info.TotalScraped = counts[userid]
 	}
 
-	for _, row := range countries {
+	for _, row := range inventory.Countries {
 		info.CountryBreakdown = append(info.CountryBreakdown, struct {
 			Country string `json:"country"`
 			Count   uint   `json:"count"`
@@ -670,7 +720,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		})
 	}
 
-	for _, row := range repCounts {
+	for _, row := range inventory.Reputations {
 		switch row.Label {
 		case "good":
 			info.ReputationBreakdown.Good = row.Count
@@ -683,7 +733,8 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		}
 	}
 
-	if topRowFound {
+	if inventory.TopProxyFound {
+		topRow := inventory.TopProxy
 		ip := topRow.IP
 
 		info.TopReputationProxy = &struct {
@@ -701,7 +752,7 @@ func loadDashboardInfo(userid uint) dto.DashboardInfo {
 		}
 	}
 
-	return info
+	return info, nil
 }
 
 func ChangePassword(userID uint, password string) error {

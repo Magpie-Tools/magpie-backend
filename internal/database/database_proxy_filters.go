@@ -161,19 +161,25 @@ func GetProxyFilterOptions(workspaceID uint) (dto.ProxyFilterOptions, error) {
 		return dto.ProxyFilterOptions{}, fmt.Errorf("database connection was not initialised")
 	}
 
-	countries, err := loadDistinctProxyInfoValue(workspaceID, "ufi.country")
+	query, args := proxyFilterOptionValuesQuery(DB, workspaceID)
+	var rows []proxyFilterValueRow
+	err := DB.Raw(query, args...).Scan(&rows).Error
 	if err != nil {
 		return dto.ProxyFilterOptions{}, err
 	}
-
-	types, err := loadDistinctProxyInfoValue(workspaceID, "ufi.estimated_type")
-	if err != nil {
-		return dto.ProxyFilterOptions{}, err
-	}
-
-	anonymityLevels, err := loadDistinctAnonymityLevels(workspaceID)
-	if err != nil {
-		return dto.ProxyFilterOptions{}, err
+	countries, types, anonymityLevels := make([]string, 0), make([]string, 0), make([]string, 0)
+	for _, row := range rows {
+		if strings.TrimSpace(row.Value) == "" {
+			continue
+		}
+		switch row.Kind {
+		case "country":
+			countries = append(countries, row.Value)
+		case "type":
+			types = append(types, row.Value)
+		case "anonymity":
+			anonymityLevels = append(anonymityLevels, row.Value)
+		}
 	}
 
 	tags, err := GetProxyTags(workspaceID)
@@ -190,42 +196,40 @@ func GetProxyFilterOptions(workspaceID uint) (dto.ProxyFilterOptions, error) {
 }
 
 type proxyFilterValueRow struct {
+	Kind  string `gorm:"column:kind"`
 	Value string `gorm:"column:value"`
 }
 
-func loadDistinctProxyInfoValue(workspaceID uint, column string) ([]string, error) {
-	var rows []proxyFilterValueRow
-	if err := DB.Table("user_proxy_filter_indexes ufi").
-		Select("DISTINCT COALESCE(NULLIF("+column+", ''), 'N/A') AS value").
-		Where("ufi.workspace_id = ?", workspaceID).
-		Order("value").
-		Scan(&rows).Error; err != nil {
-		return nil, err
+func proxyFilterOptionValuesQuery(db *gorm.DB, workspaceID uint) (string, []any) {
+	sources := []struct{ kind, column string }{
+		{"country", "country"}, {"type", "estimated_type"}, {"anonymity", "anonymity_level"},
 	}
-
-	return extractProxyFilterValues(rows), nil
-}
-
-func loadDistinctAnonymityLevels(workspaceID uint) ([]string, error) {
-	var rows []proxyFilterValueRow
-	if err := DB.Table("user_proxy_filter_indexes ufi").
-		Select("DISTINCT COALESCE(NULLIF(ufi.anonymity_level, ''), 'N/A') AS value").
-		Where("ufi.workspace_id = ?", workspaceID).
-		Order("value").
-		Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-
-	return extractProxyFilterValues(rows), nil
-}
-
-func extractProxyFilterValues(rows []proxyFilterValueRow) []string {
-	values := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if strings.TrimSpace(row.Value) == "" {
+	branches := make([]string, 0, len(sources))
+	ctes := make([]string, 0, len(sources))
+	args := make([]any, 0, len(sources)*2)
+	for _, source := range sources {
+		value := "COALESCE(NULLIF(ufi." + source.column + ", ''), 'N/A')"
+		if !isPostgresDialect(db) {
+			branches = append(branches, fmt.Sprintf("SELECT DISTINCT '%s' AS kind, %s AS value FROM user_proxy_filter_indexes ufi WHERE ufi.workspace_id = ?", source.kind, value))
+			args = append(args, workspaceID)
 			continue
 		}
-		values = append(values, row.Value)
+		// Each successor is one index seek past the previous distinct value.
+		// Reading all matching index entries still scales with millions of routes.
+		name := source.column + "_values"
+		ctes = append(ctes, fmt.Sprintf(`%s(value) AS (
+			(SELECT %s FROM user_proxy_filter_indexes ufi WHERE ufi.workspace_id = ? ORDER BY %s LIMIT 1)
+			UNION ALL
+			SELECT (SELECT %s FROM user_proxy_filter_indexes ufi
+				WHERE ufi.workspace_id = ? AND %s > previous.value ORDER BY %s LIMIT 1)
+			FROM %s previous WHERE previous.value IS NOT NULL
+		)`, name, value, value, value, value, value, name))
+		branches = append(branches, fmt.Sprintf("SELECT '%s' AS kind, value FROM %s WHERE value IS NOT NULL", source.kind, name))
+		args = append(args, workspaceID, workspaceID)
 	}
-	return values
+	query := strings.Join(branches, " UNION ALL ") + " ORDER BY kind, value"
+	if len(ctes) > 0 {
+		query = "WITH RECURSIVE " + strings.Join(ctes, ", ") + " " + query
+	}
+	return query, args
 }

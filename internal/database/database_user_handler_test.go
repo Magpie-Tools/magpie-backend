@@ -2,6 +2,7 @@ package database
 
 import (
 	"testing"
+	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
@@ -36,7 +37,7 @@ func TestGetDashboardInfoServesCachedSnapshotWithoutDatabase(t *testing.T) {
 		TotalScrapedWeek: 8,
 	}
 
-	dashboardInfoCache.Store(userID, dashboardInfoCacheEntry{info: expected})
+	dashboardInfoCache.Store(userID, dashboardInfoCacheEntry{info: expected, completedAt: time.Now()})
 	t.Cleanup(func() {
 		dashboardInfoCache.Delete(userID)
 	})
@@ -63,8 +64,8 @@ func TestDashboardProxyListsServeCachedSnapshotsWithoutDatabase(t *testing.T) {
 	expectedRecent := []dto.ProxyRecentCheck{{ID: 12, Port: 8080}}
 	expectedFastest := []dto.ProxyFastestAlive{{ID: 34, Port: 1080}}
 
-	dashboardRecentChecksCache.Store(recentKey, dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{value: expectedRecent})
-	dashboardFastestAliveCache.Store(fastestKey, dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{value: expectedFastest})
+	dashboardRecentChecksCache.Store(recentKey, dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{value: expectedRecent, completedAt: time.Now()})
+	dashboardFastestAliveCache.Store(fastestKey, dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{value: expectedFastest, completedAt: time.Now()})
 	t.Cleanup(func() {
 		dashboardRecentChecksCache.Delete(recentKey)
 		dashboardFastestAliveCache.Delete(fastestKey)

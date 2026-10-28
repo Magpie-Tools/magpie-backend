@@ -26,15 +26,19 @@ type ProxyPageQueryOptions struct {
 
 func GetWorkspaceProxyCount(workspaceID uint) int64 {
 	var count int64
-	DB.Model(&domain.Proxy{}).
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ?", workspaceID).
+	DB.Model(&domain.ManagedProxy{}).
+		Where("workspace_id = ?", workspaceID).
 		Count(&count)
 	return count
 }
 
 func GetProxyInfoPage(workspaceID uint, page int) []dto.ProxyInfo {
-	proxies, _ := GetProxyInfoPageWithFilters(workspaceID, page, proxiesPerPage, "", dto.ProxyListFilters{})
+	proxies, _ := GetProxyInfoPageWithCount(workspaceID, page)
 	return proxies
+}
+
+func GetProxyInfoPageWithCount(workspaceID uint, page int) ([]dto.ProxyInfo, int64) {
+	return GetProxyInfoPageWithFilters(workspaceID, page, proxiesPerPage, "", dto.ProxyListFilters{})
 }
 
 func GetProxyInfoPageWithFilters(workspaceID uint, page int, pageSize int, search string, filters dto.ProxyListFilters) ([]dto.ProxyInfo, int64) {
@@ -257,7 +261,7 @@ func proxyPageSortNeedsHealth(field string) bool {
 
 func applyProxyPageSort(query *gorm.DB, options ProxyPageQueryOptions) *gorm.DB {
 	if options.SortField == "" || options.SortOrder == "" {
-		return query.Order("alive DESC, latest_check DESC")
+		return query.Order("ufi.alive DESC, ufi.latest_check DESC, ufi.proxy_id ASC")
 	}
 
 	direction := "ASC"
@@ -267,7 +271,7 @@ func applyProxyPageSort(query *gorm.DB, options ProxyPageQueryOptions) *gorm.DB 
 
 	expressions := proxyPageSortExpressions(options.SortField)
 	if len(expressions) == 0 {
-		return query.Order("alive DESC, latest_check DESC")
+		return query.Order("ufi.alive DESC, ufi.latest_check DESC, ufi.proxy_id ASC")
 	}
 
 	orderParts := make([]string, 0, len(expressions)+1)

@@ -31,7 +31,7 @@ func StartDashboardCacheRoutine(ctx context.Context) {
 
 func refreshDashboardCaches(ctx context.Context) {
 	start := time.Now()
-	if err := database.RefreshDashboardCaches(ctx); err != nil {
+	if err := database.RefreshRequestedDashboardCaches(ctx); err != nil {
 		log.Warn("Dashboard cache refresh failed; serving the previous snapshot", "error", err)
 		return
 	}

@@ -17,6 +17,48 @@ func ensureProxyListPerformanceSchema(db *gorm.DB) error {
 		return nil
 	}
 
+	if db.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
+		var interrupted []struct{ SchemaName, IndexName string }
+		if err := db.Raw(`
+			SELECT n.nspname AS schema_name, c.relname AS index_name
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE i.indrelid = 'user_proxy_filter_indexes'::regclass
+			  AND NOT i.indisvalid AND c.relname IN (
+				'idx_workspace_proxy_filter_page',
+				'idx_workspace_proxy_filter_option_country',
+				'idx_workspace_proxy_filter_option_type',
+				'idx_workspace_proxy_filter_option_anonymity'
+			  )
+		`).Scan(&interrupted).Error; err != nil {
+			return fmt.Errorf("inspect interrupted proxy list index creation: %w", err)
+		}
+		for _, index := range interrupted {
+			if err := db.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + quoteIdentifier(index.SchemaName) + "." + quoteIdentifier(index.IndexName)).Error; err != nil {
+				return fmt.Errorf("remove interrupted proxy list index %s: %w", index.IndexName, err)
+			}
+		}
+		indexes := []string{`
+			CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_workspace_proxy_filter_page
+			ON user_proxy_filter_indexes (workspace_id, alive DESC, latest_check DESC, proxy_id ASC)
+		`, `
+			CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_workspace_proxy_filter_option_country
+			ON user_proxy_filter_indexes (workspace_id, (COALESCE(NULLIF(country, ''), 'N/A')))
+		`, `
+			CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_workspace_proxy_filter_option_type
+			ON user_proxy_filter_indexes (workspace_id, (COALESCE(NULLIF(estimated_type, ''), 'N/A')))
+		`, `
+			CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_workspace_proxy_filter_option_anonymity
+			ON user_proxy_filter_indexes (workspace_id, (COALESCE(NULLIF(anonymity_level, ''), 'N/A')))
+		`}
+		for _, statement := range indexes {
+			if err := db.Exec(statement).Error; err != nil {
+				return fmt.Errorf("proxy list page/filter index schema: %w", err)
+			}
+		}
+	}
+
 	if db.Migrator().HasTable(&domain.ProxyLatestStatistic{}) {
 		stmts := []string{
 			`ALTER TABLE proxy_latest_statistics ADD COLUMN IF NOT EXISTS response_time integer`,

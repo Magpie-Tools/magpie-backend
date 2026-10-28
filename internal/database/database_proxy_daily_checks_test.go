@@ -110,6 +110,7 @@ func openDailyChecksSQLite(t *testing.T) *gorm.DB {
 		`CREATE TABLE proxy_statistics (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			proxy_id INTEGER NOT NULL,
+			alive BOOLEAN DEFAULT FALSE,
 			created_at DATETIME NOT NULL
 		);`,
 	}

@@ -434,7 +434,8 @@ func updateProxyMetadataBatch(batch []domain.Proxy) error {
 SET country = tmp.country,
     estimated_type = tmp.estimated_type
 FROM (VALUES %s) AS tmp(id, country, estimated_type)
-WHERE p.id = tmp.id`, strings.Join(values, ","))
+WHERE p.id = tmp.id
+  AND (p.country, p.estimated_type) IS DISTINCT FROM (tmp.country, tmp.estimated_type)`, strings.Join(values, ","))
 
 	return DB.Exec(query, args...).Error
 }

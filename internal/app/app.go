@@ -40,9 +40,25 @@ func Run() error {
 	backendPortFlag := flag.Int("backend-port", defaultBackendPort, "Port for API server")
 	productionFlag := flag.Bool("production", false, "Run in production mode")
 	migrateOnlyFlag := flag.Bool("migrate-only", false, "Run database migrations and exit")
+	rebuildReadModelsFlag := flag.Bool("rebuild-read-models", false, "Rebuild derived proxy and scrape-source indexes and exit; stop writers first")
 	flag.Parse()
 
+	if *migrateOnlyFlag && *rebuildReadModelsFlag {
+		return errors.New("--migrate-only and --rebuild-read-models cannot be combined")
+	}
 	config.SetProductionMode(*productionFlag || config.RuntimeEnvironmentIndicatesProduction())
+	if *rebuildReadModelsFlag {
+		if err := security.RequireProxyEncryptionKeyConfigured(); err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := rebuildReadModels(ctx); err != nil {
+			return err
+		}
+		log.Info("Read-model rebuild completed; exiting")
+		return nil
+	}
 	if *migrateOnlyFlag {
 		if err := security.RequireProxyEncryptionKeyConfigured(); err != nil {
 			return err
@@ -83,6 +99,8 @@ func Run() error {
 	if err != nil {
 		log.Warn("Redis unavailable at startup; continuing in degraded mode", "error", err)
 	}
+	proxyqueue.PublicProxyQueue = *proxyqueue.NewRedisProxyQueue(redisClient)
+	sitequeue.PublicScrapeSiteQueue = *sitequeue.NewRedisScrapeSiteQueue(redisClient)
 
 	heartbeatCancel := runtime.LaunchInstanceHeartbeat(rootCtx, redisClient)
 	running, setupErr := bootstrap.Setup(rootCtx)
@@ -96,15 +114,34 @@ func Run() error {
 		}
 	}()
 
-	err = setupErr
-	if err == nil {
-		err = server.OpenRoutes(rootCtx, backendPort)
-	}
+	err = serveAfterSetup(rootCtx, backendPort, setupErr)
 	stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), resolveBackgroundShutdownTimeout())
 	defer cancel()
 	log.Info("Waiting for background jobs and final usage/statistics flushes")
 	return errors.Join(err, running.Shutdown(shutdownCtx))
+}
+
+func serveAfterSetup(ctx context.Context, port int, setupErr error) error {
+	// A signal during optional startup work follows the normal graceful shutdown
+	// path. Preserve any separate setup failure, including a joined error.
+	if setupErr == context.Canceled && ctx.Err() == context.Canceled {
+		return nil
+	}
+	if setupErr != nil {
+		return setupErr
+	}
+	if err := ctx.Err(); err != nil {
+		if err == context.Canceled {
+			return nil
+		}
+		return err
+	}
+	err := server.OpenRoutes(ctx, port)
+	if err == context.Canceled && ctx.Err() == context.Canceled {
+		return nil
+	}
+	return err
 }
 
 func resolveBackgroundShutdownTimeout() time.Duration {

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/domain"
@@ -162,19 +163,7 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		return nil
 	})
 	if err == nil && (projectionChanged || snapshot == nil) {
-		dashboardInfoCache.Delete(workspaceID)
-		dashboardRecentChecksCache.Range(func(key, _ any) bool {
-			if key.(dashboardProxyListCacheKey).WorkspaceID == workspaceID {
-				dashboardRecentChecksCache.Delete(key)
-			}
-			return true
-		})
-		dashboardFastestAliveCache.Range(func(key, _ any) bool {
-			if key.(dashboardProxyListCacheKey).WorkspaceID == workspaceID {
-				dashboardFastestAliveCache.Delete(key)
-			}
-			return true
-		})
+		invalidateDashboardWorkspace(workspaceID)
 	}
 	return snapshot, err
 }
@@ -306,7 +295,7 @@ CASE pls.protocol_id WHEN 1 THEN w.checker_http_key WHEN 2 THEN w.checker_https_
 `
 
 func currentLatestStatistics(tx *gorm.DB, workspaceID uint) *gorm.DB {
-	return tx.Table("("+currentLatestStatisticsSQL+") pls").Where("pls.checking_workspace_id = ?", workspaceID)
+	return workspaceLatestStatistics(tx, workspaceID, false)
 }
 
 const currentOverallStatusesSQL = `SELECT up.workspace_id, pos.proxy_id, pos.overall_alive, pos.last_checked_at
@@ -352,15 +341,15 @@ func filterWorkspaceStatisticEvidence(query *gorm.DB, workspaceID uint) *gorm.DB
 // historical rows. A delayed old event may recreate a pointer; the next sweep
 // drops it again, and current-health reads always reject it immediately.
 func PruneObsoleteCheckerEvidence(ctx context.Context, limit int) (int64, error) {
+	if DB == nil {
+		return 0, fmt.Errorf("checker evidence pruning: database not initialised")
+	}
 	if limit <= 0 {
 		limit = deleteChunkSize
 	}
 	result := DB.WithContext(ctx).Exec(`DELETE FROM proxy_latest_statistics WHERE (workspace_id, config_key, proxy_id, protocol_id) IN (
-SELECT l.workspace_id, l.config_key, l.proxy_id, l.protocol_id FROM proxy_latest_statistics l
-WHERE (l.workspace_id = 0 AND NOT EXISTS (SELECT 1 FROM user_proxies u JOIN workspaces w ON w.id = u.workspace_id WHERE u.proxy_id = l.proxy_id AND w.checker_generation = 0))
-OR (l.workspace_id > 0 AND NOT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = l.workspace_id AND w.checker_dirty)
-AND NOT EXISTS (SELECT 1 FROM (`+currentLatestStatisticsSQL+`) c
-WHERE c.workspace_id = l.workspace_id AND c.config_key = l.config_key AND c.proxy_id = l.proxy_id AND c.protocol_id = l.protocol_id)) LIMIT ?)`, limit)
+SELECT candidate.workspace_id, candidate.config_key, candidate.proxy_id, candidate.protocol_id
+FROM proxy_latest_statistics candidate WHERE `+obsoleteCheckerEvidencePredicateSQL+` LIMIT ?)`, limit)
 	return result.RowsAffected, result.Error
 }
 
@@ -492,15 +481,20 @@ type checkerHealthVersion struct {
 // Read the committed generation on API cache reads, including across instances.
 // A refresh records it before querying and rechecks it before publishing.
 func currentCheckerHealthVersion(workspaceID uint) checkerHealthVersion {
-	if DB == nil {
-		return checkerHealthVersion{}
-	}
-	var version checkerHealthVersion
-	err := DB.Model(&domain.Workspace{}).Select("checker_generation, checker_dirty").Where("id = ?", workspaceID).Scan(&version).Error
+	version, err := currentCheckerHealthVersionWithDB(DB, workspaceID)
 	if err != nil {
 		version.Dirty = true
 	}
 	return version
+}
+
+func currentCheckerHealthVersionWithDB(db *gorm.DB, workspaceID uint) (checkerHealthVersion, error) {
+	var version checkerHealthVersion
+	if db == nil {
+		return version, nil
+	}
+	err := db.Model(&domain.Workspace{}).Select("checker_generation, checker_dirty").Where("id = ?", workspaceID).Scan(&version).Error
+	return version, err
 }
 
 func checkerProjectionPending(workspaceID uint) bool {
@@ -508,6 +502,7 @@ func checkerProjectionPending(workspaceID uint) bool {
 }
 
 type dashboardHealthCacheEntry[T any] struct {
-	version checkerHealthVersion
-	value   T
+	version     checkerHealthVersion
+	value       T
+	completedAt time.Time
 }

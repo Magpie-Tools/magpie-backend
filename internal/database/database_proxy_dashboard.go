@@ -1,12 +1,16 @@
 package database
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"sync"
 	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+
+	"gorm.io/gorm"
 )
 
 const defaultRecentProxyChecksLimit = 8
@@ -25,34 +29,55 @@ var dashboardRecentChecksCache sync.Map
 var dashboardFastestAliveCache sync.Map
 
 func GetRecentProxyChecks(workspaceID uint, limit int) []dto.ProxyRecentCheck {
-	version := currentCheckerHealthVersion(workspaceID)
-	if version.Dirty {
-		return []dto.ProxyRecentCheck{}
-	}
+	value, _ := GetRecentProxyChecksContext(context.Background(), workspaceID, limit)
+	return value
+}
+
+func GetRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit int) ([]dto.ProxyRecentCheck, error) {
 	if limit <= 0 {
 		limit = defaultRecentProxyChecksLimit
 	} else if limit > maxRecentProxyChecksLimit {
 		limit = maxRecentProxyChecksLimit
 	}
 
-	key := dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit}
-	if cached, ok := dashboardRecentChecksCache.Load(key); ok {
-		entry := cached.(dashboardHealthCacheEntry[[]dto.ProxyRecentCheck])
-		if entry.version == version {
-			return entry.value
-		}
+	value, err := getDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: limit})
+	if err != nil {
+		return nil, err
 	}
-
-	return RefreshRecentProxyChecksCache(workspaceID, limit)
+	return value.([]dto.ProxyRecentCheck), nil
 }
 
 func RefreshRecentProxyChecksCache(workspaceID uint, limit int) []dto.ProxyRecentCheck {
-	version := currentCheckerHealthVersion(workspaceID)
 	if limit <= 0 {
 		limit = defaultRecentProxyChecksLimit
 	} else if limit > maxRecentProxyChecksLimit {
 		limit = maxRecentProxyChecksLimit
 	}
+	value, err := refreshDashboardComponent(context.Background(), dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: limit})
+	if err != nil {
+		return nil
+	}
+	return value.([]dto.ProxyRecentCheck)
+}
+
+func refreshRecentProxyChecksCache(db *gorm.DB, workspaceID uint, limit int) ([]dto.ProxyRecentCheck, error) {
+	if db == nil {
+		return nil, fmt.Errorf("dashboard recent checks: database connection was not initialised")
+	}
+	version, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if version.Dirty {
+		return []dto.ProxyRecentCheck{}, nil
+	}
+	if limit <= 0 {
+		limit = defaultRecentProxyChecksLimit
+	} else if limit > maxRecentProxyChecksLimit {
+		limit = maxRecentProxyChecksLimit
+	}
+	key := dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: limit}
+	revision := dashboardCaches.revision(key)
 
 	type recentProxyCheckRow struct {
 		ID           uint64       `gorm:"column:id"`
@@ -97,8 +122,8 @@ LEFT JOIN LATERAL (
 ) latest ON TRUE
 ORDER BY alive DESC, latest_check DESC NULLS LAST, c.id ASC
 `
-	if err := DB.Raw(query, workspaceID, limit).Scan(&rows).Error; err != nil {
-		return nil
+	if err := db.Raw(query, workspaceID, limit).Scan(&rows).Error; err != nil {
+		return nil, err
 	}
 
 	result := make([]dto.ProxyRecentCheck, 0, len(rows))
@@ -118,46 +143,71 @@ ORDER BY alive DESC, latest_check DESC NULLS LAST, c.id ASC
 		})
 	}
 
-	if version.Dirty || currentCheckerHealthVersion(workspaceID) != version {
-		return []dto.ProxyRecentCheck{}
+	currentVersion, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	if err != nil {
+		return nil, err
 	}
-	dashboardRecentChecksCache.Store(
-		dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
-		dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{version: version, value: result},
-	)
-	return result
+	if currentVersion != version {
+		return []dto.ProxyRecentCheck{}, nil
+	}
+	dashboardCaches.publish(key, revision, func() {
+		dashboardRecentChecksCache.Store(
+			dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
+			dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{version: version, value: result, completedAt: dashboardCaches.now()},
+		)
+	})
+	return result, nil
 }
 
 func GetFastestAliveProxies(workspaceID uint, limit int) []dto.ProxyFastestAlive {
-	version := currentCheckerHealthVersion(workspaceID)
-	if version.Dirty {
-		return []dto.ProxyFastestAlive{}
-	}
+	value, _ := GetFastestAliveProxiesContext(context.Background(), workspaceID, limit)
+	return value
+}
+
+func GetFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limit int) ([]dto.ProxyFastestAlive, error) {
 	if limit <= 0 {
-		return []dto.ProxyFastestAlive{}
+		return []dto.ProxyFastestAlive{}, nil
 	}
-
-	key := dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit}
-	if cached, ok := dashboardFastestAliveCache.Load(key); ok {
-		entry := cached.(dashboardHealthCacheEntry[[]dto.ProxyFastestAlive])
-		if entry.version == version {
-			return entry.value
-		}
+	value, err := getDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit})
+	if err != nil {
+		return nil, err
 	}
-
-	return RefreshFastestAliveProxiesCache(workspaceID, limit)
+	return value.([]dto.ProxyFastestAlive), nil
 }
 
 func RefreshFastestAliveProxiesCache(workspaceID uint, limit int) []dto.ProxyFastestAlive {
-	version := currentCheckerHealthVersion(workspaceID)
-	if limit <= 0 {
-		return []dto.ProxyFastestAlive{}
+	value, err := refreshDashboardComponent(context.Background(), dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit})
+	if err != nil {
+		return nil
 	}
+	return value.([]dto.ProxyFastestAlive)
+}
 
-	latestAliveStats := currentLatestStatistics(DB, workspaceID).
+func refreshFastestAliveProxiesCache(db *gorm.DB, workspaceID uint, limit int) ([]dto.ProxyFastestAlive, error) {
+	if db == nil {
+		return nil, fmt.Errorf("dashboard fastest proxies: database connection was not initialised")
+	}
+	version, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return []dto.ProxyFastestAlive{}, nil
+	}
+	if version.Dirty {
+		return []dto.ProxyFastestAlive{}, nil
+	}
+	key := dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit}
+	revision := dashboardCaches.revision(key)
+
+	latestAliveStats := dashboardLatestStatistics(db, workspaceID).
 		Select("DISTINCT ON (pls.proxy_id) pls.proxy_id, pls.response_time, pls.checked_at").
 		Where("pls.alive = ?", true).
 		Order("pls.proxy_id, pls.response_time ASC, pls.checked_at DESC, pls.statistic_id DESC")
+	fastestCandidates := db.Table("(?) latest", latestAliveStats).
+		Select("latest.proxy_id, latest.response_time, latest.checked_at").
+		Order("latest.response_time ASC, latest.checked_at DESC, latest.proxy_id ASC").
+		Limit(limit)
 
 	type fastestAliveProxyRow struct {
 		ID              uint64       `gorm:"column:id"`
@@ -171,24 +221,20 @@ func RefreshFastestAliveProxiesCache(workspaceID uint, limit int) []dto.ProxyFas
 	}
 
 	rows := make([]fastestAliveProxyRow, 0, limit)
-	if err := DB.Model(&domain.Proxy{}).
-		Select(
-			"proxies.id AS id, "+
-				"proxies.host AS ip_address, "+
-				"proxies.port AS port, "+
-				"COALESCE(latest.response_time, 0) AS response_time, "+
-				"COALESCE(NULLIF(proxies.country, ''), 'N/A') AS country, "+
-				"LOWER(COALESCE(NULLIF(pr.label, ''), 'unknown')) AS reputation_label, "+
-				"COALESCE(pr.score, 0) AS reputation_score, "+
-				"latest.checked_at AS latest_check",
-		).
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", workspaceID, domain.ManagedProxyStateActive).
-		Joins("JOIN (?) AS latest ON latest.proxy_id = proxies.id", latestAliveStats).
-		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = proxies.id AND pr.kind = ?", domain.ProxyReputationKindOverall).
-		Order("latest.response_time ASC, latest.checked_at DESC, proxies.id ASC").
-		Limit(limit).
+	// The route and reputation joins do not affect eligibility or ordering.
+	// Enrich only the winning candidates, rather than every alive route.
+	if err := db.Raw(`WITH candidates AS MATERIALIZED (?)
+SELECT proxies.id AS id, proxies.host AS ip_address, proxies.port,
+ COALESCE(latest.response_time, 0) AS response_time,
+ COALESCE(NULLIF(proxies.country, ''), 'N/A') AS country,
+ LOWER(COALESCE(NULLIF(pr.label, ''), 'unknown')) AS reputation_label,
+ COALESCE(pr.score, 0) AS reputation_score, latest.checked_at AS latest_check
+FROM candidates latest
+JOIN proxies ON proxies.id = latest.proxy_id
+LEFT JOIN proxy_reputations pr ON pr.proxy_id = proxies.id AND pr.kind = ?
+ORDER BY latest.response_time ASC, latest.checked_at DESC, proxies.id ASC`, fastestCandidates, domain.ProxyReputationKindOverall).
 		Scan(&rows).Error; err != nil {
-		return nil
+		return nil, err
 	}
 
 	result := make([]dto.ProxyFastestAlive, 0, len(rows))
@@ -210,12 +256,18 @@ func RefreshFastestAliveProxiesCache(workspaceID uint, limit int) []dto.ProxyFas
 		})
 	}
 
-	if version.Dirty || currentCheckerHealthVersion(workspaceID) != version {
-		return []dto.ProxyFastestAlive{}
+	currentVersion, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	if err != nil {
+		return nil, err
 	}
-	dashboardFastestAliveCache.Store(
-		dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
-		dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{version: version, value: result},
-	)
-	return result
+	if currentVersion != version {
+		return []dto.ProxyFastestAlive{}, nil
+	}
+	dashboardCaches.publish(key, revision, func() {
+		dashboardFastestAliveCache.Store(
+			dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
+			dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{version: version, value: result, completedAt: dashboardCaches.now()},
+		)
+	})
+	return result, nil
 }

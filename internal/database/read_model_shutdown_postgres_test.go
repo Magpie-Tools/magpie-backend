@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +22,11 @@ func setupSourceStatsShutdownTest(t *testing.T) (*gorm.DB, []sourceStatsKey) {
 	t.Setenv("SCRAPE_SOURCE_STATS_REFRESH_BATCH_SIZE", "1")
 	readModelDirtyMu.Lock()
 	previousProxies := readModelDirtyProxyIDs
+	previousRound := readModelDirtyRound
+	previousBatch := readModelPendingBatch
+	readModelPendingBatch = nil
 	readModelDirtyProxyIDs = make(map[uint64]struct{})
+	readModelDirtyRound = nil
 	readModelDirtyMu.Unlock()
 	sourceStatsDirtyMu.Lock()
 	previousSources := sourceStatsDirty
@@ -30,6 +35,8 @@ func setupSourceStatsShutdownTest(t *testing.T) (*gorm.DB, []sourceStatsKey) {
 	t.Cleanup(func() {
 		readModelDirtyMu.Lock()
 		readModelDirtyProxyIDs = previousProxies
+		readModelDirtyRound = previousRound
+		readModelPendingBatch = previousBatch
 		readModelDirtyMu.Unlock()
 		sourceStatsDirtyMu.Lock()
 		sourceStatsDirty = previousSources
@@ -99,15 +106,19 @@ func TestReadModelShutdownDrainsFinalSourceInvalidationsPostgres(t *testing.T) {
 	}
 }
 
-func TestSourceStatsShutdownRetainsFailedBatchWithoutRetryLoopPostgres(t *testing.T) {
+func TestSourceStatsShutdownRetriesFailedBatchPostgres(t *testing.T) {
 	db, keys := setupSourceStatsShutdownTest(t)
-	fail := true
-	attempts := 0
+	var fail atomic.Bool
+	fail.Store(true)
+	failed := make(chan struct{}, 8)
 	if err := db.Callback().Raw().Before("gorm:raw").Register("test:fail_source_stats_refresh", func(tx *gorm.DB) {
 		if strings.Contains(tx.Statement.SQL.String(), "INSERT INTO user_scrape_source_stats") {
-			attempts++
-			if fail {
+			if fail.Load() {
 				tx.AddError(errors.New("injected source refresh failure"))
+				select {
+				case failed <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}); err != nil {
@@ -115,17 +126,46 @@ func TestSourceStatsShutdownRetainsFailedBatchWithoutRetryLoopPostgres(t *testin
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	StartReadModelRefreshRoutine(ctx)
+	done := make(chan struct{})
+	go func() {
+		StartReadModelRefreshRoutine(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		fail.Store(false)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("source drain did not finish after recovery")
+		}
+	})
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-failed:
+		case <-done:
+			t.Fatal("shutdown reported success with a failed source batch")
+		case <-time.After(5 * time.Second):
+			t.Fatal("shutdown did not retry the failed source batch")
+		}
+	}
+	if time.Since(start) < readModelDrainRetryDelay/2 {
+		t.Fatal("source drain retried immediately without backoff")
+	}
+	assertSourceStatsCounts(t, db, keys, 0, 1)
+	fail.Store(false)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("source drain did not recover")
+	}
+	assertSourceStatsCounts(t, db, keys, 1, 0)
 	sourceStatsDirtyMu.Lock()
 	pending := len(sourceStatsDirty)
 	sourceStatsDirtyMu.Unlock()
-	if attempts != 1 || pending != len(keys) {
-		t.Fatalf("failed source drain: attempts=%d pending=%d, want 1/%d", attempts, pending, len(keys))
+	if pending != 0 {
+		t.Fatalf("successful source drain left %d pairs", pending)
 	}
-	assertSourceStatsCounts(t, db, keys, 0, 1)
-	fail = false
-	StartReadModelRefreshRoutine(ctx)
-	assertSourceStatsCounts(t, db, keys, 1, 0)
 }
 
 func TestCanceledSourceStatsRefreshRetainsBatchForShutdownPostgres(t *testing.T) {

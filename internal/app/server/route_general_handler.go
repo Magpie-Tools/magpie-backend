@@ -17,7 +17,11 @@ func getDashboardInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dashInfo := database.GetDashboardInfo(userID)
+	dashInfo, err := database.GetDashboardInfoContext(r.Context(), userID)
+	if err != nil {
+		writeError(w, "Failed to load dashboard", http.StatusInternalServerError)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, dashInfo)
 }

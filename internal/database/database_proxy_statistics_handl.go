@@ -97,14 +97,22 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 		if err := incrementProxyDailyChecks(tx, accepted); err != nil {
 			return err
 		}
-		if err := recordWorkspaceCheckUsage(tx, accepted); err != nil {
-			return err
-		}
-		if err := updateProxyStatusCaches(tx, accepted); err != nil {
+		latestEntries, legacyProxyIDs := latestProxyStatusEntries(accepted)
+		if err := upsertProxyLatestStatistics(tx, latestEntries); err != nil {
 			return err
 		}
 		proxyIDs = collectProxyIDsFromStatistics(accepted)
-		return queueProxyReputationRefresh(tx, proxyIDs)
+		if err := queueProxyReputationRefresh(tx, proxyIDs); err != nil {
+			return err
+		}
+		// Usage rows are shared by every route in a workspace and by imports.
+		// Acquire them after the larger writes. Keep the legacy aggregate after
+		// this barrier: its next statement must see a prior writer's newly
+		// committed protocol results, including when no refresh table exists.
+		if err := recordWorkspaceCheckUsage(tx, accepted); err != nil {
+			return err
+		}
+		return upsertProxyOverallStatuses(tx, legacyProxyIDs)
 	}); err != nil {
 		return err
 	}

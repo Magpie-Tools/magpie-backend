@@ -6,7 +6,7 @@ scraping, reputation calculation, and rotating proxy listeners.
 
 ## Requirements
 
-- Go `1.27.2` or newer
+- Go `1.27.3` or newer
 - PostgreSQL `17`
 - Redis `7`
 
@@ -113,6 +113,8 @@ the storage and migration integration checks. CI supplies that database.
 The [Go 1.27.1 upgrade report](docs/performance/go-1.27.1.md) records validation
 and queue/checker benchmark results. The [Go 1.27.2 security update](docs/performance/go-1.27.2.md)
 records the follow-up fixes and validation.
+The [Go 1.27.3 security update](docs/performance/go-1.27.3.md) covers the
+subsequent certificate-validation advisory and toolchain checks.
 
 ## Container image
 

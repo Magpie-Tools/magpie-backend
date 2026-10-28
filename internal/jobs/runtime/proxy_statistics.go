@@ -23,6 +23,7 @@ import (
 const (
 	statisticsFlushInterval           = 15 * time.Second
 	statisticsBatchThreshold          = 5000
+	statisticsLatestRowBudget         = 5000
 	statisticsQueueCapacity           = 20_000
 	statisticsBackpressureLogEvery    = 15 * time.Second
 	statisticsInsertTimeout           = 30 * time.Second
@@ -257,8 +258,8 @@ func recordProxyStatisticDrop(totalDropped uint64, policy string) {
 // StartProxyStatisticsRoutine runs stream and memory consumers alongside the
 // reputation coordinator and waits for them on cancellation. Memory consumers
 // remain available while stream initialization recovers from an outage. Each
-// consumer owns its batch; stream batches can replay after shutdown, while a
-// failed final memory flush loses that consumer's buffered results.
+// consumer owns its batch. Stream entries can replay after shutdown; a final
+// memory drain stays active until its retained results have committed.
 func StartProxyStatisticsRoutine(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -478,26 +479,36 @@ func isBusyGroupError(err error) bool {
 
 func runProxyStatisticsWorker(ctx context.Context) {
 	var buffer []domain.ProxyStatistic
+	retryFlush := false
 	flushTimer := time.NewTimer(statisticsFlushInterval)
 	defer flushTimer.Stop()
 	defer func() {
-		drainProxyStatisticQueue(&buffer)
-		// The volatile fallback gets one final attempt, bounded by the normal
-		// database insert timeout. A failed attempt must not restart the loop.
-		_ = flushStatisticsBuffer(&buffer)
+		for {
+			drainProxyStatisticQueue(&buffer)
+			if len(buffer) == 0 {
+				return
+			}
+			if !flushStatisticsBuffer(&buffer) {
+				// Retain volatile work while Runtime.Shutdown waits. Its actual
+				// outer deadline reports failure if this worker cannot drain.
+				waitForStatisticsRetry(context.Background())
+			}
+		}
 	}()
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		if len(buffer) >= statisticsBatchThreshold {
+		if retryFlush || len(buffer) >= statisticsBatchThreshold {
 			if _, flushed := flushProxyStatisticsContext(ctx, &buffer); !flushed {
+				retryFlush = true
 				if !waitForStatisticsRetry(ctx) {
 					return
 				}
 				continue
 			}
+			retryFlush = false
 			resetTimer(flushTimer)
 		}
 
@@ -507,13 +518,14 @@ func runProxyStatisticsWorker(ctx context.Context) {
 		case stat := <-proxyStatisticQueue:
 			buffer = append(buffer, stat)
 		case <-flushTimer.C:
-			_, _ = flushProxyStatisticsContext(ctx, &buffer)
+			_, flushed := flushProxyStatisticsContext(ctx, &buffer)
+			retryFlush = !flushed
 			flushTimer.Reset(statisticsFlushInterval)
 		}
 	}
 }
 
-// runProxyStatisticsStreamWorker owns the paired result and message-ID buffers.
+// runProxyStatisticsStreamWorker owns decoded results and independent message IDs.
 // IDs remain pending until persistence and acknowledgement finish. Recovery reads
 // this consumer's pending entries and claims idle entries from other consumers;
 // the database event ledger handles overlap and replay across workers.
@@ -529,6 +541,7 @@ func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 		streamID   = "0" // consume pending entries for this consumer first, then switch to new entries.
 		claimStart = statisticsStreamClaimStart
 		lastClaim  time.Time
+		retryFlush bool
 	)
 	flushTimer := time.NewTimer(statisticsFlushInterval)
 	defer flushTimer.Stop()
@@ -540,17 +553,20 @@ func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 		if ctx.Err() != nil {
 			return
 		}
-		if len(messageIDs) > 0 && len(buffer) == 0 {
+		if retryFlush || (len(messageIDs) > 0 && len(buffer) == 0) {
 			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
+				retryFlush = true
 				if !waitForStatisticsRetry(ctx) {
 					return
 				}
 				continue
 			}
+			retryFlush = false
 		}
 
 		if len(buffer) >= statisticsBatchThreshold {
 			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
+				retryFlush = true
 				if !waitForStatisticsRetry(ctx) {
 					return
 				}
@@ -588,10 +604,12 @@ func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 			if flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
 				flushTimer.Reset(statisticsFlushInterval)
 			} else {
+				retryFlush = true
 				if !waitForStatisticsRetry(ctx) {
 					return
 				}
 				flushTimer.Reset(statisticsFlushInterval)
+				continue
 			}
 		default:
 		}
@@ -636,6 +654,7 @@ func runProxyStatisticsStreamWorker(ctx context.Context, consumerName string) {
 			streamID = ">"
 			// Finish a partial recovery page before waiting for new traffic.
 			if !flushStreamStatisticsBuffer(ctx, &buffer, &messageIDs, client, cfg) {
+				retryFlush = true
 				if !waitForStatisticsRetry(ctx) {
 					return
 				}
@@ -739,21 +758,59 @@ func decodeProxyStatisticStreamMessage(msg redis.XMessage) (domain.ProxyStatisti
 	return stat, nil
 }
 
-// flushStreamStatisticsBuffer persists decoded results before acknowledging IDs.
-// Deleted routes and malformed entries need no insert. False retains unfinished
-// work for retry. After a commit, the cleared buffer avoids another insert here
-// while retained IDs retry acknowledgement. A later consumer can replay those
-// IDs safely through the transactional event ledger.
+// IDs without a remaining original statistic are ACK-only: they have committed
+// or were intentionally discarded. IDs and decoded statistics are not paired by
+// position because malformed entries can leave only a pending ID behind.
 func flushStreamStatisticsBuffer(ctx context.Context, buffer *[]domain.ProxyStatistic, messageIDs *[]string, client *redis.Client, cfg proxyStatisticStreamConfig) bool {
-	if len(*buffer) > 0 {
-		if _, flushed := flushProxyStatisticsContext(ctx, buffer); !flushed {
+	tracked := make(map[string]struct{}, len(*messageIDs))
+	for _, id := range *messageIDs {
+		tracked[id] = struct{}{}
+	}
+	for _, stat := range *buffer {
+		_, found := tracked[stat.EventID]
+		if stat.EventID == "" || stat.EventStream != cfg.streamKey || !found {
+			log.Error("Statistics stream buffer has inconsistent event metadata", "event_id", stat.EventID)
 			return false
 		}
 	}
+	flushCtx, cancel := context.WithTimeout(ctx, statisticsInsertTimeout)
+	defer cancel()
+	// Retry acknowledgements before accepting another commit. Already durable
+	// originals were removed from buffer even if a later transaction failed.
+	if !ackReadyStreamStatistics(flushCtx, *buffer, messageIDs, client, cfg) {
+		return false
+	}
+	_, flushed := flushProxyStatisticsContext(flushCtx, buffer)
+	acked := ackReadyStreamStatistics(flushCtx, *buffer, messageIDs, client, cfg)
+	return flushed && acked && len(*buffer) == 0 && len(*messageIDs) == 0
+}
 
-	ackedCount, err := ackAndDeleteStreamMessageIDs(ctx, *messageIDs, client, cfg)
+func ackReadyStreamStatistics(ctx context.Context, remaining []domain.ProxyStatistic, messageIDs *[]string, client *redis.Client, cfg proxyStatisticStreamConfig) bool {
+	uncommitted := make(map[string]struct{}, len(remaining))
+	for _, stat := range remaining {
+		uncommitted[stat.EventID] = struct{}{}
+	}
+	ready := make([]string, 0, len(*messageIDs))
+	for _, id := range *messageIDs {
+		if _, pending := uncommitted[id]; !pending {
+			ready = append(ready, id)
+		}
+	}
+	ackedCount, err := ackAndDeleteStreamMessageIDs(ctx, ready, client, cfg)
 	if ackedCount > 0 {
-		*messageIDs = (*messageIDs)[ackedCount:]
+		acked := make(map[string]struct{}, ackedCount)
+		for _, id := range ready[:ackedCount] {
+			acked[id] = struct{}{}
+		}
+		original := *messageIDs
+		kept := original[:0]
+		for _, id := range original {
+			if _, handled := acked[id]; !handled {
+				kept = append(kept, id)
+			}
+		}
+		clear(original[len(kept):])
+		*messageIDs = kept
 	}
 	if err != nil {
 		repairProxyStatisticGroup(ctx, client, cfg, err)
@@ -825,10 +882,10 @@ func flushProxyStatistics(buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
 	return flushProxyStatisticsContext(context.Background(), buffer)
 }
 
-// flushProxyStatisticsContext returns prepared route IDs and whether the batch
-// was handled. Failure leaves the buffer intact for retry. Success clears it,
-// including when deleted routes or previously committed stream events leave
-// nothing new to insert; true does not mean every submitted result became a row.
+// flushProxyStatisticsContext commits bounded original prefixes under one shared
+// deadline. A failed suffix remains buffered; earlier durable prefixes are never
+// reinserted, including identity-free memory results. Empty/replayed/deleted
+// prefixes also finish their original inputs without claiming new history rows.
 func flushProxyStatisticsContext(ctx context.Context, buffer *[]domain.ProxyStatistic) ([]uint64, bool) {
 	if len(*buffer) == 0 {
 		return nil, true
@@ -840,25 +897,79 @@ func flushProxyStatisticsContext(ctx context.Context, buffer *[]domain.ProxyStat
 	dbCtx, cancel := context.WithTimeout(ctx, statisticsInsertTimeout)
 	defer cancel()
 
-	preparedStats, proxyIDs, err := prepareProxyStatistics(dbCtx, toInsert)
+	preparedStats, originalPositions, err := prepareProxyStatistics(dbCtx, toInsert)
 	if err != nil {
 		log.Error("Failed to prepare proxy statistics", "error", err)
 		return nil, false
 	}
-	if len(preparedStats) == 0 {
-		*buffer = nil
-		return nil, true
+	committed := make(map[uint64]struct{})
+	committedIDs := func() []uint64 {
+		ids := make([]uint64, 0, len(committed))
+		for id := range committed {
+			ids = append(ids, id)
+		}
+		return ids
 	}
-
-	batchSize := database.CalculateProxyStatisticBatchSize(len(preparedStats))
-	if err := database.InsertProxyStatistics(dbCtx, preparedStats, batchSize); err != nil {
-		log.Error("Failed to insert proxy statistics", "error", err, "count", len(preparedStats))
-		return nil, false
+	preparedEnd := 0
+	for start := 0; start < len(toInsert); {
+		if dbCtx.Err() != nil {
+			return committedIDs(), false
+		}
+		count, potentialLatestRows := boundedStatisticsPrefix(toInsert[start:])
+		end := start + count
+		preparedStart := preparedEnd
+		for preparedEnd < len(originalPositions) && originalPositions[preparedEnd] < end {
+			preparedEnd++
+		}
+		page := preparedStats[preparedStart:preparedEnd]
+		if potentialLatestRows > statisticsLatestRowBudget {
+			log.Warn("Persisting indivisible statistics event above transaction budget", "latest_rows", potentialLatestRows)
+		}
+		batchSize := database.CalculateProxyStatisticBatchSize(len(page))
+		if err := database.InsertProxyStatistics(dbCtx, page, batchSize); err != nil {
+			log.Error("Failed to insert proxy statistics", "error", err, "count", len(page), "potential_latest_rows", potentialLatestRows)
+			return committedIDs(), false
+		}
+		for _, stat := range page {
+			if stat.ProxyID != 0 {
+				committed[stat.ProxyID] = struct{}{}
+			}
+		}
+		// Release durable payloads before another page can fail. The prepared
+		// slice can alias the original slice when every route still exists.
+		clear(page)
+		clear(toInsert[start:end])
+		*buffer = toInsert[end:]
+		start = end
 	}
 
 	*buffer = nil
 	log.Debug("Inserted proxy statistics", "seconds", time.Since(start).Seconds(), "count", len(preparedStats))
-	return proxyIDs, true
+	return committedIDs(), true
+}
+
+func boundedStatisticsPrefix(stats []domain.ProxyStatistic) (int, int) {
+	rows := 0
+	for index, stat := range stats {
+		if index == statisticsBatchThreshold {
+			return index, rows
+		}
+		cost := 0
+		for _, evidence := range stat.CheckEvidence {
+			if evidence.WorkspaceID != 0 && evidence.ConfigKey != "" {
+				cost++
+			}
+		}
+		cost = max(1, cost)
+		if index > 0 && rows+cost > statisticsLatestRowBudget {
+			return index, rows
+		}
+		rows += cost
+		if rows >= statisticsLatestRowBudget {
+			return index + 1, rows
+		}
+	}
+	return len(stats), rows
 }
 
 func drainProxyStatisticQueue(buffer *[]domain.ProxyStatistic) {
@@ -909,15 +1020,20 @@ func collectProxyIDs(stats []domain.ProxyStatistic) []uint64 {
 
 // prepareProxyStatistics filters routes deleted between checking and ingestion.
 // Skipping their results lets the rest of the batch persist instead of retrying
-// forever against a missing foreign key. Lookup failure preserves the batch.
-func prepareProxyStatistics(ctx context.Context, stats []domain.ProxyStatistic) ([]domain.ProxyStatistic, []uint64, error) {
+// forever against a missing foreign key. Original positions survive filtering,
+// so prefix commits consume original events rather than prepared row counts.
+func prepareProxyStatistics(ctx context.Context, stats []domain.ProxyStatistic) ([]domain.ProxyStatistic, []int, error) {
 	if len(stats) == 0 {
 		return nil, nil, nil
 	}
 
 	proxyIDs := collectProxyIDs(stats)
+	positions := make([]int, len(stats))
+	for index := range positions {
+		positions[index] = index
+	}
 	if len(proxyIDs) == 0 {
-		return stats, nil, nil
+		return stats, positions, nil
 	}
 
 	existing, err := database.GetExistingProxyIDSet(ctx, proxyIDs)
@@ -930,13 +1046,15 @@ func prepareProxyStatistics(ctx context.Context, stats []domain.ProxyStatistic) 
 	}
 
 	if len(existing) == len(proxyIDs) {
-		return stats, proxyIDs, nil
+		return stats, positions, nil
 	}
 
 	filtered := make([]domain.ProxyStatistic, 0, len(stats))
-	for _, stat := range stats {
+	positions = positions[:0]
+	for index, stat := range stats {
 		if _, ok := existing[stat.ProxyID]; ok {
 			filtered = append(filtered, stat)
+			positions = append(positions, index)
 		}
 	}
 
@@ -944,15 +1062,10 @@ func prepareProxyStatistics(ctx context.Context, stats []domain.ProxyStatistic) 
 		return nil, nil, nil
 	}
 
-	validIDs := make([]uint64, 0, len(existing))
-	for id := range existing {
-		validIDs = append(validIDs, id)
-	}
-
 	dropped := len(stats) - len(filtered)
 	if dropped > 0 {
 		log.Info("Skipped proxy statistics for removed proxies", "dropped", dropped)
 	}
 
-	return filtered, validIDs, nil
+	return filtered, positions, nil
 }

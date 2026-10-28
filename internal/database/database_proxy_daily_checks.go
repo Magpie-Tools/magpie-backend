@@ -33,6 +33,12 @@ const (
 
 var proxyDailyBackfillInFlight sync.Map
 
+type dashboardBackfillContextKey struct{}
+type dashboardBackfillWork struct {
+	sync.WaitGroup
+	ctx context.Context
+}
+
 func incrementProxyDailyChecks(tx *gorm.DB, statistics []domain.ProxyStatistic) error {
 	if tx == nil || len(statistics) == 0 {
 		return nil
@@ -92,46 +98,75 @@ func incrementProxyDailyChecks(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 }
 
 func loadDashboardCheckCounts(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
-	if DB == nil || workspaceID == 0 {
+	return loadDashboardCheckCountsWithDB(DB, workspaceID, weekAgo)
+}
+
+func loadDashboardCheckCountsWithDB(db *gorm.DB, workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
+	if db == nil || workspaceID == 0 {
 		return dashboardCheckCounts{}, nil
 	}
 
-	counts, err := queryDashboardCheckCountsFromDaily(workspaceID, weekAgo)
+	counts, err := queryDashboardCheckCountsFromDailyWithDB(db, workspaceID, weekAgo)
 	if err == nil {
-		queueProxyDailyChecksBackfill(workspaceID)
+		queueProxyDailyChecksBackfillWithDB(db, workspaceID)
 	}
 	return counts, err
 }
 
 func queueProxyDailyChecksBackfill(workspaceID uint) {
-	if DB == nil || workspaceID == 0 {
+	queueProxyDailyChecksBackfillWithDB(DB, workspaceID)
+}
+
+func queueProxyDailyChecksBackfillWithDB(db *gorm.DB, workspaceID uint) {
+	if db == nil || workspaceID == 0 {
 		return
 	}
 
 	if _, loaded := proxyDailyBackfillInFlight.LoadOrStore(workspaceID, struct{}{}); loaded {
 		return
 	}
+	owner, _ := db.Statement.Context.Value(dashboardBackfillContextKey{}).(*dashboardBackfillWork)
+	if owner != nil {
+		owner.Add(1)
+		if owner.ctx != nil {
+			db = db.WithContext(owner.ctx)
+		}
+	}
 
 	go func() {
+		if owner != nil {
+			defer owner.Done()
+			ctx, cancel := context.WithTimeout(db.Statement.Context, dashboardRefreshBudget)
+			defer cancel()
+			db = db.WithContext(ctx)
+		}
 		defer proxyDailyBackfillInFlight.Delete(workspaceID)
 
 		timer := time.NewTimer(proxyDailyBackfillStartDelay)
 		defer timer.Stop()
-		<-timer.C
+		select {
+		case <-db.Statement.Context.Done():
+			return
+		case <-timer.C:
+		}
 
-		if _, err := ensureProxyDailyChecksBackfilled(workspaceID); err != nil {
+		if _, err := ensureProxyDailyChecksBackfilledWithDB(db, workspaceID); err != nil {
 			log.Warn("dashboard: async daily check backfill failed", "workspace_id", workspaceID, "error", err)
 		}
 	}()
 }
 
 func ensureProxyDailyChecksBackfilled(workspaceID uint) (bool, error) {
-	if DB == nil || workspaceID == 0 {
+	return ensureProxyDailyChecksBackfilledWithDB(DB, workspaceID)
+}
+
+func ensureProxyDailyChecksBackfilledWithDB(db *gorm.DB, workspaceID uint) (bool, error) {
+	if db == nil || workspaceID == 0 {
 		return false, nil
 	}
 
 	processed := false
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		if tx.Dialector.Name() == "postgres" {
 			var acquired bool
 			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", proxyDailyBackfillAdvisoryLockBase).Scan(&acquired).Error; err != nil {
@@ -224,55 +259,57 @@ func markProxyDailyChecksBackfilled(tx *gorm.DB, proxyIDs []uint64) error {
 }
 
 func queryDashboardCheckCountsFromDaily(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
+	return queryDashboardCheckCountsFromDailyWithDB(DB, workspaceID, weekAgo)
+}
+
+func queryDashboardCheckCountsFromDailyWithDB(db *gorm.DB, workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
 	var counts dashboardCheckCounts
 	todayStart := startOfUTCDay(time.Now())
 	cutoff := weekAgo.UTC()
-	cutoffDayStart := startOfUTCDay(cutoff)
-	nextDayStart := cutoffDayStart.Add(24 * time.Hour)
+	nextDayStart := startOfUTCDay(cutoff).Add(24 * time.Hour)
 
-	err := DB.Table("(SELECT proxy_id, day, checks_count FROM proxy_daily_checks UNION ALL SELECT proxy_id, NULL AS day, checks_count FROM proxy_check_totals) pdc").
-		Select(
-			"COALESCE(SUM(pdc.checks_count), 0) AS total_checks, "+
-				"COALESCE(SUM(CASE WHEN pdc.day >= ? THEN pdc.checks_count ELSE 0 END), 0) AS total_checks_week",
-			nextDayStart,
-		).
-		Joins("JOIN user_proxies up ON up.proxy_id = pdc.proxy_id AND up.workspace_id = ?", workspaceID).
-		Where("pdc.day < ? OR pdc.day IS NULL", todayStart).
-		Scan(&counts).Error
+	// Join current ownership once for retained counters and raw boundary
+	// attempts. Keep UNION constants typed so PostgreSQL can flatten the
+	// branches and retain parallel scans. A result flag counts both true and
+	// false checks; COALESCE also retains legacy rows with a NULL result.
+	err := db.Raw(`
+SELECT COALESCE(SUM(c.retained_total), 0) + COUNT(c.current_result) AS total_checks,
+       COALESCE(SUM(c.retained_week), 0) + COUNT(c.partial_result) + COUNT(c.current_result) AS total_checks_week
+FROM (
+    SELECT proxy_id, checks_count AS retained_total,
+           CASE WHEN day >= ? THEN checks_count ELSE 0 END AS retained_week,
+           CAST(NULL AS BOOLEAN) AS current_result, CAST(NULL AS BOOLEAN) AS partial_result
+    FROM proxy_daily_checks
+    WHERE day < ? OR day IS NULL
+    UNION ALL
+    SELECT proxy_id, checks_count, CAST(0 AS BIGINT), CAST(NULL AS BOOLEAN), CAST(NULL AS BOOLEAN)
+    FROM proxy_check_totals
+    UNION ALL
+    SELECT ps.proxy_id, CAST(0 AS BIGINT), CAST(0 AS BIGINT),
+           CASE WHEN ps.created_at >= ? THEN COALESCE(ps.alive, FALSE) ELSE NULL END,
+           CASE WHEN ps.created_at < ? THEN COALESCE(ps.alive, FALSE) ELSE NULL END
+    FROM proxy_statistics ps
+    WHERE ps.created_at >= ? AND (ps.created_at < ? OR ps.created_at >= ?)
+) c
+JOIN user_proxies up ON up.proxy_id = c.proxy_id AND up.workspace_id = ?
+`, nextDayStart, todayStart, todayStart, nextDayStart, cutoff, nextDayStart, todayStart, workspaceID).Scan(&counts).Error
 	if err != nil {
 		return dashboardCheckCounts{}, err
 	}
-
-	var boundaryCounts struct {
-		PartialCutoffDay int64 `gorm:"column:partial_cutoff_day"`
-		CurrentDay       int64 `gorm:"column:current_day"`
-	}
-	err = DB.Table("proxy_statistics ps").
-		Select(
-			"COALESCE(SUM(CASE WHEN ps.created_at < ? THEN 1 ELSE 0 END), 0) AS partial_cutoff_day, "+
-				"COALESCE(SUM(CASE WHEN ps.created_at >= ? THEN 1 ELSE 0 END), 0) AS current_day",
-			nextDayStart,
-			todayStart,
-		).
-		Joins("JOIN user_proxies up ON up.proxy_id = ps.proxy_id AND up.workspace_id = ?", workspaceID).
-		Where("ps.created_at >= ?", cutoff).
-		Scan(&boundaryCounts).Error
-	if err != nil {
-		return dashboardCheckCounts{}, err
-	}
-
-	counts.TotalChecks += boundaryCounts.CurrentDay
-	counts.TotalChecksWeek += boundaryCounts.PartialCutoffDay + boundaryCounts.CurrentDay
 	return counts, nil
 }
 
 func loadDashboardCheckCountsDirect(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
+	return loadDashboardCheckCountsDirectWithDB(DB, workspaceID, weekAgo)
+}
+
+func loadDashboardCheckCountsDirectWithDB(db *gorm.DB, workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
 	var counts dashboardCheckCounts
-	if DB == nil || workspaceID == 0 {
+	if db == nil || workspaceID == 0 {
 		return counts, nil
 	}
 
-	err := DB.Model(&domain.ProxyStatistic{}).
+	err := db.Model(&domain.ProxyStatistic{}).
 		Select(
 			"COUNT(*) AS total_checks, "+
 				"COALESCE(SUM(CASE WHEN proxy_statistics.created_at >= ? THEN 1 ELSE 0 END), 0) AS total_checks_week",

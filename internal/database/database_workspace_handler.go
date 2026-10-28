@@ -193,12 +193,34 @@ func ListWorkspaces(userID uint) ([]dto.Workspace, error) {
 	}
 
 	result := make([]dto.Workspace, 0, len(memberships))
+	if len(memberships) == 0 {
+		return result, nil
+	}
+	workspaceIDs := make([]uint, 0, len(memberships))
 	for _, membership := range memberships {
-		active, stored, err := workspaceManagedProxyCounts(DB, membership.WorkspaceID)
-		if err != nil {
+		workspaceIDs = append(workspaceIDs, membership.WorkspaceID)
+	}
+	type routeCounts struct {
+		WorkspaceID uint
+		Active      uint64
+		Stored      uint64
+	}
+	counts := make(map[uint]routeCounts, len(memberships))
+	if DB.Migrator().HasTable(&domain.ManagedProxy{}) {
+		var rows []routeCounts
+		if err := DB.Model(&domain.ManagedProxy{}).
+			Select("workspace_id, COUNT(*) AS stored, SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) AS active", domain.ManagedProxyStateActive).
+			Where("workspace_id IN ?", workspaceIDs).
+			Group("workspace_id").Scan(&rows).Error; err != nil {
 			return nil, err
 		}
-		result = append(result, workspaceDTO(membership.Workspace, membership, active, stored))
+		for _, row := range rows {
+			counts[row.WorkspaceID] = row
+		}
+	}
+	for _, membership := range memberships {
+		count := counts[membership.WorkspaceID]
+		result = append(result, workspaceDTO(membership.Workspace, membership, count.Active, count.Stored))
 	}
 	return result, nil
 }

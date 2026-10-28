@@ -3,6 +3,7 @@ package database
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"magpie/internal/checkerconfig"
@@ -165,6 +166,11 @@ func planWorkspaceManagedProxyStates(tx *gorm.DB, workspaceID uint, proxies []do
 			existing[string(row.Hash)] = managedProxyStatePlan{State: row.State, PauseReason: row.PauseReason}
 		}
 	}
+	// Reimporting only existing management does not allocate capacity. Keep the
+	// subscription lock and lifecycle choices, but avoid scanning the inventory.
+	if len(existing) == len(proxies) {
+		return existing, nil
+	}
 
 	limit, unlimited := subscription.ActivationLimit()
 	var available uint64
@@ -322,11 +328,26 @@ func createWorkspaceAssociations(tx *gorm.DB, proxies []domain.Proxy, workspaceI
 		}
 	}
 
-	if err := tx.Clauses(clause.OnConflict{
+	// Prepare credentials once. The conflict probe uses a copy because RETURNING
+	// can populate only the newly inserted rows; credential updates need the
+	// original complete input. Neither statement reruns the encryption hook.
+	for i := range associations {
+		if err := associations[i].BeforeSave(tx); err != nil {
+			return err
+		}
+	}
+	newAssociations := append([]domain.ManagedProxy(nil), associations...)
+	inserted := tx.Session(&gorm.Session{SkipHooks: true}).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "proxy_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"username", "password"}),
-	}).CreateInBatches(associations, batchSize).Error; err != nil {
-		return err
+		DoNothing: true,
+	}).CreateInBatches(newAssociations, batchSize)
+	if inserted.Error != nil {
+		return inserted.Error
+	}
+	if inserted.RowsAffected < int64(len(associations)) {
+		if err := updateWorkspaceAssociationCredentials(tx, associations, workspaceID, batchSize); err != nil {
+			return err
+		}
 	}
 	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
@@ -334,7 +355,39 @@ func createWorkspaceAssociations(tx *gorm.DB, proxies []domain.Proxy, workspaceI
 	if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
+	if inserted.RowsAffected == 0 {
+		return nil
+	}
 	return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
+}
+
+// Only the insert above creates management. An UPDATE cannot resurrect a row
+// deleted concurrently after its conflict check, so RowsAffected remains an
+// accurate reason to refresh capacity. Lifecycle columns are never changed.
+func updateWorkspaceAssociationCredentials(tx *gorm.DB, associations []domain.ManagedProxy, workspaceID uint, batchSize int) error {
+	for start := 0; start < len(associations); start += batchSize {
+		end := min(start+batchSize, len(associations))
+		var query strings.Builder
+		query.WriteString("WITH credentials(proxy_id, username, password) AS (VALUES ")
+		args := make([]any, 0, (end-start)*3+1)
+		for i := start; i < end; i++ {
+			if i > start {
+				query.WriteByte(',')
+			}
+			query.WriteString("(CAST(? AS bigint), CAST(? AS text), CAST(? AS text))")
+			args = append(args, associations[i].ProxyID, associations[i].UsernameEncrypted, associations[i].PasswordEncrypted)
+		}
+		query.WriteString(`) UPDATE user_proxies AS managed
+			SET username = credentials.username, password = credentials.password
+			FROM credentials
+			WHERE managed.workspace_id = ? AND managed.proxy_id = credentials.proxy_id
+			AND (managed.username IS DISTINCT FROM credentials.username OR managed.password IS DISTINCT FROM credentials.password)`)
+		args = append(args, workspaceID)
+		if err := tx.Exec(query.String(), args...).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func fetchProxiesWithWorkspaces(tx *gorm.DB, proxies []domain.Proxy) ([]domain.Proxy, error) {

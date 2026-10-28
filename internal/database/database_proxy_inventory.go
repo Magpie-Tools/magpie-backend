@@ -18,11 +18,12 @@ func ForEachProxyBatch(batchSize int, fn func([]domain.Proxy) error) error {
 		batchSize = proxyIterationBatchSize
 	}
 
+	// Qualify each physical route once without expanding all shared owners and
+	// sorting wide duplicate rows. Hydration still loads every active owner.
 	var batchProxies []domain.Proxy
 	result := DB.
 		Model(&domain.Proxy{}).
-		Distinct("proxies.*").
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.state = ?", domain.ManagedProxyStateActive).
+		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id AND up.state = ?)", domain.ManagedProxyStateActive).
 		Order("proxies.id").
 		FindInBatches(&batchProxies, batchSize, func(tx *gorm.DB, _ int) error {
 			if len(batchProxies) == 0 {

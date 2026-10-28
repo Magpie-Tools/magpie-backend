@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,14 +19,22 @@ const (
 	defaultReadModelRefreshIntervalSeconds = 5
 	defaultReadModelRefreshBatchSize       = 5000
 	defaultReadModelRefreshMaxBatches      = 4
+	defaultReadModelRefreshTimeoutSeconds  = 30
+	readModelDrainRetryDelay               = 250 * time.Millisecond
+	readModelRefreshStageOwnerDiscovery    = 1
+	readModelRefreshStageProjection        = 2
+	readModelRefreshStageSourceLookup      = 3
 	envReadModelRefreshIntervalSeconds     = "READ_MODEL_REFRESH_INTERVAL_SECONDS"
 	envReadModelRefreshBatchSize           = "READ_MODEL_REFRESH_BATCH_SIZE"
 	envReadModelRefreshMaxBatches          = "READ_MODEL_REFRESH_MAX_BATCHES"
+	envReadModelRefreshTimeoutSeconds      = "READ_MODEL_REFRESH_TIMEOUT_SECONDS"
 )
 
 var (
 	readModelDirtyMu       sync.Mutex
+	readModelFlushMu       sync.Mutex
 	readModelDirtyProxyIDs = make(map[uint64]struct{})
+	readModelDirtyRound    []uint64 // remaining sorted IDs from one closed dirty set
 	sourceStatsDirtyMu     sync.Mutex
 	sourceStatsDirty       = make(map[sourceStatsKey]struct{})
 )
@@ -190,6 +199,66 @@ func ensureReadModelSchema(db *gorm.DB) error {
 		}
 	}
 
+	return removeDuplicateProxyFilterIndexes(db)
+}
+
+// Earlier GORM tags and the explicit schema used different names for these
+// indexes. Remove only those known copies, and only while a valid canonical
+// index has the same access method, keys, ordering, predicates and constraints.
+func removeDuplicateProxyFilterIndexes(db *gorm.DB) error {
+	var indexes []struct{ SchemaName, IndexName string }
+	if err := db.Raw(`
+WITH candidates(legacy_name, canonical_name) AS (VALUES
+	('idx_workspace_proxy_filter_alive_latest', 'idx_user_proxy_filter_user_alive_latest'),
+	('idx_workspace_proxy_filter_country', 'idx_user_proxy_filter_user_country'),
+	('idx_workspace_proxy_filter_type', 'idx_user_proxy_filter_user_type'),
+	('idx_workspace_proxy_filter_reputation', 'idx_user_proxy_filter_user_reputation'),
+	('idx_user_proxy_filter_indexes_proxy_id', 'idx_user_proxy_filter_proxy_id'),
+	('idx_user_proxy_filter_indexes_host', 'idx_user_proxy_filter_host'),
+	('idx_user_proxy_filter_indexes_ip_address', 'idx_user_proxy_filter_ip_address'),
+	('idx_user_proxy_filter_indexes_port', 'idx_user_proxy_filter_port'),
+	('idx_user_proxy_filter_indexes_anonymity_key', 'idx_user_proxy_filter_anonymity_key'),
+	('idx_user_proxy_filter_indexes_alive_http', 'idx_user_proxy_filter_alive_http'),
+	('idx_user_proxy_filter_indexes_alive_http_s', 'idx_user_proxy_filter_alive_https'),
+	('idx_user_proxy_filter_indexes_alive_socks4', 'idx_user_proxy_filter_alive_socks4'),
+	('idx_user_proxy_filter_indexes_alive_socks5', 'idx_user_proxy_filter_alive_socks5')
+)
+SELECT ns.nspname AS schema_name, old_class.relname AS index_name
+FROM candidates c
+JOIN pg_index old_idx ON old_idx.indrelid = 'user_proxy_filter_indexes'::regclass
+JOIN pg_class old_class ON old_class.oid = old_idx.indexrelid AND old_class.relname = c.legacy_name
+JOIN pg_namespace ns ON ns.oid = old_class.relnamespace
+JOIN pg_index keep_idx ON keep_idx.indrelid = old_idx.indrelid
+JOIN pg_class keep_class ON keep_class.oid = keep_idx.indexrelid AND keep_class.relname = c.canonical_name
+WHERE old_class.relkind = 'i' AND keep_class.relkind = 'i'
+	AND old_class.relam = keep_class.relam
+	AND old_class.reltablespace = keep_class.reltablespace
+	AND old_class.reloptions IS NOT DISTINCT FROM keep_class.reloptions
+	AND old_idx.indisvalid AND old_idx.indisready AND old_idx.indislive
+	AND keep_idx.indisvalid AND keep_idx.indisready AND keep_idx.indislive
+	AND NOT old_idx.indisprimary AND NOT old_idx.indisreplident AND NOT old_idx.indisclustered
+	AND old_idx.indisunique = keep_idx.indisunique
+	-- PostgreSQL 14 has no indnullsnotdistinct column; both JSON keys are absent.
+	AND to_jsonb(old_idx)->'indnullsnotdistinct' IS NOT DISTINCT FROM to_jsonb(keep_idx)->'indnullsnotdistinct'
+	AND old_idx.indisexclusion = keep_idx.indisexclusion
+	AND old_idx.indimmediate = keep_idx.indimmediate
+	AND old_idx.indnatts = keep_idx.indnatts
+	AND old_idx.indnkeyatts = keep_idx.indnkeyatts
+	AND old_idx.indkey = keep_idx.indkey
+	AND old_idx.indcollation = keep_idx.indcollation
+	AND old_idx.indclass = keep_idx.indclass
+	AND old_idx.indoption = keep_idx.indoption
+	AND old_idx.indexprs::text IS NOT DISTINCT FROM keep_idx.indexprs::text
+	AND old_idx.indpred::text IS NOT DISTINCT FROM keep_idx.indpred::text
+	AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = old_idx.indexrelid)
+ORDER BY old_class.relname`).Scan(&indexes).Error; err != nil {
+		return fmt.Errorf("read model schema: compare duplicate indexes: %w", err)
+	}
+	for _, index := range indexes {
+		if err := db.Exec("DROP INDEX IF EXISTS " + quoteIdentifier(index.SchemaName) + "." + quoteIdentifier(index.IndexName)).Error; err != nil {
+			return fmt.Errorf("read model schema: drop duplicate index %s: %w", index.IndexName, err)
+		}
+	}
 	return nil
 }
 
@@ -201,6 +270,13 @@ func QueueReadModelRefreshForProxyIDs(proxyIDs []uint64) {
 	readModelDirtyMu.Lock()
 	for _, proxyID := range proxyIDs {
 		if proxyID != 0 {
+			// An unseen ID in the closed round will read authoritative state
+			// after this committed invalidation. Coalesce it there. Popped IDs
+			// are in flight and must retain another notification in the map.
+			next := sort.Search(len(readModelDirtyRound), func(i int) bool { return readModelDirtyRound[i] >= proxyID })
+			if next < len(readModelDirtyRound) && readModelDirtyRound[next] == proxyID {
+				continue
+			}
 			readModelDirtyProxyIDs[proxyID] = struct{}{}
 		}
 	}
@@ -229,10 +305,7 @@ func StartReadModelRefreshRoutine(ctx context.Context) {
 			// A canceled source query can requeue its batch. Join it before
 			// the proxy drain generates the final source invalidations.
 			sourcesWG.Wait()
-			drainCtx := context.Background()
-			flushReadModelDirtyProxyIDs(drainCtx, true)
-			for flushDirtySourceStats(drainCtx) {
-			}
+			drainReadModelRefreshes(context.Background())
 			return
 		case <-ticker.C:
 			flushReadModelDirtyProxyIDs(ctx, false)
@@ -240,46 +313,142 @@ func StartReadModelRefreshRoutine(ctx context.Context) {
 	}
 }
 
+func drainReadModelRefreshes(ctx context.Context) {
+	for {
+		flushReadModelDirtyProxyIDs(ctx, true)
+		proxyPending := readModelProxyWorkPending()
+		if !proxyPending {
+			for flushDirtySourceStats(ctx) {
+			}
+		}
+		sourceStatsDirtyMu.Lock()
+		sourcePending := len(sourceStatsDirty) > 0
+		sourceStatsDirtyMu.Unlock()
+		if !proxyPending && !sourcePending {
+			return
+		}
+		// A bounded query can fail or time out and requeue its batch. Keep the
+		// worker active so Runtime.Shutdown cannot report a successful drain.
+		// Its outer deadline remains responsible for reporting unresolved work.
+		timer := time.NewTimer(readModelDrainRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
 func flushReadModelDirtyProxyIDs(ctx context.Context, drainAll bool) {
+	// Runtime has one projection worker. Serialize direct invocations as well
+	// so two flushes cannot consume the same retained prefix concurrently.
+	readModelFlushMu.Lock()
+	defer readModelFlushMu.Unlock()
 	if DB == nil {
 		return
 	}
-
-	maxBatches := readModelRefreshMaxBatches()
-	if drainAll {
-		maxBatches = 0
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	processed := 0
-	for {
-		if !drainAll && processed >= maxBatches {
-			return
+	maxBatches := readModelRefreshMaxBatches()
+	for processed := 0; drainAll || processed < maxBatches; processed++ {
+		refreshTimeout := readModelRefreshTimeout()
+		batchCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+		db := DB.WithContext(batchCtx)
+		var ownerDuration time.Duration
+		readModelDirtyMu.Lock()
+		batch := readModelPendingBatch
+		readModelDirtyMu.Unlock()
+		if batch == nil {
+			proxyIDs := popDirtyReadModelProxyIDs(readModelProjectionPairBudget())
+			if len(proxyIDs) == 0 {
+				cancel()
+				return
+			}
+			ownerStart := time.Now()
+			pairs, err := loadReadModelProjectionPairs(db, proxyIDs)
+			ownerDuration = time.Since(ownerStart)
+			if err == nil {
+				err = batchCtx.Err()
+			}
+			if err != nil {
+				cancel()
+				requeueDirtyReadModelProxyIDs(proxyIDs)
+				log.Warn("read model refresh: owner discovery failed", "error", err, "count", len(proxyIDs),
+					"stage", readModelRefreshStageOwnerDiscovery, "cursor", 0, "attempted_pairs", 0, "owner_ms", ownerDuration.Milliseconds())
+				return
+			}
+			batch = &readModelProjectionBatch{proxyIDs: proxyIDs, pairs: pairs}
+			readModelDirtyMu.Lock()
+			readModelPendingBatch = batch
+			readModelDirtyMu.Unlock()
 		}
-
-		proxyIDs := popDirtyReadModelProxyIDs(readModelRefreshBatchSize())
-		if len(proxyIDs) == 0 {
-			return
-		}
-
-		db := DB
-		if ctx != nil {
-			db = db.WithContext(ctx)
-		}
-
 		start := time.Now()
-		if err := refreshWorkspaceProxyFilterIndexesForProxyIDs(db, proxyIDs); err != nil {
-			requeueDirtyReadModelProxyIDs(proxyIDs)
-			log.Warn("read model refresh: proxy filter index failed", "error", err, "count", len(proxyIDs))
+		readModelDirtyMu.Lock()
+		prefixStart := batch.next
+		end := batch.prefixEnd(readModelProjectionPairBudget())
+		readModelDirtyMu.Unlock()
+		err := refreshWorkspaceProxyFilterPairs(db, batch.pairs[prefixStart:end])
+		projectionDuration := time.Since(start)
+		failureMessage := "read model refresh: proxy filter index failed"
+		if err == nil {
+			err = batchCtx.Err()
+			failureMessage = "read model refresh: batch canceled"
+		}
+		if err != nil {
+			readModelDirtyMu.Lock()
+			batch.window.failed()
+			batch.retainDeadlinePrefix(ctx.Err(), batchCtx.Err(), err, prefixStart, end)
+			retryEnd, retryWidth := batch.retryEnd, batch.retryWidth
+			readModelDirtyMu.Unlock()
+			cancel()
+			log.Warn(failureMessage, "error", err, "count", end-prefixStart,
+				"stage", readModelRefreshStageProjection, "cursor", prefixStart, "attempted_pairs", end-prefixStart,
+				"owner_pairs", len(batch.pairs), "retry_end", retryEnd, "retry_pair_limit", retryWidth,
+				"owner_ms", ownerDuration.Milliseconds(), "projection_ms", projectionDuration.Milliseconds())
 			return
 		}
-		if err := refreshWorkspaceScrapeSourceStatsForProxyIDs(db, proxyIDs); err != nil {
-			requeueDirtyReadModelProxyIDs(proxyIDs)
-			log.Warn("read model refresh: scrape-source stats failed", "error", err, "count", len(proxyIDs))
-			return
+		readModelDirtyMu.Lock()
+		batch.commitPrefix(end)
+		if batch.retryEnd == 0 {
+			batch.window.committed(end-prefixStart, projectionDuration, refreshTimeout, readModelProjectionPairBudget())
 		}
-
-		log.Debug("Read models refreshed", "proxy_count", len(proxyIDs), "duration", time.Since(start))
-		processed++
+		retryEnd, retryWidth := batch.retryEnd, batch.retryWidth
+		readModelDirtyMu.Unlock()
+		var sourceDuration time.Duration
+		if end == len(batch.pairs) {
+			sourceStart := time.Now()
+			err := refreshWorkspaceScrapeSourceStatsForProxyIDs(db, batch.proxyIDs)
+			sourceDuration = time.Since(sourceStart)
+			if err != nil {
+				cancel()
+				log.Warn("read model refresh: scrape-source stats failed", "error", err, "count", len(batch.proxyIDs),
+					"stage", readModelRefreshStageSourceLookup, "cursor", end, "attempted_pairs", 0,
+					"owner_pairs", len(batch.pairs), "retry_end", retryEnd, "retry_pair_limit", retryWidth,
+					"owner_ms", ownerDuration.Milliseconds(), "projection_ms", projectionDuration.Milliseconds(), "source_ms", sourceDuration.Milliseconds())
+				return
+			}
+			if err := batchCtx.Err(); err != nil {
+				cancel()
+				log.Warn("read model refresh: source lookup canceled", "error", err, "count", len(batch.proxyIDs),
+					"stage", readModelRefreshStageSourceLookup, "cursor", end, "attempted_pairs", 0, "owner_pairs", len(batch.pairs),
+					"owner_ms", ownerDuration.Milliseconds(), "projection_ms", projectionDuration.Milliseconds(), "source_ms", sourceDuration.Milliseconds())
+				return
+			}
+			readModelDirtyMu.Lock()
+			readModelPendingBatch = nil
+			readModelDirtyMu.Unlock()
+		}
+		cancel()
+		stage := readModelRefreshStageProjection
+		if end == prefixStart {
+			stage = readModelRefreshStageSourceLookup
+		}
+		log.Debug("Read models refreshed", "pair_count", end-prefixStart, "duration", time.Since(start),
+			"stage", stage, "cursor", end, "attempted_pairs", end-prefixStart,
+			"owner_pairs", len(batch.pairs), "retry_end", retryEnd, "retry_pair_limit", retryWidth,
+			"owner_ms", ownerDuration.Milliseconds(), "projection_ms", projectionDuration.Milliseconds(), "source_ms", sourceDuration.Milliseconds())
 	}
 }
 
@@ -291,17 +460,27 @@ func popDirtyReadModelProxyIDs(limit int) []uint64 {
 	readModelDirtyMu.Lock()
 	defer readModelDirtyMu.Unlock()
 
-	if len(readModelDirtyProxyIDs) == 0 {
-		return nil
-	}
-
-	proxyIDs := make([]uint64, 0, min(limit, len(readModelDirtyProxyIDs)))
-	for proxyID := range readModelDirtyProxyIDs {
-		proxyIDs = append(proxyIDs, proxyID)
-		delete(readModelDirtyProxyIDs, proxyID)
-		if len(proxyIDs) >= limit {
-			break
+	if len(readModelDirtyRound) == 0 {
+		if len(readModelDirtyProxyIDs) == 0 {
+			return nil
 		}
+		// Drain a closed set in route order so consecutive statements can reuse
+		// nearby ownership/projection index pages. Invalidations outside its
+		// unseen suffix stay in the map, including changes to an in-flight route.
+		readModelDirtyRound = make([]uint64, 0, len(readModelDirtyProxyIDs))
+		for proxyID := range readModelDirtyProxyIDs {
+			readModelDirtyRound = append(readModelDirtyRound, proxyID)
+		}
+		clear(readModelDirtyProxyIDs)
+		sort.Slice(readModelDirtyRound, func(i, j int) bool { return readModelDirtyRound[i] < readModelDirtyRound[j] })
+	}
+	count := min(limit, len(readModelDirtyRound))
+	// The retained owner batch must not keep an exhausted million-ID backing
+	// array alive. This is the same bounded ID allocation as the old map pop.
+	proxyIDs := append([]uint64(nil), readModelDirtyRound[:count]...)
+	readModelDirtyRound = readModelDirtyRound[count:]
+	if len(readModelDirtyRound) == 0 {
+		readModelDirtyRound = nil
 	}
 	return proxyIDs
 }
@@ -344,27 +523,35 @@ func readModelRefreshMaxBatches() int {
 	return maxBatches
 }
 
+func readModelRefreshTimeout() time.Duration {
+	seconds := support.GetEnvInt(envReadModelRefreshTimeoutSeconds, defaultReadModelRefreshTimeoutSeconds)
+	if seconds <= 0 {
+		seconds = defaultReadModelRefreshTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func refreshAllWorkspaceProxyFilterIndexes(db *gorm.DB) error {
-	return refreshWorkspaceProxyFilterIndexes(db, "")
+	return refreshAllWorkspaceProxyFilterIndexesBounded(db)
 }
 
 func refreshWorkspaceProxyFilterIndexesForProxyIDs(tx *gorm.DB, proxyIDs []uint64) error {
-	if len(proxyIDs) == 0 {
-		return nil
-	}
-	if tx == nil {
+	if tx == nil || len(proxyIDs) == 0 {
 		return nil
 	}
 	for start := 0; start < len(proxyIDs); start += deleteChunkSize {
-		end := start + deleteChunkSize
-		if end > len(proxyIDs) {
-			end = len(proxyIDs)
-		}
-		if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.proxy_id IN ?", proxyIDs[start:end]); err != nil {
+		end := min(start+deleteChunkSize, len(proxyIDs))
+		pairs, err := loadReadModelProjectionPairs(tx, proxyIDs[start:end])
+		if err != nil {
 			return err
 		}
+		for next := 0; next < len(pairs); next += readModelProjectionPairBudget() {
+			if err := refreshWorkspaceProxyFilterPairs(tx, pairs[next:min(next+readModelProjectionPairBudget(), len(pairs))]); err != nil {
+				return err
+			}
+		}
 	}
-	return nil
+	return tx.Statement.Context.Err()
 }
 
 func refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
@@ -391,11 +578,45 @@ func refreshWorkspaceProxyFilterIndexes(tx *gorm.DB, where string, args ...inter
 		return nil
 	}
 
+	return refreshWorkspaceProxyFilterScope(tx, `SELECT up.workspace_id, up.proxy_id, up.state, up.pause_reason FROM user_proxies up `+where, args...)
+}
+
+func refreshWorkspaceProxyFilterScope(tx *gorm.DB, scope string, args ...interface{}) error {
 	query := `
-WITH scope AS (
-	SELECT up.workspace_id, up.proxy_id, up.state, up.pause_reason
-	FROM user_proxies up
-	` + where + `
+WITH scope AS MATERIALIZED (
+	` + scope + `
+),
+metadata AS MATERIALIZED (
+	SELECT p.*, pr.label AS reputation_label, pr.score AS reputation_score
+	FROM (SELECT DISTINCT proxy_id FROM scope) c
+	JOIN LATERAL (
+		SELECT p.id, p.host, p.ip_address, p.port, p.country, p.estimated_type
+		FROM proxies p WHERE p.id = c.proxy_id OFFSET 0
+	) p ON TRUE
+	LEFT JOIN LATERAL (
+		SELECT pr.label, pr.score FROM proxy_reputations pr
+		WHERE pr.proxy_id = p.id AND pr.kind = 'overall' OFFSET 0
+	) pr ON TRUE
+),
+evidence AS MATERIALIZED (
+	SELECT pls.*, s.workspace_id AS checking_workspace_id
+	FROM scope s
+	JOIN workspaces w ON w.id = s.workspace_id
+	JOIN LATERAL (
+		SELECT l.*
+		FROM proxy_latest_statistics l
+		WHERE l.proxy_id = s.proxy_id
+			AND l.workspace_id = CASE WHEN w.checker_generation = 0 THEN 0 ELSE s.workspace_id END
+		OFFSET 0
+	) pls ON TRUE
+	LEFT JOIN LATERAL (
+		SELECT cp.config_key FROM proxy_checker_plans cp
+		WHERE cp.workspace_id = s.workspace_id AND cp.proxy_id = s.proxy_id AND cp.protocol_id = pls.protocol_id
+		OFFSET 0
+	) cp ON TRUE
+	WHERE w.checker_generation = 0
+		OR (w.checker_generation > 0 AND pls.config_key = COALESCE(cp.config_key,
+			CASE pls.protocol_id WHEN 1 THEN w.checker_http_key WHEN 2 THEN w.checker_https_key WHEN 3 THEN w.checker_socks4_key WHEN 4 THEN w.checker_socks5_key ELSE '' END) AND pls.config_key <> '')
 ),
 latest AS (
 	SELECT checking_workspace_id, proxy_id, level_id, response_time, attempt, checked_at
@@ -408,8 +629,7 @@ latest AS (
 			COALESCE(pls.attempt, 0) AS attempt,
 			pls.checked_at,
 			ROW_NUMBER() OVER (PARTITION BY pls.checking_workspace_id, pls.proxy_id ORDER BY pls.checked_at DESC, pls.statistic_id DESC) AS row_num
-		FROM (` + currentLatestStatisticsSQL + `) pls
-		WHERE EXISTS (SELECT 1 FROM scope s WHERE s.proxy_id = pls.proxy_id AND s.workspace_id = pls.checking_workspace_id)
+		FROM evidence pls
 	) ranked
 	WHERE row_num = 1
 ),
@@ -426,9 +646,8 @@ health AS (
 		BOOL_OR(pls.alive AND LOWER(proto.name) = 'https') AS alive_https,
 		BOOL_OR(pls.alive AND LOWER(proto.name) = 'socks4') AS alive_socks4,
 		BOOL_OR(pls.alive AND LOWER(proto.name) = 'socks5') AS alive_socks5
-	FROM (` + currentLatestStatisticsSQL + `) pls
+	FROM evidence pls
 	JOIN protocols proto ON proto.id = pls.protocol_id
-	WHERE EXISTS (SELECT 1 FROM scope s WHERE s.proxy_id = pls.proxy_id AND s.workspace_id = pls.checking_workspace_id)
 	GROUP BY pls.checking_workspace_id, pls.proxy_id
 ),
 rows AS (
@@ -459,14 +678,13 @@ rows AS (
 		COALESCE(health.alive_https, FALSE) AS alive_https,
 		COALESCE(health.alive_socks4, FALSE) AS alive_socks4,
 		COALESCE(health.alive_socks5, FALSE) AS alive_socks5,
-		LOWER(COALESCE(NULLIF(pr.label, ''), 'unknown')) AS reputation_label,
-		pr.score AS reputation_score
+		LOWER(COALESCE(NULLIF(p.reputation_label, ''), 'unknown')) AS reputation_label,
+		p.reputation_score
 	FROM scope up
-	JOIN proxies p ON p.id = up.proxy_id
+	JOIN metadata p ON p.id = up.proxy_id
 	LEFT JOIN latest ON latest.proxy_id = p.id AND latest.checking_workspace_id = up.workspace_id
 	LEFT JOIN anonymity_levels al ON al.id = latest.level_id
 	LEFT JOIN health ON health.proxy_id = p.id AND health.checking_workspace_id = up.workspace_id
-	LEFT JOIN proxy_reputations pr ON pr.proxy_id = p.id AND pr.kind = 'overall'
 )
 INSERT INTO user_proxy_filter_indexes (
 	workspace_id, proxy_id, state, pause_reason, host, ip_address, port,
@@ -484,6 +702,32 @@ SELECT
 	alive_http, alive_https, alive_socks4, alive_socks5,
 	reputation_label, reputation_score, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM rows
+WHERE NOT EXISTS (
+	SELECT 1 FROM user_proxy_filter_indexes existing
+	WHERE existing.workspace_id = rows.workspace_id AND existing.proxy_id = rows.proxy_id
+		AND ROW(
+			existing.state, existing.pause_reason, existing.host,
+			existing.ip_address, existing.port, existing.country,
+			existing.country_key, existing.estimated_type, existing.type_key,
+			existing.anonymity_level, existing.anonymity_key, existing.alive,
+			existing.latest_check, existing.response_time, existing.attempt,
+			existing.health_overall, existing.health_http, existing.health_https,
+			existing.health_socks4, existing.health_socks5, existing.alive_http,
+			existing.alive_https, existing.alive_socks4, existing.alive_socks5,
+			existing.reputation_label, existing.reputation_score
+		) IS NOT DISTINCT FROM ROW(
+			rows.state, rows.pause_reason, rows.host,
+			rows.ip_address, rows.port, rows.country,
+			rows.country_key, rows.estimated_type, rows.type_key,
+			rows.anonymity_level, rows.anonymity_key, rows.alive,
+			rows.latest_check, rows.response_time, rows.attempt,
+			rows.health_overall, rows.health_http, rows.health_https,
+			rows.health_socks4, rows.health_socks5, rows.alive_http,
+			rows.alive_https, rows.alive_socks4, rows.alive_socks5,
+			rows.reputation_label, rows.reputation_score
+		)
+)
+ORDER BY workspace_id, proxy_id
 ON CONFLICT (workspace_id, proxy_id) DO UPDATE SET
 	state = EXCLUDED.state,
 	pause_reason = EXCLUDED.pause_reason,
@@ -512,12 +756,33 @@ ON CONFLICT (workspace_id, proxy_id) DO UPDATE SET
 	reputation_label = EXCLUDED.reputation_label,
 	reputation_score = EXCLUDED.reputation_score,
 	updated_at = CURRENT_TIMESTAMP
+WHERE ROW(
+		user_proxy_filter_indexes.state, user_proxy_filter_indexes.pause_reason, user_proxy_filter_indexes.host, user_proxy_filter_indexes.ip_address,
+		user_proxy_filter_indexes.port, user_proxy_filter_indexes.country, user_proxy_filter_indexes.country_key, user_proxy_filter_indexes.estimated_type,
+		user_proxy_filter_indexes.type_key, user_proxy_filter_indexes.anonymity_level, user_proxy_filter_indexes.anonymity_key, user_proxy_filter_indexes.alive,
+		user_proxy_filter_indexes.latest_check, user_proxy_filter_indexes.response_time, user_proxy_filter_indexes.attempt, user_proxy_filter_indexes.health_overall,
+		user_proxy_filter_indexes.health_http, user_proxy_filter_indexes.health_https, user_proxy_filter_indexes.health_socks4, user_proxy_filter_indexes.health_socks5,
+		user_proxy_filter_indexes.alive_http, user_proxy_filter_indexes.alive_https, user_proxy_filter_indexes.alive_socks4, user_proxy_filter_indexes.alive_socks5,
+		user_proxy_filter_indexes.reputation_label, user_proxy_filter_indexes.reputation_score
+	)
+	IS DISTINCT FROM ROW(
+		EXCLUDED.state, EXCLUDED.pause_reason, EXCLUDED.host, EXCLUDED.ip_address,
+		EXCLUDED.port, EXCLUDED.country, EXCLUDED.country_key, EXCLUDED.estimated_type,
+		EXCLUDED.type_key, EXCLUDED.anonymity_level, EXCLUDED.anonymity_key, EXCLUDED.alive,
+		EXCLUDED.latest_check, EXCLUDED.response_time, EXCLUDED.attempt, EXCLUDED.health_overall,
+		EXCLUDED.health_http, EXCLUDED.health_https, EXCLUDED.health_socks4, EXCLUDED.health_socks5,
+		EXCLUDED.alive_http, EXCLUDED.alive_https, EXCLUDED.alive_socks4, EXCLUDED.alive_socks5,
+		EXCLUDED.reputation_label, EXCLUDED.reputation_score
+	)
 `
-	// Index the committed key projection even while a newer edit is pending.
-	// Public readers mask pending health. This preserves unchanged routes so
-	// clearing the pending flag requires rewriting only actual plan deltas.
-	query = strings.ReplaceAll(query, "NOT w.checker_dirty AND ", "")
-	query = strings.ReplaceAll(query, " AND NOT w.checker_dirty", "")
+	// OFFSET 0 keeps ownership, metadata, evidence and plan lookups parameterized.
+	// Read metadata once per physical route, then expand the selected owners.
+	// Materialize evidence once for both aggregates. Keep committed keys while
+	// checker_dirty is set; public readers continue to mask pending health.
+	// Skip rows whose complete content already matches before entering INSERT.
+	// ON CONFLICT still checks again after acquiring a changed row's lock. This
+	// keeps duplicate invalidations from locking unchanged projection rows and
+	// preserves UpdatedAt, while concurrent changes retain the conflict guard.
 	if err := tx.Exec(query, args...).Error; err != nil {
 		return fmt.Errorf("read model: refresh proxy filter index: %w", err)
 	}
@@ -606,7 +871,8 @@ func runSourceStatsRefresh(ctx context.Context) {
 }
 
 // flushDirtySourceStats persists at most one batch. False means the queue is
-// empty or a failed batch was requeued, so a shutdown drain must stop retrying.
+// empty or a failed batch was requeued. The final drain checks the queue before
+// reporting completion and backs off before retrying a failed batch.
 func flushDirtySourceStats(ctx context.Context) bool {
 	if DB == nil {
 		return false
@@ -734,18 +1000,4 @@ ON CONFLICT (workspace_id, scrape_site_id) DO UPDATE SET
 		return fmt.Errorf("read model: refresh scrape-source stats: %w", err)
 	}
 	return nil
-}
-
-func RefreshReadModelIndexes(ctx context.Context) error {
-	if DB == nil {
-		return fmt.Errorf("database not initialised")
-	}
-	db := DB
-	if ctx != nil {
-		db = db.WithContext(ctx)
-	}
-	if err := refreshAllWorkspaceProxyFilterIndexes(db); err != nil {
-		return err
-	}
-	return refreshAllWorkspaceScrapeSourceStats(db)
 }

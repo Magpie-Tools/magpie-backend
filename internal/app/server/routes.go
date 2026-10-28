@@ -58,6 +58,9 @@ func OpenRoutes(ctx context.Context, port int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	router := http.NewServeMux()
 	router.Handle("GET /healthz", withObservabilityProtection(http.HandlerFunc(healthz)))
@@ -164,6 +167,9 @@ func OpenRoutes(ctx context.Context, port int) error {
 		IdleTimeout:       timeouts.idleTimeout,
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	log.Infof("Starting magpie backend on port :%d", port)
 	serverErrCh := make(chan error, 1)
 	go func() {

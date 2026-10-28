@@ -326,7 +326,10 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(dashboardType),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						info := database.GetDashboardInfo(data.workspace.ID)
+						info, err := database.GetDashboardInfoContext(p.Context, data.workspace.ID)
+						if err != nil {
+							return nil, err
+						}
 						return buildDashboard(info), nil
 					}
 					return nil, nil
@@ -406,7 +409,7 @@ func NewSchema() (gql.Schema, error) {
 						limit = clampPositiveLimit(raw, maxRecentProxyChecksLimit)
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						return buildRecentProxyChecks(data.workspace.ID, limit), nil
+						return buildRecentProxyChecksContext(p.Context, data.workspace.ID, limit)
 					}
 					return []map[string]interface{}{}, nil
 				},
@@ -422,7 +425,7 @@ func NewSchema() (gql.Schema, error) {
 						limit = clampPositiveLimit(raw, maxFastestAliveProxyLimit)
 					}
 					if data, ok := p.Source.(*viewerData); ok {
-						return buildFastestAliveProxies(data.workspace.ID, limit), nil
+						return buildFastestAliveProxiesContext(p.Context, data.workspace.ID, limit)
 					}
 					return []map[string]interface{}{}, nil
 				},
@@ -632,7 +635,15 @@ func buildProxyHistory(workspaceID uint, limit int) []map[string]interface{} {
 }
 
 func buildRecentProxyChecks(workspaceID uint, limit int) []map[string]interface{} {
-	entries := database.GetRecentProxyChecks(workspaceID, limit)
+	value, _ := buildRecentProxyChecksContext(context.Background(), workspaceID, limit)
+	return value
+}
+
+func buildRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit int) ([]map[string]interface{}, error) {
+	entries, err := database.GetRecentProxyChecksContext(ctx, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -648,11 +659,19 @@ func buildRecentProxyChecks(workspaceID uint, limit int) []map[string]interface{
 			"latestCheck":  latestCheck,
 		})
 	}
-	return result
+	return result, nil
 }
 
 func buildFastestAliveProxies(workspaceID uint, limit int) []map[string]interface{} {
-	entries := database.GetFastestAliveProxies(workspaceID, limit)
+	value, _ := buildFastestAliveProxiesContext(context.Background(), workspaceID, limit)
+	return value
+}
+
+func buildFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limit int) ([]map[string]interface{}, error) {
+	entries, err := database.GetFastestAliveProxiesContext(ctx, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -670,7 +689,7 @@ func buildFastestAliveProxies(workspaceID uint, limit int) []map[string]interfac
 			"latestCheck":     latestCheck,
 		})
 	}
-	return result
+	return result, nil
 }
 
 func buildProxySnapshots(entries []dto.ProxySnapshotEntry) []map[string]interface{} {
@@ -720,7 +739,12 @@ func clampPositiveLimit(limit, max int) int {
 }
 
 func buildProxyPage(workspaceID uint, page int) map[string]interface{} {
-	proxies := database.GetProxyInfoPage(workspaceID, page)
+	proxies, total := database.GetProxyInfoPageWithCount(workspaceID, page)
+	if total == 0 {
+		// A failed projection read also returns zero. Keep the independent
+		// ownership total that this endpoint exposed before count reuse.
+		total = database.GetWorkspaceProxyCount(workspaceID)
+	}
 	items := make([]map[string]interface{}, 0, len(proxies))
 	for _, proxy := range proxies {
 		tags := make([]map[string]interface{}, 0, len(proxy.Tags))
@@ -751,7 +775,7 @@ func buildProxyPage(workspaceID uint, page int) map[string]interface{} {
 	return map[string]interface{}{
 		"page":       page,
 		"pageSize":   len(items),
-		"totalCount": int(database.GetWorkspaceProxyCount(workspaceID)),
+		"totalCount": int(total),
 		"items":      items,
 	}
 }

@@ -446,11 +446,19 @@ func aliveProxiesForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labe
 func buildAliveProxyQuery(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) *gorm.DB {
 	filterLabels := sanitizeRotatorReputationLabels(labels)
 
+	// Scope latest evidence to this workspace before joining shared ownership.
+	// Joining the global current-evidence view expands every route's other owners.
 	query := tx.
 		Model(&domain.Proxy{}).
 		Select("proxies.*").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", workspaceID, domain.ManagedProxyStateActive).
-		Joins("JOIN ("+currentLatestStatisticsSQL+") pls ON pls.proxy_id = proxies.id AND pls.checking_workspace_id = up.workspace_id AND pls.protocol_id = ? AND pls.alive = ? AND (pls.transport_protocol = 'tcp' OR pls.workspace_id = 0)", protocolID, true)
+		Joins("JOIN workspaces checker_workspace ON checker_workspace.id = up.workspace_id AND NOT checker_workspace.checker_dirty").
+		Joins("JOIN proxy_latest_statistics pls ON pls.proxy_id = proxies.id AND pls.workspace_id = CASE WHEN checker_workspace.checker_generation = 0 THEN 0 ELSE checker_workspace.id END AND pls.protocol_id = ? AND pls.alive = ? AND (pls.transport_protocol = 'tcp' OR pls.workspace_id = 0)", protocolID, true).
+		Joins("LEFT JOIN proxy_checker_plans cp ON cp.workspace_id = up.workspace_id AND cp.proxy_id = proxies.id AND cp.protocol_id = pls.protocol_id").
+		Where(`(checker_workspace.checker_generation = 0 OR
+			(checker_workspace.checker_generation > 0 AND pls.config_key <> '' AND
+			pls.config_key = COALESCE(cp.config_key,
+				CASE pls.protocol_id WHEN 1 THEN checker_workspace.checker_http_key WHEN 2 THEN checker_workspace.checker_https_key WHEN 3 THEN checker_workspace.checker_socks4_key WHEN 4 THEN checker_workspace.checker_socks5_key ELSE '' END)))`)
 
 	query = applyReputationFilter(query, filterLabels)
 	query = applyUptimeFilter(query, tx, protocolID, uptimeFilterType, uptimePercentage)

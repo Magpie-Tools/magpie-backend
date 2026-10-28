@@ -129,10 +129,14 @@ func TestStatisticsCancellationDuringAckLeavesReplayableEvents(t *testing.T) {
 func TestCancelledStatisticsFlushDoesNotAcknowledgeUncommittedEvents(t *testing.T) {
 	db, client, cfg := statisticsRecoveryFixture(t)
 	seedPendingStatistics(t, client, cfg, 1)
+	messages, err := client.XRange(context.Background(), cfg.streamKey, "-", "+").Result()
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("pending fixture messages=%v error=%v", messages, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	buffer := []domain.ProxyStatistic{{ProxyID: 1, ProtocolID: 1, Alive: true, CreatedAt: time.Now()}}
-	ids := []string{"uncommitted"}
+	buffer := []domain.ProxyStatistic{{ProxyID: 1, ProtocolID: 1, Alive: true, CreatedAt: time.Now(), EventID: messages[0].ID, EventStream: cfg.streamKey}}
+	ids := []string{messages[0].ID}
 	if flushStreamStatisticsBuffer(ctx, &buffer, &ids, client, cfg) {
 		t.Fatal("cancelled persistence succeeded")
 	}
@@ -149,32 +153,75 @@ func TestCancelledStatisticsFlushDoesNotAcknowledgeUncommittedEvents(t *testing.
 	}
 }
 
-func TestStatisticsMemoryWorkerStopsAfterFailedBatchAndCancellation(t *testing.T) {
+func TestStatisticsMemoryWorkerRetainsFailedFinalBatchUntilRecovery(t *testing.T) {
 	db, _, _ := statisticsRecoveryFixture(t)
+	const count = 37
 	oldQueue := proxyStatisticQueue
-	proxyStatisticQueue = make(chan domain.ProxyStatistic, statisticsBatchThreshold)
+	proxyStatisticQueue = make(chan domain.ProxyStatistic, count)
 	t.Cleanup(func() { proxyStatisticQueue = oldQueue })
-	for i := 0; i < statisticsBatchThreshold; i++ {
+	for i := 0; i < count; i++ {
 		proxyStatisticQueue <- domain.ProxyStatistic{ProxyID: 1}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	defer cancel()
-	var queries atomic.Int32
+	var fail atomic.Bool
+	fail.Store(true)
+	failed := make(chan struct{}, 8)
 	if err := db.Callback().Query().Before("gorm:query").Register("cancel_statistics_query", func(tx *gorm.DB) {
-		queries.Add(1)
 		cancel()
-		tx.AddError(errors.New("database unavailable"))
+		if fail.Load() {
+			tx.AddError(errors.New("database unavailable"))
+			select {
+			case failed <- struct{}{}:
+			default:
+			}
+		}
 	}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() { defer close(done); runProxyStatisticsWorker(ctx) }()
+	t.Cleanup(func() {
+		fail.Store(false)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			// This worker intentionally ignores cancellation while retaining
+			// volatile work. Continuing cleanup would replace its global DB
+			// and queue beneath it, contaminating unrelated tests.
+			panic("memory drain still active after repairing its test database")
+		}
+	})
+	for i := 0; i < 2; i++ {
+		select {
+		case <-failed:
+		case <-done:
+			t.Fatal("memory worker reported a complete drain while results remained")
+		case <-time.After(2 * time.Second):
+			t.Fatal("memory worker did not make its final attempt")
+		}
+	}
+	// Both short and longer outer waits must observe this incomplete worker.
+	// There is no independent worker drain deadline that can claim success.
+	for _, budget := range []time.Duration{20 * time.Millisecond, 50 * time.Millisecond} {
+		outer, stop := context.WithTimeout(context.Background(), budget)
+		select {
+		case <-done:
+			stop()
+			t.Fatal("outer shutdown would report success with volatile work pending")
+		case <-outer.Done():
+			stop()
+		}
+	}
+	fail.Store(false)
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("memory worker retried a failed batch after cancellation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("memory worker did not drain after recovery")
 	}
-	if queries.Load() != 2 {
-		t.Fatalf("expected failed batch and one final flush, got %d queries", queries.Load())
+	var rows int64
+	if err := db.Model(&domain.ProxyStatistic{}).Count(&rows).Error; err != nil || rows != count {
+		t.Fatalf("final drain rows=%d error=%v", rows, err)
 	}
 }

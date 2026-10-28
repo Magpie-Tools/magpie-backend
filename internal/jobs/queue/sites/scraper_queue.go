@@ -65,11 +65,7 @@ var PublicScrapeSiteQueue RedisScrapeSiteQueue
 var runLeaderTaskOnce = support.RunLeaderTaskOnce
 
 func init() {
-	client, err := support.GetRedisClient()
-	if err != nil {
-		log.Warn("Redis unavailable during scrape queue init; continuing in degraded mode", "error", err)
-	}
-	PublicScrapeSiteQueue = *NewRedisScrapeSiteQueue(client)
+	PublicScrapeSiteQueue = *NewRedisScrapeSiteQueue(nil)
 }
 
 // StartIntervalUpdates runs after settings load, keeping tests, migrations,

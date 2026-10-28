@@ -69,7 +69,8 @@ func StartProxyStatisticsRetentionRoutine(ctx context.Context) {
 }
 
 func runProxyStatisticsRetentionLoop(ctx context.Context, cfg proxyStatisticsRetentionConfig) {
-	runProxyStatisticsRetentionOnce(ctx, cfg)
+	var evidenceCursor *database.CheckerEvidencePruneCursor
+	runProxyStatisticsRetentionOnce(ctx, cfg, &evidenceCursor)
 
 	ticker := time.NewTicker(cfg.interval)
 	defer ticker.Stop()
@@ -79,12 +80,12 @@ func runProxyStatisticsRetentionLoop(ctx context.Context, cfg proxyStatisticsRet
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runProxyStatisticsRetentionOnce(ctx, cfg)
+			runProxyStatisticsRetentionOnce(ctx, cfg, &evidenceCursor)
 		}
 	}
 }
 
-func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRetentionConfig) (runErr error) {
+func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRetentionConfig, evidenceCursor **database.CheckerEvidencePruneCursor) (runErr error) {
 	defer func() { support.RecordMaintenanceRun("statistics_retention", runErr) }()
 	now := time.Now().UTC()
 	start := time.Now()
@@ -115,6 +116,7 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 	var totalDeleted int64
 	var totalPartitionsDropped int
 	batchesRun := 0
+	evidenceComplete := false
 
 	for batchesRun < cfg.maxBatches {
 		if cfg.maxRunDuration > 0 && time.Now().After(deadline) {
@@ -131,6 +133,20 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 		}
 
 		progress := false
+		// Scan latest evidence once per coordinated round. History workers must
+		// not each repeat a global no-op scan of the same current pointers.
+		if !evidenceComplete {
+			opCtx, cancel := context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
+			page, err := database.PruneObsoleteCheckerEvidencePage(opCtx, *evidenceCursor, cfg.batchSize)
+			cancel()
+			if err != nil {
+				log.Error("Failed to prune obsolete checker evidence", "error", err)
+				return err
+			}
+			*evidenceCursor = page.Next
+			evidenceComplete = page.Next == nil
+			progress = page.Scanned > 0
+		}
 
 		if cfg.dropPartitions && cfg.statRetentionDays > 0 {
 			dropBefore := now.Add(-time.Duration(cfg.statRetentionDays) * 24 * time.Hour)
@@ -203,12 +219,6 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 }
 
 func runProxyStatisticsRetentionBatch(ctx context.Context, cfg proxyStatisticsRetentionConfig, now time.Time) (int64, int64, error) {
-	opCtx, cancel := context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
-	_, err := database.PruneObsoleteCheckerEvidence(opCtx, cfg.batchSize)
-	cancel()
-	if err != nil {
-		return 0, 0, err
-	}
 	var pruned int64
 	if cfg.responseRetentionDays > 0 {
 		pruneBefore := now.Add(-time.Duration(cfg.responseRetentionDays) * 24 * time.Hour)
