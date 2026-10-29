@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -50,10 +49,6 @@ var (
 	countryDB *geoip2.Reader
 	asnDB     *geoip2.Reader
 	geoLiteMu sync.RWMutex
-
-	datacenterRegex     = regexp.MustCompile(`(?i)(amazon|google|microsoft|digitalocean|linode|hetzner|ovh|vultr|ibm|alibaba|tencent|cloudflare|rackspace|hostinger|upcloud|azure|gcp|aws)`)
-	residentialKeywords = regexp.MustCompile(`(?i)(dyn|pool|dsl|cust|res|ip|adsl|ppp|user|mobile|static|dhcp)`)
-	ispKeywords         = regexp.MustCompile(`(?i)(isp|broadband|telecom|communications|networks|carrier)`)
 
 	dnsCache                      = support.NewExpiryCache[string, []string](20_000)
 	dnsLookupGroup                singleflight.Group
@@ -290,17 +285,8 @@ func determineProxyTypeByASN(ipAddress string) (string, bool) {
 		return "unknown", true
 	}
 
-	org := strings.ToLower(asnRecord.AutonomousSystemOrganization)
-	switch {
-	case strings.Contains(org, "customer") || strings.Contains(org, "residential"):
-		return "Residential", false
-	case datacenterRegex.MatchString(org):
-		return "Datacenter", true
-	case ispKeywords.MatchString(org):
-		return "ISP", true
-	default:
-		return "N/A", true
-	}
+	proxyType := proxyTypeFromASN(asnRecord.AutonomousSystemNumber, asnRecord.AutonomousSystemOrganization)
+	return proxyType, canRefineProxyTypeWithDNS(proxyType)
 }
 
 func applyResidentialOverrides(proxies *[]domain.Proxy, candidates []residentialOverrideCandidate) error {
@@ -311,6 +297,9 @@ func applyResidentialOverrides(proxies *[]domain.Proxy, candidates []residential
 	ipToIndices := make(map[string][]int, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.index < 0 || candidate.index >= len(*proxies) {
+			continue
+		}
+		if !canRefineProxyTypeWithDNS((*proxies)[candidate.index].EstimatedType) {
 			continue
 		}
 		ipToIndices[candidate.ip] = append(ipToIndices[candidate.ip], candidate.index)
@@ -344,24 +333,16 @@ func applyResidentialOverrides(proxies *[]domain.Proxy, candidates []residential
 			defer wg.Done()
 			for job := range jobs {
 				names := getCachedDNS(job.ip)
-				var matchesResidential bool
-				for _, name := range names {
-					if residentialKeywords.MatchString(name) {
-						matchesResidential = true
-						break
-					}
-				}
-				if !matchesResidential {
+				if refineProxyTypeWithDNS("N/A", names) != "Residential" {
 					continue
 				}
-
 				mu.Lock()
 				for _, idx := range job.indices {
 					if idx < 0 || idx >= len(*proxies) {
 						continue
 					}
 					proxy := &(*proxies)[idx]
-					if proxy.EstimatedType == "Residential" {
+					if !canRefineProxyTypeWithDNS(proxy.EstimatedType) {
 						continue
 					}
 					proxy.EstimatedType = "Residential"
@@ -472,50 +453,9 @@ func GetCountryCode(ipAddress string) string {
 }
 
 func DetermineProxyType(ipAddress string) string {
-	ip := net.ParseIP(ipAddress)
-	if ip == nil {
-		return "unknown"
+	proxyType, needsDNS := determineProxyTypeByASN(ipAddress)
+	if !needsDNS {
+		return proxyType
 	}
-	if !config.GetConfig().Plugins.GeoLite.Enabled {
-		return "unknown"
-	}
-
-	// Check cached reverse DNS results
-	names := getCachedDNS(ipAddress)
-	for _, name := range names {
-		if residentialKeywords.MatchString(name) {
-			return "Residential"
-		}
-	}
-
-	geoLiteMu.RLock()
-	if asnDB == nil {
-		geoLiteMu.RUnlock()
-		return "unknown"
-	}
-	asnRecord, err := asnDB.ASN(ip)
-	geoLiteMu.RUnlock()
-	if err != nil {
-		return "unknown"
-	}
-
-	org := strings.ToLower(asnRecord.AutonomousSystemOrganization)
-
-	// Check for datacenter organizations
-	if datacenterRegex.MatchString(org) {
-		return "Datacenter"
-	}
-
-	// Check for ISP indicators in ASN organization
-	if ispKeywords.MatchString(org) {
-		return "ISP"
-	}
-
-	// Final check for common residential ASN patterns
-	if strings.Contains(org, "customer") || strings.Contains(org, "residential") {
-		return "Residential"
-	}
-
-	// Default to ISP for unknown organizations
-	return "N/A"
+	return refineProxyTypeWithDNS(proxyType, getCachedDNS(ipAddress))
 }
