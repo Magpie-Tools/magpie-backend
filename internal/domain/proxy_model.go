@@ -16,9 +16,9 @@ import (
 )
 
 type Proxy struct {
-	ID        uint64  `gorm:"primaryKey;autoIncrement"`
+	ID        uint64  `gorm:"primaryKey;autoIncrement;index:idx_proxy_ip_id,priority:2"`
 	IP        string  `gorm:"column:host;type:varchar(253);index:idx_proxy_addr,priority:1" json:"ip"`
-	IPAddress *string `gorm:"column:ip_address;type:inet;index" json:"-"`
+	IPAddress *string `gorm:"column:ip_address;type:inet;index;index:idx_proxy_ip_id,priority:1" json:"-"`
 	Port      uint16  `gorm:"not null;index:idx_proxy_addr,priority:2"`
 	Username  string  `gorm:"-"`
 	Password  string  `gorm:"-" json:"password"`

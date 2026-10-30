@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -37,6 +38,9 @@ func InsertAndGetProxiesWithWorkspace(proxies []domain.Proxy, workspaceIDs ...ui
 
 	for _, workspaceID := range workspaceIDs {
 		checkerconfig.TagAssignmentsChanged(workspaceID)
+	}
+	if err := QueueIPGeolocationIPs(context.Background(), proxiesWithWorkspaces); err != nil {
+		log.Warn("Could not queue IPGeolocation.io enrichment", "error", err)
 	}
 	return proxiesWithWorkspaces, nil
 }

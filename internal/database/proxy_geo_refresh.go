@@ -104,6 +104,10 @@ func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyG
 	if len(proxies) == 0 {
 		return nil, nil
 	}
+	cached, err := loadIPGeolocationOverrides(ctx, proxies)
+	if err != nil {
+		return nil, err
+	}
 
 	updates := make([]proxyGeoUpdate, 0, len(proxies))
 	var mu sync.Mutex
@@ -127,7 +131,16 @@ func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyG
 				country = "N/A"
 			}
 
-			proxyType := DetermineProxyType(ip)
+			var proxyType string
+			if row, ok := cached[ip]; ok {
+				if row.Country != "" {
+					country = row.Country
+				}
+				proxyType = row.EstimatedType
+			}
+			if proxyType == "" {
+				proxyType = DetermineProxyType(ip)
+			}
 			if proxyType == "" {
 				proxyType = "N/A"
 			}
@@ -182,6 +195,9 @@ func applyProxyGeoUpdates(ctx context.Context, updates []proxyGeoUpdate) error {
 				`FROM (VALUES %s) AS data(id, country, estimated_type) WHERE p.id = data.id`,
 			strings.Join(placeholders, ","),
 		)
+		guard, guardArgs := ipGeolocationMetadataGuard("data")
+		query += guard
+		args = append(args, guardArgs...)
 
 		db := DB.WithContext(ctx)
 		if err := db.Exec(query, args...).Error; err != nil {

@@ -228,6 +228,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		maintenance.StartWorkspaceInvitationCleanupRoutine,
 		jobruntime.StartGeoLiteUpdateRoutine,
 		jobruntime.StartAbuseIPDBRoutine,
+		jobruntime.StartIPGeolocationRoutine,
 		jobruntime.StartEmailDeliveryRoutine,
 		jobruntime.StartAlertEvaluationRoutine,
 		jobruntime.StartAlertDeliveryRoutine,

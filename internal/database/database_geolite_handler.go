@@ -209,7 +209,13 @@ func EnrichProxiesWithCountryAndType(proxies *[]domain.Proxy) []residentialOverr
 	if proxies == nil || len(*proxies) == 0 {
 		return nil
 	}
-	if !config.GetConfig().Plugins.GeoLite.Enabled {
+	if !config.GetConfig().Plugins.GeoLite.Enabled && !config.GetConfig().Plugins.IPGeolocation.Active() {
+		return nil
+	}
+	localAvailable := GeoLiteAvailable()
+	cached, err := loadIPGeolocationOverrides(context.Background(), *proxies)
+	if err != nil {
+		log.Warn("Could not load IPGeolocation.io cache for enrichment", "error", err)
 		return nil
 	}
 
@@ -240,7 +246,21 @@ func EnrichProxiesWithCountryAndType(proxies *[]domain.Proxy) []residentialOverr
 					proxy.EstimatedType = "N/A"
 					continue
 				}
-				proxy.Country = GetCountryCode(ip)
+				if localAvailable {
+					proxy.Country = GetCountryCode(ip)
+				}
+				if row, ok := cached[ip]; ok {
+					if row.Country != "" {
+						proxy.Country = row.Country
+					}
+					if row.EstimatedType != "" {
+						proxy.EstimatedType = row.EstimatedType
+						continue
+					}
+				}
+				if !localAvailable {
+					continue
+				}
 				typeValue, needsDNS := determineProxyTypeByASN(ip)
 				proxy.EstimatedType = typeValue
 				if needsDNS {
@@ -417,6 +437,9 @@ SET country = tmp.country,
 FROM (VALUES %s) AS tmp(id, country, estimated_type)
 WHERE p.id = tmp.id
   AND (p.country, p.estimated_type) IS DISTINCT FROM (tmp.country, tmp.estimated_type)`, strings.Join(values, ","))
+	guard, guardArgs := ipGeolocationMetadataGuard("tmp")
+	query += guard
+	args = append(args, guardArgs...)
 
 	return DB.Exec(query, args...).Error
 }

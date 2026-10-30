@@ -106,6 +106,13 @@
       "daily_reset_at": "",
       "last_checked_at": "",
       "last_error": ""
+    },
+    "ipgeolocation": {
+      "enabled": false,
+      "api_key": "",
+      "include_security": false,
+      "daily_credit_limit": 300,
+      "cache_hours": 168
     }
   },
 

@@ -2,12 +2,15 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/ipgeolocation"
 
 	"gorm.io/gorm"
 )
@@ -73,6 +76,15 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 	}
 
 	detail.Reputation = mapReputationsToBreakdown(proxy.Reputations)
+	if cfg := config.GetConfig().Plugins.IPGeolocation; cfg.Active() && proxy.GetIPAddress() != "" {
+		var cached domain.IPGeolocationLookup
+		if err := DB.Where("ip = ? AND checked_at IS NOT NULL", proxy.GetIPAddress()).First(&cached).Error; err == nil {
+			var result ipgeolocation.Result
+			if json.Unmarshal([]byte(cached.Payload), &result) == nil {
+				detail.IPGeolocation = &dto.IPGeolocationInfo{Result: result, CheckedAt: cached.CheckedAt, ExpiresAt: cached.ExpiresAt, Fresh: freshIPGeolocation(cached, cfg, time.Now().UTC())}
+			}
+		}
+	}
 	var managed domain.ManagedProxy
 	if managedErr := DB.Select("state", "pause_reason").
 		Where("workspace_id = ? AND proxy_id = ?", workspaceID, proxyId).
