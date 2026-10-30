@@ -248,6 +248,10 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newConfig.WebsiteBlacklist = config.NormalizeWebsiteBlacklist(newConfig.WebsiteBlacklist)
+	if err := newConfig.Plugins.IPGeolocation.Validate(); err != nil {
+		writeError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	blockedSet := config.NewWebsiteBlocklistSet(newConfig.WebsiteBlacklist)
 
 	blocked := make(map[string][]string)

@@ -36,6 +36,10 @@ _Avoid_: Space, member allowance, donated slots
 A host and port combined with one exact credential pair. The host may be an IP address or DNS hostname, and DNS changes do not create a new route. Check measurements and reputation belong to this identity.
 _Avoid_: Proxy endpoint, proxy record
 
+**IP intelligence**:
+Provider observations about one public IP's location, network, and observed proxy or VPN use. Proxy routes using that IP share this evidence independently of their credentials and check health.
+_Avoid_: Proxy reputation, managed proxy health
+
 **Managed proxy**:
 A workspace's management of one proxy route, including its encrypted credential copy, lifecycle state, failure state, and tag assignments. One workspace-to-route association consumes one unit of managed route capacity.
 _Avoid_: Proxy access, user proxy, proxy permission

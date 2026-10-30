@@ -87,8 +87,9 @@ type ProxyLimitConfig struct {
 }
 
 type PluginConfig struct {
-	GeoLite   GeoLitePluginConfig   `json:"geolite"`
-	AbuseIPDB AbuseIPDBPluginConfig `json:"abuseipdb"`
+	GeoLite       GeoLitePluginConfig       `json:"geolite"`
+	AbuseIPDB     AbuseIPDBPluginConfig     `json:"abuseipdb"`
+	IPGeolocation IPGeolocationPluginConfig `json:"ipgeolocation"`
 }
 
 type GeoLitePluginConfig struct {
@@ -231,6 +232,9 @@ func applyConfigUpdate(newConfig Config, opts configUpdateOptions) error {
 	defer configMu.Unlock()
 
 	normalizeThreadSettings(&newConfig)
+	if err := newConfig.Plugins.IPGeolocation.Validate(); err != nil {
+		return err
+	}
 	newConfig.WebsiteBlacklist = NormalizeWebsiteBlacklist(newConfig.WebsiteBlacklist)
 
 	var errs []error
@@ -320,6 +324,7 @@ func applyConfigUpdate(newConfig Config, opts configUpdateOptions) error {
 }
 
 func normalizeThreadSettings(cfg *Config) {
+	normalizeIPGeolocation(&cfg.Plugins.IPGeolocation)
 	checkerThreads := cfg.Checker.Threads
 	checkerMaxThreads := cfg.Checker.MaxThreads
 	cfg.Checker.Threads = clampThreadCount(checkerThreads)

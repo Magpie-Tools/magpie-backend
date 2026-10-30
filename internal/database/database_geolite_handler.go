@@ -209,7 +209,13 @@ func EnrichProxiesWithCountryAndType(proxies *[]domain.Proxy) []residentialOverr
 	if proxies == nil || len(*proxies) == 0 {
 		return nil
 	}
-	if !config.GetConfig().Plugins.GeoLite.Enabled {
+	if !config.GetConfig().Plugins.GeoLite.Enabled && !config.GetConfig().Plugins.IPGeolocation.Active() {
+		return nil
+	}
+	localAvailable := GeoLiteAvailable()
+	cached, err := loadIPGeolocationOverrides(context.Background(), *proxies)
+	if err != nil {
+		log.Warn("Could not load IPGeolocation.io cache for enrichment", "error", err)
 		return nil
 	}
 
@@ -240,7 +246,21 @@ func EnrichProxiesWithCountryAndType(proxies *[]domain.Proxy) []residentialOverr
 					proxy.EstimatedType = "N/A"
 					continue
 				}
-				proxy.Country = GetCountryCode(ip)
+				if localAvailable {
+					proxy.Country = GetCountryCode(ip)
+				}
+				if row, ok := cached[ip]; ok {
+					if row.Country != "" {
+						proxy.Country = row.Country
+					}
+					if row.EstimatedType != "" {
+						proxy.EstimatedType = row.EstimatedType
+						continue
+					}
+				}
+				if !localAvailable {
+					continue
+				}
 				typeValue, needsDNS := determineProxyTypeByASN(ip)
 				proxy.EstimatedType = typeValue
 				if needsDNS {
@@ -391,34 +411,15 @@ func persistProxyMetadata(proxies []domain.Proxy) error {
 		if end > len(proxies) {
 			end = len(proxies)
 		}
-		batch := proxies[i:end]
-		if err := updateProxyMetadataBatch(batch); err != nil {
+		batch := make([]proxyMetadataUpdate, 0, end-i)
+		for _, proxy := range proxies[i:end] {
+			batch = append(batch, proxyMetadataUpdate{ID: proxy.ID, Country: proxy.Country, EstimatedType: proxy.EstimatedType})
+		}
+		if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func updateProxyMetadataBatch(batch []domain.Proxy) error {
-	if len(batch) == 0 {
-		return nil
-	}
-
-	values := make([]string, len(batch))
-	args := make([]interface{}, 0, len(batch)*3)
-	for i, proxy := range batch {
-		values[i] = "(?::bigint, ?::text, ?::text)"
-		args = append(args, proxy.ID, proxy.Country, proxy.EstimatedType)
-	}
-
-	query := fmt.Sprintf(`UPDATE proxies AS p
-SET country = tmp.country,
-    estimated_type = tmp.estimated_type
-FROM (VALUES %s) AS tmp(id, country, estimated_type)
-WHERE p.id = tmp.id
-  AND (p.country, p.estimated_type) IS DISTINCT FROM (tmp.country, tmp.estimated_type)`, strings.Join(values, ","))
-
-	return DB.Exec(query, args...).Error
 }
 
 func GetCountryCode(ipAddress string) string {

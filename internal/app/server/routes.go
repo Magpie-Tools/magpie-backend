@@ -149,6 +149,7 @@ func OpenRoutes(ctx context.Context, port int) error {
 	apiMux.Handle("GET /user/role", auth.RequireAuth(http.HandlerFunc(getUserRole)))
 	apiMux.Handle("POST /user/export", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(exportProxies))))
 	apiMux.Handle("GET /global/settings", auth.IsAdmin(http.HandlerFunc(getGlobalSettings)))
+	apiMux.Handle("GET /plugins/ipgeolocation/status", auth.IsAdmin(http.HandlerFunc(getIPGeolocationStatus)))
 
 	router.Handle("/api", http.StripPrefix("/api", apiMux))
 	router.Handle("/api/", http.StripPrefix("/api", apiMux))
