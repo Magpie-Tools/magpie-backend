@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
 	"magpie/internal/config"
@@ -52,11 +50,41 @@ func enqueueIPGeolocationRows(tx *gorm.DB, proxies []domain.Proxy, cfg config.IP
 	if len(rows) == 0 {
 		return nil
 	}
-	return tx.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "ip"}},
-		DoUpdates: clause.AssignmentColumns([]string{"policy", "next_lookup_at"}),
-		Where:     clause.Where{Exprs: []clause.Expression{clause.Neq{Column: clause.Column{Table: "ipgeolocation_lookups", Name: "policy"}, Value: clause.Column{Table: "excluded", Name: "policy"}}}},
-	}).CreateInBatches(rows, ipGeolocationBatchSize).Error
+	for start := 0; start < len(rows); start += ipGeolocationBatchSize {
+		batch := rows[start:min(start+ipGeolocationBatchSize, len(rows))]
+		if err := tx.Transaction(func(tx *gorm.DB) error {
+			ips := make([]string, 0, len(batch))
+			for _, row := range batch {
+				ips = append(ips, row.IP)
+			}
+			var cached []domain.IPGeolocationLookup
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("ip", "checked_at", "security_included").
+				Where("ip IN ? AND policy <> ?", ips, IPGeolocationPolicy(cfg)).Find(&cached).Error; err != nil {
+				return err
+			}
+			schedules := make(map[string]domain.IPGeolocationLookup, len(cached))
+			for _, row := range cached {
+				schedules[row.IP] = row
+			}
+			for i := range batch {
+				if cached, ok := schedules[batch[i].IP]; ok && cached.CheckedAt != nil {
+					expires := cached.CheckedAt.Add(time.Duration(cfg.CacheHours) * time.Hour)
+					batch[i].ExpiresAt = &expires
+					if freshIPGeolocation(cached, cfg, now) {
+						batch[i].NextLookupAt = expires
+					}
+				}
+			}
+			return tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "ip"}},
+				DoUpdates: clause.AssignmentColumns([]string{"policy", "next_lookup_at", "expires_at"}),
+				Where:     clause.Where{Exprs: []clause.Expression{clause.Neq{Column: clause.Column{Table: "ipgeolocation_lookups", Name: "policy"}, Value: clause.Column{Table: "excluded", Name: "policy"}}}},
+			}).CreateInBatches(batch, ipGeolocationBatchSize).Error
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Discover existing inventory in bounded primary-key pages, never a GROUP BY
@@ -121,38 +149,67 @@ func QueueIPGeolocationIPs(ctx context.Context, proxies []domain.Proxy) error {
 	return enqueueIPGeolocationRows(DB.WithContext(queueCtx), proxies, cfg, time.Now().UTC())
 }
 
-func NextIPGeolocationLookup(ctx context.Context, now time.Time) (*domain.IPGeolocationLookup, error) {
-	var row domain.IPGeolocationLookup
-	err := DB.WithContext(ctx).Where("next_lookup_at <= ?", now).Order("next_lookup_at, ip").First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+// Drain local cleanup in bounded transactions without making the worker sleep
+// for each paused, orphaned, or still-fresh IP ahead of an active lookup.
+func NextIPGeolocationLookup(ctx context.Context, cfg config.IPGeolocationPluginConfig, now time.Time) (*domain.IPGeolocationLookup, error) {
+	for {
+		var next *domain.IPGeolocationLookup
+		scanned := 0
+		err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			ip := "ipgeolocation_lookups.ip"
+			if tx.Dialector.Name() == "postgres" {
+				ip += "::inet"
+			}
+			var rows []struct {
+				domain.IPGeolocationLookup
+				Managed bool
+				Active  bool
+			}
+			if err := tx.Model(&domain.IPGeolocationLookup{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+				Select("ip, checked_at, security_included, "+
+					"EXISTS (SELECT 1 FROM proxies p JOIN user_proxies up ON up.proxy_id = p.id WHERE p.ip_address = "+ip+") AS managed, "+
+					"EXISTS (SELECT 1 FROM proxies p JOIN user_proxies up ON up.proxy_id = p.id WHERE p.ip_address = "+ip+" AND up.state = ?) AS active", domain.ManagedProxyStateActive).
+				Where("next_lookup_at <= ?", now).Order("next_lookup_at, ip").Limit(ipGeolocationBatchSize).Find(&rows).Error; err != nil {
+				return err
+			}
+			scanned = len(rows)
+			var orphaned, paused []string
+			var fresh []domain.IPGeolocationLookup
+			for _, row := range rows {
+				switch {
+				case !row.Managed:
+					orphaned = append(orphaned, row.IP)
+				case !row.Active:
+					paused = append(paused, row.IP)
+				case freshIPGeolocation(row.IPGeolocationLookup, cfg, now):
+					expires := row.CheckedAt.Add(time.Duration(cfg.CacheHours) * time.Hour)
+					fresh = append(fresh, domain.IPGeolocationLookup{IP: row.IP, NextLookupAt: expires, ExpiresAt: &expires, Policy: IPGeolocationPolicy(cfg)})
+				case next == nil:
+					lookup := row.IPGeolocationLookup
+					next = &lookup
+				}
+			}
+			if len(orphaned) > 0 {
+				if err := tx.Where("ip IN ?", orphaned).Delete(&domain.IPGeolocationLookup{}).Error; err != nil {
+					return err
+				}
+			}
+			if len(paused) > 0 {
+				if err := tx.Model(&domain.IPGeolocationLookup{}).Where("ip IN ?", paused).Update("next_lookup_at", now.Add(time.Hour)).Error; err != nil {
+					return err
+				}
+			}
+			if len(fresh) > 0 {
+				return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "ip"}},
+					DoUpdates: clause.AssignmentColumns([]string{"next_lookup_at", "expires_at", "policy"}),
+				}).CreateInBatches(fresh, ipGeolocationBatchSize).Error
+			}
+			return nil
+		})
+		if err != nil || next != nil || scanned < ipGeolocationBatchSize {
+			return next, err
+		}
 	}
-	return &row, err
-}
-
-func IPGeolocationIPIsActive(ctx context.Context, ip string) (bool, error) {
-	var id uint64
-	err := DB.WithContext(ctx).Model(&domain.Proxy{}).Select("proxies.id").
-		Where("ip_address = ?", ip).
-		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id AND up.state = ?)", domain.ManagedProxyStateActive).
-		Limit(1).Scan(&id).Error
-	return id != 0, err
-}
-
-func RemoveOrphanIPGeolocationLookup(ctx context.Context, ip string) (bool, error) {
-	var id uint64
-	if err := DB.WithContext(ctx).Model(&domain.Proxy{}).Select("proxies.id").Where("ip_address = ?", ip).
-		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id)").Limit(1).Scan(&id).Error; err != nil {
-		return false, err
-	}
-	if id != 0 {
-		return false, nil
-	}
-	return true, DB.WithContext(ctx).Where("ip = ?", ip).Delete(&domain.IPGeolocationLookup{}).Error
-}
-
-func DeferIPGeolocationLookup(ctx context.Context, ip string, until time.Time) error {
-	return DB.WithContext(ctx).Model(&domain.IPGeolocationLookup{}).Where("ip = ?", ip).Update("next_lookup_at", until).Error
 }
 
 func ReserveIPGeolocationCredits(ctx context.Context, ip string, now time.Time, cfg config.IPGeolocationPluginConfig) (bool, time.Duration, error) {
@@ -180,6 +237,11 @@ func ReserveIPGeolocationCredits(ctx context.Context, ip string, now time.Time, 
 		var lookup domain.IPGeolocationLookup
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("ip = ?", ip).First(&lookup).Error; err != nil {
 			return err
+		}
+		if freshIPGeolocation(lookup, cfg, now) {
+			expires := lookup.CheckedAt.Add(time.Duration(cfg.CacheHours) * time.Hour)
+			wait = expires.Sub(now)
+			return tx.Model(&lookup).Updates(map[string]any{"next_lookup_at": expires, "expires_at": expires, "policy": IPGeolocationPolicy(cfg)}).Error
 		}
 		if lookup.NextLookupAt.After(now) {
 			wait = lookup.NextLookupAt.Sub(now)
@@ -267,12 +329,14 @@ func CompleteIPGeolocationLookup(ctx context.Context, ip string, cfg config.IPGe
 	})
 }
 
+// Stored expiry can reflect an older cache duration until discovery catches up.
+// The current duration and the data actually fetched determine freshness.
 func freshIPGeolocation(row domain.IPGeolocationLookup, cfg config.IPGeolocationPluginConfig, now time.Time) bool {
-	return row.CheckedAt != nil && row.ExpiresAt != nil && row.ExpiresAt.After(now) && row.CheckedAt.After(now.Add(-time.Duration(cfg.CacheHours)*time.Hour)) && (!cfg.IncludeSecurity || row.SecurityIncluded)
+	return row.CheckedAt != nil && row.CheckedAt.After(now.Add(-time.Duration(cfg.CacheHours)*time.Hour)) && (!cfg.IncludeSecurity || row.SecurityIncluded)
 }
 
-// Each local enrichment batch adds at most one cache query; disabled plugins
-// never touch this table. There is no per-check or proxy-list cache query.
+// Query each distinct IP once, with bounded parameter lists even for large
+// imports. Disabled plugins never touch this table.
 func loadIPGeolocationOverrides(ctx context.Context, proxies []domain.Proxy) (map[string]domain.IPGeolocationLookup, error) {
 	cfg := config.GetConfig().Plugins.IPGeolocation
 	rows := make(map[string]domain.IPGeolocationLookup)
@@ -280,25 +344,29 @@ func loadIPGeolocationOverrides(ctx context.Context, proxies []domain.Proxy) (ma
 		return rows, nil
 	}
 	ips := make([]string, 0, len(proxies))
+	seen := make(map[string]bool)
 	for _, proxy := range proxies {
-		if ip := proxy.GetIPAddress(); ip != "" {
+		if ip := proxy.GetIPAddress(); ip != "" && !seen[ip] {
+			seen[ip] = true
 			ips = append(ips, ip)
 		}
 	}
 	if len(ips) == 0 {
 		return rows, nil
 	}
-	var cached []domain.IPGeolocationLookup
 	now := time.Now().UTC()
 	lookupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := DB.WithContext(lookupCtx).Select("ip", "country", "estimated_type", "checked_at", "expires_at", "security_included").
-		Where("ip IN ? AND expires_at > ?", ips, now).Find(&cached).Error; err != nil {
-		return nil, err
-	}
-	for _, row := range cached {
-		if freshIPGeolocation(row, cfg, now) {
-			rows[row.IP] = row
+	for start := 0; start < len(ips); start += ipGeolocationBatchSize {
+		var cached []domain.IPGeolocationLookup
+		if err := DB.WithContext(lookupCtx).Select("ip", "country", "estimated_type", "checked_at", "expires_at", "security_included").
+			Where("ip IN ? AND checked_at > ?", ips[start:min(start+ipGeolocationBatchSize, len(ips))], now.Add(-time.Duration(cfg.CacheHours)*time.Hour)).Find(&cached).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range cached {
+			if freshIPGeolocation(row, cfg, now) {
+				rows[row.IP] = row
+			}
 		}
 	}
 	return rows, nil
@@ -328,7 +396,7 @@ func ApplyIPGeolocationBatch(ctx context.Context, cfg config.IPGeolocationPlugin
 			Order("id").Limit(ipGeolocationBatchSize).Find(&proxies).Error; err != nil {
 			return err
 		}
-		changed := make([]domain.Proxy, 0, len(proxies))
+		changed := make([]proxyMetadataUpdate, 0, len(proxies))
 		for _, proxy := range proxies {
 			row.ApplyCursor = proxy.ID
 			country, proxyType := proxy.Country, proxy.EstimatedType
@@ -341,22 +409,11 @@ func ApplyIPGeolocationBatch(ctx context.Context, cfg config.IPGeolocationPlugin
 			if country == proxy.Country && proxyType == proxy.EstimatedType {
 				continue
 			}
-			proxy.Country, proxy.EstimatedType = country, proxyType
-			changed = append(changed, proxy)
+			changed = append(changed, proxyMetadataUpdate{ID: proxy.ID, Country: country, EstimatedType: proxyType})
 			ids = append(ids, proxy.ID)
 		}
-		// The standard metadata writer is PostgreSQL-specific and takes the DB
-		// connection explicitly here to keep the cursor and writes atomic.
-		if len(changed) > 0 {
-			values := make([]string, 0, len(changed))
-			args := make([]any, 0, len(changed)*3)
-			for _, proxy := range changed {
-				values = append(values, "(?::bigint, ?::text, ?::text)")
-				args = append(args, proxy.ID, proxy.Country, proxy.EstimatedType)
-			}
-			if err := tx.Exec(fmt.Sprintf("UPDATE proxies AS p SET country=v.country, estimated_type=v.estimated_type FROM (VALUES %s) AS v(id,country,estimated_type) WHERE p.id=v.id AND (p.country,p.estimated_type) IS DISTINCT FROM (v.country,v.estimated_type)", strings.Join(values, ",")), args...).Error; err != nil {
-				return err
-			}
+		if err := updateProxyMetadataBatch(tx, changed, ipGeolocationProxyMetadata); err != nil {
+			return err
 		}
 		return tx.Model(&row).Updates(map[string]any{"apply_cursor": row.ApplyCursor, "apply_pending": len(proxies) == ipGeolocationBatchSize}).Error
 	})
@@ -367,7 +424,7 @@ func ApplyIPGeolocationBatch(ctx context.Context, cfg config.IPGeolocationPlugin
 }
 
 // Protect a fresh provider result against a local lookup that started before
-// the provider request completed. Used only in the two metadata writers.
+// the provider request completed.
 func ipGeolocationMetadataGuard(alias string) (string, []any) {
 	cfg := config.GetConfig().Plugins.IPGeolocation
 	if !cfg.Active() {
@@ -378,6 +435,6 @@ func ipGeolocationMetadataGuard(alias string) (string, []any) {
 	if cfg.IncludeSecurity {
 		security = " AND ig.security_included = TRUE"
 	}
-	return " AND NOT EXISTS (SELECT 1 FROM ipgeolocation_lookups ig WHERE ig.ip = p.host AND ig.expires_at > ? AND ig.checked_at > ?" + security +
-		" AND ((ig.estimated_type <> '' AND ig.estimated_type <> " + alias + ".estimated_type) OR (ig.country <> '' AND ig.country <> " + alias + ".country)))", []any{now, now.Add(-time.Duration(cfg.CacheHours) * time.Hour)}
+	return " AND NOT EXISTS (SELECT 1 FROM ipgeolocation_lookups ig WHERE ig.ip = p.host AND ig.checked_at > ?" + security +
+		" AND ((ig.estimated_type <> '' AND ig.estimated_type <> " + alias + ".estimated_type) OR (ig.country <> '' AND ig.country <> " + alias + ".country)))", []any{now.Add(-time.Duration(cfg.CacheHours) * time.Hour)}
 }

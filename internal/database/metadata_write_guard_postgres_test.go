@@ -33,9 +33,9 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 			t.Fatal(err)
 		}
 	}
-	batch := make([]domain.Proxy, enrichmentUpdateBatchSize)
+	batch := make([]proxyMetadataUpdate, enrichmentUpdateBatchSize)
 	for i := range batch {
-		batch[i] = domain.Proxy{ID: uint64(1 + 9999*i/(len(batch)-1)), Country: "N/A", EstimatedType: "N/A"}
+		batch[i] = proxyMetadataUpdate{ID: uint64(1 + 9999*i/(len(batch)-1)), Country: "N/A", EstimatedType: "N/A"}
 	}
 	batch[1].Country = "DE"
 	batch[2].EstimatedType = "Residential"
@@ -51,7 +51,7 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	DB = db.WithContext(ctx).Session(&gorm.Session{Logger: queries})
-	if err := updateProxyMetadataBatch(batch); err != nil {
+	if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
 		t.Fatal("unchanged metadata waited for a locked route", err)
 	}
 	_ = locked.Rollback().Error
@@ -60,7 +60,7 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 	}
 	guardedSQL := queries.queries[0]
 	DB = db
-	if err := updateProxyMetadataBatch(batch); err != nil {
+	if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
 		t.Fatal(err)
 	}
 	var observed []uint64

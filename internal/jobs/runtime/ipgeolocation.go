@@ -65,23 +65,12 @@ func runIPGeolocationOnce(ctx context.Context, client ipgeolocation.Client, now 
 	if state.BudgetDay == now.Format("2006-01-02") && state.UsedCredits+ipgeolocation.Cost(cfg.IncludeSecurity) > int(cfg.DailyCreditLimit) {
 		return now.Truncate(24 * time.Hour).Add(24 * time.Hour).Sub(now), nil
 	}
-	row, err := database.NextIPGeolocationLookup(ctx, now)
+	row, err := database.NextIPGeolocationLookup(ctx, cfg, now)
 	if err != nil {
 		return time.Minute, err
 	}
 	if row == nil {
 		return time.Minute, nil
-	}
-	active, err := database.IPGeolocationIPIsActive(ctx, row.IP)
-	if err != nil {
-		return time.Minute, err
-	}
-	if !active {
-		removed, err := database.RemoveOrphanIPGeolocationLookup(ctx, row.IP)
-		if err != nil || removed {
-			return time.Second, err
-		}
-		return time.Second, database.DeferIPGeolocationLookup(ctx, row.IP, now.Add(time.Hour))
 	}
 	reserved, wait, err := database.ReserveIPGeolocationCredits(ctx, row.IP, now, cfg)
 	if err != nil || !reserved {

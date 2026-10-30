@@ -3,8 +3,6 @@ package database
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"sync"
 
 	"magpie/internal/domain"
@@ -23,16 +21,6 @@ var (
 	ErrProxyGeoRefreshDatabaseNotInitialized = errors.New("proxy geo refresh skipped: database not initialized")
 	ErrProxyGeoRefreshGeoLiteUnavailable     = errors.New("proxy geo refresh skipped: GeoLite databases unavailable")
 )
-
-type proxyGeoUpdate struct {
-	ID            uint64 `gorm:"primaryKey"`
-	Country       string
-	EstimatedType string
-}
-
-func (proxyGeoUpdate) TableName() string {
-	return "proxies"
-}
 
 func RunProxyGeoRefresh(ctx context.Context, batchSize int) (int64, int64, error) {
 	if ctx == nil {
@@ -100,7 +88,7 @@ func refreshProxyGeoData(ctx context.Context, batchSize int) (int64, int64, erro
 	return scanned, updated, nil
 }
 
-func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyGeoUpdate, error) {
+func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyMetadataUpdate, error) {
 	if len(proxies) == 0 {
 		return nil, nil
 	}
@@ -109,7 +97,7 @@ func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyG
 		return nil, err
 	}
 
-	updates := make([]proxyGeoUpdate, 0, len(proxies))
+	updates := make([]proxyMetadataUpdate, 0, len(proxies))
 	var mu sync.Mutex
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -150,7 +138,7 @@ func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyG
 			}
 
 			mu.Lock()
-			updates = append(updates, proxyGeoUpdate{
+			updates = append(updates, proxyMetadataUpdate{
 				ID:            proxy.ID,
 				Country:       country,
 				EstimatedType: proxyType,
@@ -167,7 +155,7 @@ func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyG
 	return updates, nil
 }
 
-func applyProxyGeoUpdates(ctx context.Context, updates []proxyGeoUpdate) error {
+func applyProxyGeoUpdates(ctx context.Context, updates []proxyMetadataUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -182,25 +170,7 @@ func applyProxyGeoUpdates(ctx context.Context, updates []proxyGeoUpdate) error {
 		}
 
 		batch := updates[start:end]
-		placeholders := make([]string, len(batch))
-		args := make([]any, 0, len(batch)*3)
-
-		for i, u := range batch {
-			placeholders[i] = "(?::bigint, ?::text, ?::text)"
-			args = append(args, u.ID, u.Country, u.EstimatedType)
-		}
-
-		query := fmt.Sprintf(
-			`UPDATE proxies AS p SET country = data.country, estimated_type = data.estimated_type `+
-				`FROM (VALUES %s) AS data(id, country, estimated_type) WHERE p.id = data.id`,
-			strings.Join(placeholders, ","),
-		)
-		guard, guardArgs := ipGeolocationMetadataGuard("data")
-		query += guard
-		args = append(args, guardArgs...)
-
-		db := DB.WithContext(ctx)
-		if err := db.Exec(query, args...).Error; err != nil {
+		if err := updateProxyMetadataBatch(DB.WithContext(ctx), batch, localProxyMetadata); err != nil {
 			return err
 		}
 		proxyIDs := make([]uint64, 0, len(batch))
