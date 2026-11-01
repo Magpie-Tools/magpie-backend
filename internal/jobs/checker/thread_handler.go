@@ -388,12 +388,25 @@ func refreshProxyWorkspaces(proxy domain.Proxy) (domain.Proxy, bool) {
 
 var lookupCheckerWorkspace = checkerconfig.Lookup
 
+// judgePick remembers a cycle's judge position for one protocol and judge set.
+type judgePick struct {
+	protocolIndex int
+	judgeSet      uint32
+}
+
 // buildRequestAssignments shares a physical request only when judge, protocol,
 // transport, timeout and retry budget match. Validation remains per workspace.
+// Owners whose plans list the same judges for a protocol use the same judge in
+// a cycle; only the first such plan advances its round-robin position, so
+// independent counters cannot split one route into one request per judge.
 // The returned success and eligibility maps use workspace IDs; no eligible judge
 // means no failure-streak update. Maximum budgets support fallback assignments.
 func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
 	requests := make(map[string]*requestAssignment)
+	var picks map[judgePick]int
+	if len(proxy.Workspaces) > 1 {
+		picks = make(map[judgePick]int, len(domain.CheckerProtocols))
+	}
 	success, hasChecks := make(map[uint]bool, len(proxy.Workspaces)), make(map[uint]bool, len(proxy.Workspaces))
 	var maxTimeout uint16
 	var maxRetries uint8
@@ -430,7 +443,7 @@ func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment,
 			var regex, configKey string
 			var headers []string
 			if plan != nil {
-				judge, regex = plan.NextJudge(index)
+				judge, regex = nextPlanJudge(plan, index, picks)
 				configKey = plan.Keys[index]
 				headers = plan.Headers
 			} else {
@@ -454,6 +467,24 @@ func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment,
 		}
 	}
 	return requests, success, hasChecks, maxTimeout, maxRetries
+}
+
+// nextPlanJudge reuses the cycle's position for an identical judge set. A nil
+// picks map means the route has one owner and needs no coordination.
+func nextPlanJudge(plan *checkerconfig.Plan, index int, picks map[judgePick]int) (*domain.Judge, string) {
+	list := plan.Judges[index]
+	// Hand-built plans without a set identity keep independent rotation.
+	if picks == nil || len(list) < 2 || plan.JudgeSets[index] == 0 {
+		return plan.NextJudge(index)
+	}
+	key := judgePick{protocolIndex: index, judgeSet: plan.JudgeSets[index]}
+	position, ok := picks[key]
+	if !ok {
+		position = plan.NextJudgeIndex(index)
+		picks[key] = position
+	}
+	item := list[position]
+	return item.Judge, item.Regex
 }
 
 func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool) string {

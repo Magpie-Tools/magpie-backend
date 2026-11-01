@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,17 +27,54 @@ type Plan struct {
 	Settings [4]dto.ProtocolCheckSettings
 	Keys     [4]string
 	Judges   [4][]domain.JudgeWithRegex
-	Headers  []string
-	counters [4]atomic.Uint64
+	// JudgeSets identifies each protocol's ordered judge IDs, ignoring regexes.
+	// Plans with equal sets share a position in Judges, so one check cycle can
+	// pick the same judge for every owner and merge their requests. Zero means
+	// no identity was compiled.
+	JudgeSets [4]uint32
+	Headers   []string
+	counters  [4]atomic.Uint64
 }
 
 func (p *Plan) NextJudge(index int) (*domain.Judge, string) {
-	list := p.Judges[index]
-	if len(list) == 0 {
+	position := p.NextJudgeIndex(index)
+	if position < 0 {
 		return nil, ""
 	}
-	item := list[(p.counters[index].Add(1)-1)%uint64(len(list))]
+	item := p.Judges[index][position]
 	return item.Judge, item.Regex
+}
+
+// NextJudgeIndex advances this plan's round-robin position, or returns -1 when
+// the protocol has no judge.
+func (p *Plan) NextJudgeIndex(index int) int {
+	list := p.Judges[index]
+	if len(list) == 0 {
+		return -1
+	}
+	if len(list) == 1 {
+		return 0
+	}
+	return int((p.counters[index].Add(1) - 1) % uint64(len(list)))
+}
+
+// Judge-set identities are interned while compiling so checks compare small
+// integers. The table only grows with distinct judge-ID lists ever compiled in
+// this process, which is bounded by workspace judge edits.
+var judgeSets = struct {
+	sync.Mutex
+	ids map[string]uint32
+}{ids: make(map[string]uint32)}
+
+func internJudgeSet(set string) uint32 {
+	judgeSets.Lock()
+	defer judgeSets.Unlock()
+	id, ok := judgeSets.ids[set]
+	if !ok {
+		id = uint32(len(judgeSets.ids) + 1)
+		judgeSets.ids[set] = id
+	}
+	return id
 }
 
 type Workspace struct {
@@ -96,6 +134,14 @@ func Build(value domain.Workspace, assignments []domain.ProxyTagAssignment, judg
 				}
 			}
 			sort.Slice(p.Judges[index], func(i, j int) bool { return p.Judges[index][i].Judge.ID < p.Judges[index][j].Judge.ID })
+			var set strings.Builder
+			for position, judge := range p.Judges[index] {
+				if position > 0 {
+					set.WriteByte(',')
+				}
+				set.WriteString(strconv.FormatUint(uint64(judge.Judge.ID), 10))
+			}
+			p.JudgeSets[index] = internJudgeSet(set.String())
 			var identity strings.Builder
 			fmt.Fprintf(&identity, "%s\x00%s\x00%d\x00%d", protocol, setting.Transport, setting.Timeout, setting.Retries)
 			for _, judge := range p.Judges[index] {

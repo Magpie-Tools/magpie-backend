@@ -114,7 +114,10 @@ func TestWorkspaceTrafficRetiresOldPeriodsAfterSuccessfulFlush(t *testing.T) {
 	oldRecord := recordWorkspaceManagedTrafficBatch
 	t.Cleanup(func() { recordWorkspaceManagedTrafficBatch = oldRecord; workspaceTrafficCounters.Clear() })
 	workspaceTrafficCounters.Clear()
-	key := workspaceTrafficKey{WorkspaceID: 7, PeriodStart: time.Now().AddDate(0, -1, 0).Unix()}
+	// AddDate(0, -1, 0) normalizes Oct 31 to Oct 1, inside the current month.
+	now := time.Now().UTC()
+	previousMonth := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, time.UTC)
+	key := workspaceTrafficKey{WorkspaceID: 7, PeriodStart: previousMonth.Unix()}
 	counter := &workspaceTrafficCounter{}
 	counter.Requests.Store(3)
 	workspaceTrafficCounters.Store(key, counter)

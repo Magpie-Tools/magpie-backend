@@ -2,8 +2,8 @@ package checker
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -20,6 +20,12 @@ const (
 	failureSQLChunkSize      = 200
 	failureQueryTimeout      = 5 * time.Second
 	failureProcessingTimeout = 10 * time.Second
+
+	// failureStreakSaturation is the highest streak any decision reads.
+	// AutoRemoveFailureThreshold is a uint8, so no threshold exceeds it, and the
+	// reputation penalty saturates far below it. Saturated rows are not
+	// rewritten on later failures. Older rows may hold larger values.
+	failureStreakSaturation = math.MaxUint8
 )
 
 type failureEvent struct {
@@ -217,13 +223,6 @@ func (ft *failureTracker) processBatch(batch []*failureRequest) {
 		return
 	}
 
-	counts, err = ensureFailureCounts(counts, increments)
-	if err != nil {
-		log.Error("fetch proxy failure streaks", "error", err)
-		ft.failBatch(active, err)
-		return
-	}
-
 	responses := make(map[*failureRequest]*failureResponse, len(active))
 	for _, req := range active {
 		responses[req] = &failureResponse{}
@@ -233,8 +232,8 @@ func (ft *failureTracker) processBatch(batch []*failureRequest) {
 		if !entry.autoRemove || entry.threshold == 0 {
 			continue
 		}
-		count := counts[failureKey{workspaceID: entry.workspaceID, proxyID: entry.proxyID}]
-		if count == 0 || count < uint16(entry.threshold) {
+		count := failureCount(counts, entry)
+		if count < uint16(entry.threshold) {
 			continue
 		}
 		var changed bool
@@ -271,6 +270,17 @@ func (ft *failureTracker) processBatch(batch []*failureRequest) {
 	for _, req := range active {
 		req.respond(*responses[req])
 	}
+}
+
+// failureCount reads an incremented streak. The increment skips rows already
+// at failureStreakSaturation, so a missing row is treated as saturated rather
+// than fetched again. The only other absent row is an ownership removed during
+// the check, for which the failure action changes nothing.
+func failureCount(counts map[failureKey]uint16, entry failureIncrementEntry) uint16 {
+	if count, ok := counts[failureKey{workspaceID: entry.workspaceID, proxyID: entry.proxyID}]; ok {
+		return count
+	}
+	return failureStreakSaturation
 }
 
 func (ft *failureTracker) failBatch(batch []*failureRequest, err error) {
@@ -410,18 +420,20 @@ func execIncrementChunk(entries []failureIncrementEntry) (map[failureKey]uint16,
 	defer cancel()
 
 	var builder strings.Builder
-	args := make([]any, 0, len(entries)*3)
-	builder.WriteString("WITH updates(workspace_id, proxy_id, inc) AS (VALUES ")
+	args := make([]any, 0, len(entries)*2)
+	builder.WriteString("WITH updates(workspace_id, proxy_id) AS (VALUES ")
 	argPos := 1
 	for i, entry := range entries {
 		if i > 0 {
 			builder.WriteString(",")
 		}
-		builder.WriteString(fmt.Sprintf("($%d::bigint,$%d::bigint,$%d::integer)", argPos, argPos+1, argPos+2))
-		args = append(args, entry.workspaceID, entry.proxyID, 1)
-		argPos += 3
+		builder.WriteString(fmt.Sprintf("($%d::bigint,$%d::bigint)", argPos, argPos+1))
+		args = append(args, entry.workspaceID, entry.proxyID)
+		argPos += 2
 	}
-	builder.WriteString(")\nUPDATE user_proxies up SET consecutive_failures = LEAST(up.consecutive_failures + updates.inc, 65535) FROM updates WHERE up.workspace_id = updates.workspace_id AND up.proxy_id = updates.proxy_id RETURNING up.workspace_id, up.proxy_id, up.consecutive_failures")
+	// Saturated streaks are left alone so dead routes stop creating row
+	// versions. They are therefore absent from RETURNING; see failureCount.
+	builder.WriteString(fmt.Sprintf(")\nUPDATE user_proxies up SET consecutive_failures = up.consecutive_failures + 1 FROM updates WHERE up.workspace_id = updates.workspace_id AND up.proxy_id = updates.proxy_id AND up.consecutive_failures < %d RETURNING up.workspace_id, up.proxy_id, up.consecutive_failures", failureStreakSaturation))
 
 	var rows []struct {
 		WorkspaceID         uint
@@ -451,118 +463,18 @@ func execIncrementChunkFallback(db *gorm.DB, entries []failureIncrementEntry) (m
 		if err != nil {
 			return nil, err
 		}
-		newVal := pair.ConsecutiveFailures + 1
-		if newVal > 65535 {
-			newVal = 65535
+		key := failureKey{workspaceID: entry.workspaceID, proxyID: entry.proxyID}
+		if pair.ConsecutiveFailures >= failureStreakSaturation {
+			result[key] = pair.ConsecutiveFailures
+			continue
 		}
+		newVal := pair.ConsecutiveFailures + 1
 		if err := db.Model(&domain.ManagedProxy{}).
 			Where("workspace_id = ? AND proxy_id = ?", entry.workspaceID, entry.proxyID).
 			Update("consecutive_failures", newVal).Error; err != nil {
 			return nil, err
 		}
-		result[failureKey{workspaceID: entry.workspaceID, proxyID: entry.proxyID}] = newVal
-	}
-	return result, nil
-}
-
-func ensureFailureCounts(counts map[failureKey]uint16, entries []failureIncrementEntry) (map[failureKey]uint16, error) {
-	if len(entries) == 0 {
-		return counts, nil
-	}
-
-	missingSet := make(map[failureKey]struct{})
-	for _, entry := range entries {
-		if !entry.autoRemove || entry.threshold == 0 {
-			continue
-		}
-		key := failureKey{workspaceID: entry.workspaceID, proxyID: entry.proxyID}
-		if counts[key] != 0 {
-			continue
-		}
-		missingSet[key] = struct{}{}
-	}
-
-	if len(missingSet) == 0 {
-		return counts, nil
-	}
-
-	keys := make([]failureKey, 0, len(missingSet))
-	for key := range missingSet {
-		keys = append(keys, key)
-	}
-
-	fetched, err := fetchFailureCounts(keys)
-	if err != nil {
-		return nil, err
-	}
-	for key, val := range fetched {
-		counts[key] = val
-	}
-
-	return counts, nil
-}
-
-func fetchFailureCounts(keys []failureKey) (map[failureKey]uint16, error) {
-	if len(keys) == 0 {
-		return nil, nil
-	}
-	db := database.DB
-	if db == nil {
-		return nil, fmt.Errorf("database not initialised")
-	}
-	if !isPostgresDialect(db) {
-		return fetchFailureCountsFallback(db, keys)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), failureQueryTimeout)
-	defer cancel()
-
-	var builder strings.Builder
-	args := make([]any, 0, len(keys)*2)
-	builder.WriteString("SELECT workspace_id, proxy_id, consecutive_failures FROM user_proxies WHERE (workspace_id, proxy_id) IN (")
-	for i, key := range keys {
-		if i > 0 {
-			builder.WriteString(",")
-		}
-		argPos := i*2 + 1
-		builder.WriteString(fmt.Sprintf("($%d::bigint,$%d::bigint)", argPos, argPos+1))
-		args = append(args, key.workspaceID, key.proxyID)
-	}
-	builder.WriteString(")")
-
-	var rows []struct {
-		WorkspaceID         uint
-		ProxyID             uint64
-		ConsecutiveFailures uint16 `gorm:"column:consecutive_failures"`
-	}
-
-	if err := db.WithContext(ctx).Raw(builder.String(), args...).Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-
-	result := make(map[failureKey]uint16, len(rows))
-	for _, row := range rows {
-		result[failureKey{workspaceID: row.WorkspaceID, proxyID: row.ProxyID}] = row.ConsecutiveFailures
-	}
-
-	return result, nil
-}
-
-func fetchFailureCountsFallback(db *gorm.DB, keys []failureKey) (map[failureKey]uint16, error) {
-	result := make(map[failureKey]uint16, len(keys))
-	for _, key := range keys {
-		var pair domain.ManagedProxy
-		err := db.
-			Select("consecutive_failures").
-			Where("workspace_id = ? AND proxy_id = ?", key.workspaceID, key.proxyID).
-			First(&pair).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		result[key] = pair.ConsecutiveFailures
+		result[key] = newVal
 	}
 	return result, nil
 }
