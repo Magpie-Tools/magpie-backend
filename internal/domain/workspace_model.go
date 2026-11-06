@@ -44,27 +44,31 @@ type Workspace struct {
 	Name     string `gorm:"not null;size:120"`
 	Personal bool   `gorm:"not null;default:false;index"`
 
-	HTTPProtocol               bool                 `gorm:"not null;default:false"`
-	HTTPSProtocol              bool                 `gorm:"not null;default:true"`
-	SOCKS4Protocol             bool                 `gorm:"not null;default:false"`
-	SOCKS5Protocol             bool                 `gorm:"not null;default:false"`
-	Timeout                    uint16               `gorm:"not null;default:7500"`
-	Retries                    uint8                `gorm:"not null;default:2"`
-	UseHttpsForSocks           bool                 `gorm:"not null;default:true"`
-	TransportProtocol          string               `gorm:"not null;default:'tcp'"`
-	AutoRemoveFailingProxies   bool                 `gorm:"not null;default:false"`
-	AutoRemoveFailureThreshold uint8                `gorm:"not null;default:3"`
-	FailureAction              string               `gorm:"not null;size:16;default:'pause'"`
-	CheckerConfig              *dto.CheckerSettings `gorm:"serializer:json;type:jsonb" json:"-"`
-	CheckerDirty               bool                 `gorm:"not null;default:false" json:"-"`
-	CheckerRevision            uint64               `gorm:"not null;default:0" json:"-"`
-	CheckerFullRevision        uint64               `gorm:"not null;default:0" json:"-"`
-	CheckerProjectedRevision   uint64               `gorm:"not null;default:0" json:"-"`
-	CheckerGeneration          uint64               `gorm:"not null;default:0" json:"-"`
-	CheckerHTTPKey             string               `gorm:"column:checker_http_key;size:64;not null;default:''" json:"-"`
-	CheckerHTTPSKey            string               `gorm:"column:checker_https_key;size:64;not null;default:''" json:"-"`
-	CheckerSOCKS4Key           string               `gorm:"column:checker_socks4_key;size:64;not null;default:''" json:"-"`
-	CheckerSOCKS5Key           string               `gorm:"column:checker_socks5_key;size:64;not null;default:''" json:"-"`
+	HTTPProtocol               bool   `gorm:"not null;default:false"`
+	HTTPSProtocol              bool   `gorm:"not null;default:true"`
+	SOCKS4Protocol             bool   `gorm:"not null;default:false"`
+	SOCKS5Protocol             bool   `gorm:"not null;default:false"`
+	Timeout                    uint16 `gorm:"not null;default:7500"`
+	Retries                    uint8  `gorm:"not null;default:2"`
+	UseHttpsForSocks           bool   `gorm:"not null;default:true"`
+	TransportProtocol          string `gorm:"not null;default:'tcp'"`
+	AutoRemoveFailingProxies   bool   `gorm:"not null;default:false"`
+	AutoRemoveFailureThreshold uint8  `gorm:"not null;default:3"`
+	FailureAction              string `gorm:"not null;size:16;default:'pause'"`
+	// Requested cadence in seconds; zero spreads the monthly allowance
+	// automatically. A fixed interval stops when the allowance is used up.
+	CheckIntervalSeconds     uint32               `gorm:"not null;default:0"`
+	ScrapeIntervalSeconds    uint32               `gorm:"not null;default:0"`
+	CheckerConfig            *dto.CheckerSettings `gorm:"serializer:json;type:jsonb" json:"-"`
+	CheckerDirty             bool                 `gorm:"not null;default:false" json:"-"`
+	CheckerRevision          uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerFullRevision      uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerProjectedRevision uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerGeneration        uint64               `gorm:"not null;default:0" json:"-"`
+	CheckerHTTPKey           string               `gorm:"column:checker_http_key;size:64;not null;default:''" json:"-"`
+	CheckerHTTPSKey          string               `gorm:"column:checker_https_key;size:64;not null;default:''" json:"-"`
+	CheckerSOCKS4Key         string               `gorm:"column:checker_socks4_key;size:64;not null;default:''" json:"-"`
+	CheckerSOCKS5Key         string               `gorm:"column:checker_socks5_key;size:64;not null;default:''" json:"-"`
 
 	Memberships  []WorkspaceMembership `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
 	Subscription WorkspaceSubscription `gorm:"foreignKey:WorkspaceID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
@@ -237,6 +241,14 @@ type WorkspaceSubscription struct {
 	IncludedOperators           uint32 `gorm:"not null;default:0"`
 	StatisticsRetentionDays     uint32 `gorm:"not null;default:0"`
 	MinimumCheckIntervalSeconds uint32 `gorm:"not null;default:0"`
+	// Monthly allowances; zero inherits the instance default. Check and scrape
+	// cadence derive from these unless the workspace chose a fixed interval.
+	MonthlyChecks  uint64 `gorm:"not null;default:0"`
+	MonthlyScrapes uint64 `gorm:"not null;default:0"`
+	// Unlimited removes the monthly limit. Such a workspace must choose a
+	// fixed interval, because there is no allowance to spread.
+	UnlimitedChecks  bool `gorm:"not null;default:false"`
+	UnlimitedScrapes bool `gorm:"not null;default:false"`
 
 	BillingProvider        string `gorm:"size:32;default:''" json:"-"`
 	ProviderCustomerID     string `gorm:"size:191;default:''" json:"-"`
@@ -267,6 +279,34 @@ func (subscription *WorkspaceSubscription) Normalize() error {
 	}
 }
 
+// EffectiveMonthlyChecks applies the instance default to an unset allowance.
+func (subscription WorkspaceSubscription) EffectiveMonthlyChecks(instanceDefault uint64) uint64 {
+	if subscription.MonthlyChecks > 0 {
+		return subscription.MonthlyChecks
+	}
+	return instanceDefault
+}
+
+// EffectiveMonthlyScrapes applies the instance default to an unset allowance.
+func (subscription WorkspaceSubscription) EffectiveMonthlyScrapes(instanceDefault uint64) uint64 {
+	if subscription.MonthlyScrapes > 0 {
+		return subscription.MonthlyScrapes
+	}
+	return instanceDefault
+}
+
+// ChecksUnlimited reports whether the workspace has no monthly check limit,
+// either set on its subscription or inherited from an unlimited instance
+// default. An explicit monthly allowance overrides an unlimited default.
+func (subscription WorkspaceSubscription) ChecksUnlimited(instanceUnlimited bool) bool {
+	return subscription.UnlimitedChecks || (subscription.MonthlyChecks == 0 && instanceUnlimited)
+}
+
+// ScrapesUnlimited is ChecksUnlimited for scrapes.
+func (subscription WorkspaceSubscription) ScrapesUnlimited(instanceUnlimited bool) bool {
+	return subscription.UnlimitedScrapes || (subscription.MonthlyScrapes == 0 && instanceUnlimited)
+}
+
 func (subscription WorkspaceSubscription) IncludedCapacity() uint64 {
 	return subscription.IncludedActiveRoutes + subscription.AdditionalActiveRoutes
 }
@@ -290,8 +330,13 @@ type WorkspaceUsagePeriod struct {
 	ActiveRoutes     uint64 `gorm:"not null;default:0"`
 	PeakActiveRoutes uint64 `gorm:"not null;default:0"`
 	CheckAttempts    uint64 `gorm:"not null;default:0"`
-	ManagedRequests  uint64 `gorm:"not null;default:0"`
-	ManagedBytes     uint64 `gorm:"not null;default:0"`
+	// Checks counts one protocol check of one route for one workspace,
+	// including its retries. It is what monthly check allowances meter.
+	Checks uint64 `gorm:"not null;default:0"`
+	// Scrapes counts one fetch of one subscribed source for one workspace.
+	Scrapes         uint64 `gorm:"not null;default:0"`
+	ManagedRequests uint64 `gorm:"not null;default:0"`
+	ManagedBytes    uint64 `gorm:"not null;default:0"`
 
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime"`

@@ -1,5 +1,10 @@
 # Queue interval initialization
 
+> Superseded by
+> [ADR 0014](../adr/0014-derive-check-cadence-from-monthly-workspace-allowances.md).
+> Check and scrape cadence now come from workspace allowances held in memory.
+> The shared Redis interval keys described here are no longer written or read.
+
 The reported route had repeated successful SOCKS5 results about 1.4–1.8 seconds
 apart, while the loaded global checker timer was 65 minutes at the start of the
 investigation. Tag profiles do not define a check interval. Existing queue members

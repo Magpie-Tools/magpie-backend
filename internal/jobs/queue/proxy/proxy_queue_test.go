@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	"magpie/internal/security"
-	"magpie/internal/support"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -398,9 +398,7 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 	if err := client.Set(ctx, proxyKey, originalPayload, 0).Err(); err != nil {
 		t.Fatalf("seed proxy payload: %v", err)
 	}
-	if err := client.Set(ctx, queueRescheduleStateKey, "1000", 0).Err(); err != nil {
-		t.Fatalf("seed queue interval: %v", err)
-	}
+	useUniformPace(t, time.Second)
 
 	if err := queue.RequeueProxy(proxy, time.Now()); err != nil {
 		t.Fatalf("schedule-only requeue: %v", err)
@@ -481,57 +479,6 @@ func configureProxyQueueEncryption(t *testing.T) {
 	t.Cleanup(security.ResetProxyCipherForTests)
 }
 
-func TestParseIntervalStateMillis(t *testing.T) {
-	fallback := 3 * time.Second
-	if got := parseIntervalStateMillis("1500", fallback); got != 1500*time.Millisecond {
-		t.Fatalf("parsed interval = %s, want 1500ms", got)
-	}
-	if got := parseIntervalStateMillis("", fallback); got != fallback {
-		t.Fatalf("empty interval should fallback to %s, got %s", fallback, got)
-	}
-	if got := parseIntervalStateMillis("bad", fallback); got != fallback {
-		t.Fatalf("invalid interval should fallback to %s, got %s", fallback, got)
-	}
-}
-
-func TestApplyIntervalUpdateAsLeaderWithRunner_SkipsWhenNotLeader(t *testing.T) {
-	called := false
-	err := applyIntervalUpdateAsLeaderWithRunner(
-		func(context.Context, string, time.Duration, func(context.Context) error) error {
-			return support.ErrLeaderLockNotAcquired
-		},
-		"lock",
-		time.Second,
-		func(time.Duration) error {
-			called = true
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("expected nil on lock-not-acquired, got %v", err)
-	}
-	if called {
-		t.Fatal("reschedule should not run when leadership is not acquired")
-	}
-}
-
-func TestApplyIntervalUpdateAsLeaderWithRunner_PropagatesRescheduleError(t *testing.T) {
-	expected := errors.New("boom")
-	err := applyIntervalUpdateAsLeaderWithRunner(
-		func(_ context.Context, _ string, _ time.Duration, run func(context.Context) error) error {
-			return run(context.Background())
-		},
-		"lock",
-		time.Second,
-		func(time.Duration) error {
-			return expected
-		},
-	)
-	if !errors.Is(err, expected) {
-		t.Fatalf("expected reschedule error %v, got %v", expected, err)
-	}
-}
-
 func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	redisServer, err := miniredis.Run()
 	if err != nil {
@@ -557,9 +504,9 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 		}
 	}
 
-	if err := client.Set(ctx, queueRescheduleStateKey, "60000", 0).Err(); err != nil {
-		t.Fatalf("seed interval state: %v", err)
-	}
+	// The fastest workspace cadence is below the burst guard, so requeue-all
+	// spreads members over the guard's window.
+	useUniformPace(t, time.Minute)
 
 	before := time.Now().UnixMilli()
 	count, err := queue.RequeueAll()
@@ -583,7 +530,7 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	if scoredMembers[0].Score < float64(before) || scoredMembers[0].Score > float64(after) {
 		t.Fatalf("first member score = %f, expected within [%d, %d]", scoredMembers[0].Score, before, after)
 	}
-	if scoredMembers[len(scoredMembers)-1].Score > float64(after+60000) {
+	if scoredMembers[len(scoredMembers)-1].Score > float64(after+requeueAllMinimumWindow.Milliseconds()) {
 		t.Fatalf("last member score = %f, expected to stay within the configured interval", scoredMembers[len(scoredMembers)-1].Score)
 	}
 
@@ -597,4 +544,13 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	if headEntries[0].Member != legacyQueueKey {
 		t.Fatalf("queue head member = %v, want %q", headEntries[0].Member, legacyQueueKey)
 	}
+}
+
+// useUniformPace publishes one cadence for every workspace and restores the
+// previous allowance snapshot when the test ends.
+func useUniformPace(t testing.TB, interval time.Duration) {
+	t.Helper()
+	previous := checkpace.Current()
+	checkpace.Publish(checkpace.Uniform(interval, interval))
+	t.Cleanup(func() { checkpace.Publish(previous) })
 }

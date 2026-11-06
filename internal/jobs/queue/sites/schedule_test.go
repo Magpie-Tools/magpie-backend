@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 
 	"github.com/alicebob/miniredis/v2"
@@ -41,11 +42,10 @@ func claimScrape(t *testing.T, q *RedisScrapeSiteQueue) ScrapeSiteJob {
 func TestScrapeScheduleSharesModeProgressAndProviderDeadlineAcrossReplicas(t *testing.T) {
 	queue, client, site := scheduleQueue(t)
 	ctx := context.Background()
-	if err := queue.Reschedule(15 * time.Hour); err != nil {
-		t.Fatal(err)
-	}
 	job := claimScrape(t, queue)
-	if job.Interval != 15*time.Hour {
+	// Each fetch mode derives its own cadence from subscriber allowances; the
+	// job carries only the fallback for deferral delays.
+	if job.Interval != checkpace.FallbackInterval {
 		t.Fatalf("interval = %s", job.Interval)
 	}
 	payload, _ := client.Get(ctx, scrapesiteKeyPrefix+site.URL).Result()
@@ -196,9 +196,6 @@ func TestStaleCompletionOnlyExtendsProviderDeadline(t *testing.T) {
 func TestScrapeLeaseRenewalRetainsProgressAfterLongWork(t *testing.T) {
 	queue, client, site := scheduleQueue(t)
 	queue.leaseDuration = time.Second
-	if err := queue.Reschedule(15 * time.Hour); err != nil {
-		t.Fatal(err)
-	}
 	job := claimScrape(t, queue)
 	workCtx, stop := queue.MaintainScrapeSiteLease(context.Background(), job)
 	defer stop()
@@ -272,9 +269,6 @@ func TestLegacyScrapePayloadCanCompleteAtConfiguredInterval(t *testing.T) {
 	client.ZRem(ctx, queue.queueKeyForMember(site.URL), site.URL)
 	client.ZAdd(ctx, legacyScrapesiteQueueKey, redis.Z{Member: site.URL, Score: 0})
 	if err := queue.refreshQueueHeads(); err != nil {
-		t.Fatal(err)
-	}
-	if err := queue.Reschedule(time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	job := claimScrape(t, queue)

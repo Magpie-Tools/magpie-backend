@@ -53,6 +53,8 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 			}
 			// Attempt is zero-based: zero means one outbound request.
 			usage.CheckAttempts += uint64(statistic.Attempt) + 1
+			// One statistic is one protocol check, whatever its retry count.
+			usage.Checks++
 		}
 	}
 	if len(usageByPeriod) == 0 {
@@ -76,6 +78,7 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 		DoUpdates: clause.Assignments(map[string]any{
 			"period_end":     gorm.Expr("EXCLUDED.period_end"),
 			"check_attempts": gorm.Expr("workspace_usage_periods.check_attempts + EXCLUDED.check_attempts"),
+			"checks":         gorm.Expr("workspace_usage_periods.checks + EXCLUDED.checks"),
 			"updated_at":     gorm.Expr("CURRENT_TIMESTAMP"),
 		}),
 	}).CreateInBatches(&rows, 1000).Error
@@ -226,10 +229,52 @@ func workspaceUsageDeltaRows(periods []domain.WorkspaceUsagePeriod) []map[string
 			"workspace_id": period.WorkspaceID, "period_start": period.PeriodStart, "period_end": period.PeriodEnd,
 			"active_routes": capacity, "peak_active_routes": capacity,
 			"check_attempts": period.CheckAttempts, "managed_requests": period.ManagedRequests, "managed_bytes": period.ManagedBytes,
+			"checks": period.Checks, "scrapes": period.Scrapes,
 			"created_at": now, "updated_at": now,
 		})
 	}
 	return rows
+}
+
+// RecordWorkspaceScrapeUsage charges one scrape to each workspace served by a
+// source fetch. Scrapes are infrequent, so each fetch writes one small upsert.
+func RecordWorkspaceScrapeUsage(ctx context.Context, workspaceIDs []uint, fetchedAt time.Time) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialised")
+	}
+	tx := DB
+	if ctx != nil {
+		tx = tx.WithContext(ctx)
+	}
+	return recordWorkspaceScrapeUsage(tx, workspaceIDs, fetchedAt)
+}
+
+func recordWorkspaceScrapeUsage(tx *gorm.DB, workspaceIDs []uint, fetchedAt time.Time) error {
+	if tx == nil || len(workspaceIDs) == 0 {
+		return nil
+	}
+	if fetchedAt.IsZero() {
+		fetchedAt = time.Now().UTC()
+	}
+	periodStart, periodEnd := workspaceUsageMonth(fetchedAt)
+	periods := make([]domain.WorkspaceUsagePeriod, 0, len(workspaceIDs))
+	for _, workspaceID := range normalizeWorkspaceIDs(workspaceIDs) {
+		periods = append(periods, domain.WorkspaceUsagePeriod{
+			WorkspaceID: workspaceID, PeriodStart: periodStart, PeriodEnd: periodEnd, Scrapes: 1,
+		})
+	}
+	if len(periods) == 0 {
+		return nil
+	}
+	rows := workspaceUsageDeltaRows(periods)
+	return tx.Model(&domain.WorkspaceUsagePeriod{}).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "workspace_id"}, {Name: "period_start"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"period_end": gorm.Expr("EXCLUDED.period_end"),
+			"scrapes":    gorm.Expr("workspace_usage_periods.scrapes + EXCLUDED.scrapes"),
+			"updated_at": gorm.Expr("CURRENT_TIMESTAMP"),
+		}),
+	}).Create(&rows).Error
 }
 
 func workspaceUsageMonth(value time.Time) (time.Time, time.Time) {

@@ -1,13 +1,17 @@
 package database
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
 	"magpie/internal/checkerconfig"
+	"magpie/internal/checkpace"
+	"magpie/internal/config"
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
@@ -484,12 +488,98 @@ func workspaceDTO(workspace domain.Workspace, membership domain.WorkspaceMembers
 			IncludedOperators:           subscription.IncludedOperators,
 			StatisticsRetentionDays:     subscription.StatisticsRetentionDays,
 			MinimumCheckIntervalSeconds: subscription.MinimumCheckIntervalSeconds,
+			MonthlyChecks:               subscription.MonthlyChecks,
+			MonthlyScrapes:              subscription.MonthlyScrapes,
+			UnlimitedChecks:             subscription.UnlimitedChecks,
+			UnlimitedScrapes:            subscription.UnlimitedScrapes,
 			CurrentPeriodStart:          subscription.CurrentPeriodStart,
 			CurrentPeriodEnd:            subscription.CurrentPeriodEnd,
 			CancelAtPeriodEnd:           subscription.CancelAtPeriodEnd,
 		},
-		CreatedAt: workspace.CreatedAt,
+		Allowances: workspaceAllowancesDTO(workspace, subscription),
+		CreatedAt:  workspace.CreatedAt,
 	}
+}
+
+// workspaceAllowancesDTO reads the published pacing snapshot rather than
+// metering tables, so listing workspaces adds no queries.
+func workspaceAllowancesDTO(workspace domain.Workspace, subscription domain.WorkspaceSubscription) dto.WorkspaceAllowances {
+	workspaceID := workspace.ID
+	cfg := config.GetConfig()
+	now := time.Now()
+	start, end := checkpace.UsagePeriod(now)
+	unlimitedChecks := subscription.ChecksUnlimited(cfg.Checker.UnlimitedMonthlyChecks)
+	unlimitedScrapes := subscription.ScrapesUnlimited(cfg.Scraper.UnlimitedMonthlyScrapes)
+	result := dto.WorkspaceAllowances{
+		UnlimitedChecks:                unlimitedChecks,
+		UnlimitedScrapes:               unlimitedScrapes,
+		NeedsCheckInterval:             unlimitedChecks && workspace.CheckIntervalSeconds == 0,
+		NeedsScrapeInterval:            unlimitedScrapes && workspace.ScrapeIntervalSeconds == 0,
+		MonthlyChecks:                  subscription.EffectiveMonthlyChecks(cfg.Checker.MonthlyChecksPerWorkspace),
+		MonthlyScrapes:                 subscription.EffectiveMonthlyScrapes(cfg.Scraper.MonthlyScrapesPerWorkspace),
+		RequestedCheckIntervalSeconds:  workspace.CheckIntervalSeconds,
+		RequestedScrapeIntervalSeconds: workspace.ScrapeIntervalSeconds,
+		MinimumCheckIntervalSeconds:    uint64(checkpace.CheckFloor(time.Duration(subscription.MinimumCheckIntervalSeconds)*time.Second) / time.Second),
+		MinimumScrapeIntervalSeconds:   uint64(checkpace.MinimumScrapeInterval / time.Second),
+		InheritsChecks:                 subscription.MonthlyChecks == 0 && !subscription.UnlimitedChecks,
+		InheritsScrapes:                subscription.MonthlyScrapes == 0 && !subscription.UnlimitedScrapes,
+		PeriodStart:                    start,
+		PeriodEnd:                      end,
+	}
+	snapshot := checkpace.Current()
+	pace, ok := snapshot.Pace(workspaceID)
+	if !ok {
+		return result
+	}
+	computedAt := snapshot.ComputedAt.UTC()
+	result.ComputedAt = &computedAt
+	result.UsedChecks = pace.Allowance.UsedChecks
+	result.UsedScrapes = pace.Allowance.UsedScrapes
+	result.ChecksPerCycle = pace.Allowance.ChecksPerCycle
+	result.ScrapesPerCycle = pace.Allowance.ScrapesPerCycle
+	result.ChecksExhausted = pace.ChecksExhausted
+	result.ScrapesExhausted = pace.ScrapesExhausted
+	result.CheckIntervalSeconds = uint64(pace.CheckInterval / time.Second)
+	result.ScrapeIntervalSeconds = uint64(pace.ScrapeInterval / time.Second)
+	result.ProjectedMonthlyChecks = pace.ProjectedMonthlyChecks
+	result.ProjectedMonthlyScrapes = pace.ProjectedMonthlyScrapes
+	if !pace.ChecksRunOutAt.IsZero() {
+		runOut := pace.ChecksRunOutAt.UTC()
+		result.ChecksRunOutAt = &runOut
+	}
+	if !pace.ScrapesRunOutAt.IsZero() {
+		runOut := pace.ScrapesRunOutAt.UTC()
+		result.ScrapesRunOutAt = &runOut
+	}
+	return result
+}
+
+// UpdateWorkspaceAllowances sets a workspace's own monthly allowances. Zero
+// inherits the instance default; unlimited removes the limit. It creates the subscription row if a legacy
+// workspace lacks one.
+func UpdateWorkspaceAllowances(ctx context.Context, workspaceID uint, request dto.WorkspaceAllowanceUpdateRequest) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialised")
+	}
+	db := DB.WithContext(ctx)
+	var workspace domain.Workspace
+	if err := db.Select("id").First(&workspace, workspaceID).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		subscription := domain.WorkspaceSubscription{WorkspaceID: workspaceID}
+		if err := tx.Where("workspace_id = ?", workspaceID).
+			Attrs(defaultWorkspaceSubscription("")).
+			FirstOrCreate(&subscription).Error; err != nil {
+			return err
+		}
+		return tx.Model(&domain.WorkspaceSubscription{}).
+			Where("workspace_id = ?", workspaceID).
+			Updates(map[string]any{
+				"monthly_checks": request.MonthlyChecks, "monthly_scrapes": request.MonthlyScrapes,
+				"unlimited_checks": request.UnlimitedChecks, "unlimited_scrapes": request.UnlimitedScrapes,
+			}).Error
+	})
 }
 
 func normalizeWorkspaceName(name string) string {

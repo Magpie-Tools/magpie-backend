@@ -9,10 +9,9 @@ import (
 	"hash/fnv"
 	"math"
 	"strconv"
-	"strings"
 	"time"
 
-	"magpie/internal/config"
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	queueutil "magpie/internal/jobs/queue"
 	"magpie/internal/jobs/runtime"
@@ -39,9 +38,10 @@ const (
 	processingLease     = 5 * time.Minute
 	// Due scores are whole Unix milliseconds. The exactly representable half
 	// millisecond marks worker leases without another key or Redis operation.
-	leaseScoreMarker        = 0.5
-	queueRescheduleLockKey  = "magpie:leader:proxy_queue_reschedule"
-	queueRescheduleStateKey = "magpie:queue:proxy:interval_ms"
+	leaseScoreMarker = 0.5
+	// requeueAllMinimumWindow keeps an administrator's requeue-all from turning
+	// a large queue into one burst when the fastest workspace is very fast.
+	requeueAllMinimumWindow = 15 * time.Minute
 )
 
 //go:embed pop.lua
@@ -109,60 +109,9 @@ type queuedProxy struct {
 }
 
 var PublicProxyQueue RedisProxyQueue
-var runLeaderTaskOnce = support.RunLeaderTaskOnce
 
 func init() {
 	PublicProxyQueue = *NewRedisProxyQueue(nil)
-}
-
-// StartIntervalUpdates runs after settings load. Package initialization must
-// not publish the one-second placeholder to a shared queue.
-func (rpq *RedisProxyQueue) StartIntervalUpdates(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	updates := config.CheckIntervalUpdates()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case interval := <-updates:
-			err := applyIntervalUpdateAsLeader(
-				queueRescheduleLockKey,
-				interval,
-				rpq.Reschedule,
-			)
-			if err != nil {
-				log.Error("Failed to reschedule proxy queue after interval update", "error", err)
-			}
-		}
-	}
-}
-
-func applyIntervalUpdateAsLeader(lockKey string, interval time.Duration, reschedule func(time.Duration) error) error {
-	return applyIntervalUpdateAsLeaderWithRunner(runLeaderTaskOnce, lockKey, interval, reschedule)
-}
-
-func applyIntervalUpdateAsLeaderWithRunner(
-	runner func(context.Context, string, time.Duration, func(context.Context) error) error,
-	lockKey string,
-	interval time.Duration,
-	reschedule func(time.Duration) error,
-) error {
-	if runner == nil {
-		return errors.New("leader runner is nil")
-	}
-	if reschedule == nil {
-		return errors.New("reschedule function is nil")
-	}
-
-	err := runner(context.Background(), lockKey, support.DefaultLeadershipTTL, func(context.Context) error {
-		return reschedule(interval)
-	})
-	if errors.Is(err, support.ErrLeaderLockNotAcquired) {
-		return nil
-	}
-	return err
 }
 
 func NewRedisProxyQueue(client *redis.Client) *RedisProxyQueue {
@@ -288,12 +237,17 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 	ctx := rpq.baseContext()
 
 	pipe := client.Pipeline()
-	interval := config.GetTimeBetweenChecks()
+	// New owners or routes change workspace check budgets; refresh soon.
+	checkpace.RequestRefresh()
+	pace := checkpace.Current()
 	now := time.Now()
 	proxyLenDuration := time.Duration(len(queueable))
 	batchSize := 500 // Adjust based on your Redis server capabilities
 
 	for i, proxy := range queueable {
+		// Spread the batch over each route's own cadence so an import does not
+		// make every new route due at once.
+		interval := pace.RouteCheckInterval(proxy.Workspaces)
 		offset := (interval * time.Duration(i)) / proxyLenDuration
 		nextCheck := now.Add(offset)
 		hashKey := string(proxy.Hash)
@@ -668,7 +622,9 @@ func (rpq *RedisProxyQueue) requeueProxy(proxy domain.Proxy, lastCheckTime time.
 	}
 	ctx := rpq.baseContext()
 
-	interval := rpq.getEffectiveCheckInterval()
+	// The fastest owning workspace's cadence, from the in-memory allowance
+	// snapshot. Requeueing issues no command beyond the completion script.
+	interval := checkpace.Current().RouteCheckInterval(proxy.Workspaces)
 	base := lastCheckTime
 	// Clamp to now so overdue proxies don't keep hogging the queue.
 	if now := time.Now(); now.After(base) {
@@ -739,34 +695,6 @@ func (rpq *RedisProxyQueue) RenewLeaseIfNeeded(ctx context.Context, proxy domain
 	}
 	lease.ScoreMS = renewed
 	return nil
-}
-
-func (rpq *RedisProxyQueue) getEffectiveCheckInterval() time.Duration {
-	fallback := config.GetTimeBetweenChecks()
-	client, err := rpq.clientOrErr()
-	if err != nil {
-		return fallback
-	}
-	ctx := rpq.baseContext()
-
-	raw, err := client.Get(ctx, queueRescheduleStateKey).Result()
-	if err != nil {
-		return fallback
-	}
-	return parseIntervalStateMillis(raw, fallback)
-}
-
-func parseIntervalStateMillis(raw string, fallback time.Duration) time.Duration {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return fallback
-	}
-
-	ms, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || ms <= 0 {
-		return fallback
-	}
-	return time.Duration(ms) * time.Millisecond
 }
 
 func marshalQueuedProxy(proxy domain.Proxy) ([]byte, error) {
@@ -950,10 +878,7 @@ func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {
 		return 0, err
 	}
 	ctx := rpq.baseContext()
-	interval := rpq.getEffectiveCheckInterval()
-	if interval <= 0 {
-		interval = time.Second
-	}
+	interval := requeueAllWindow(checkpace.Current())
 
 	const batchSize int64 = 500
 
@@ -1004,38 +929,19 @@ func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {
 	return total, nil
 }
 
+// requeueAllWindow spreads every route over the fastest workspace cadence, so
+// no route waits longer than it would have, bounded to avoid a burst.
+func requeueAllWindow(pace *checkpace.Snapshot) time.Duration {
+	if pace == nil || pace.FastestCheckInterval <= 0 {
+		return checkpace.FallbackInterval
+	}
+	return min(max(pace.FastestCheckInterval, requeueAllMinimumWindow), checkpace.MaxRouteInterval)
+}
+
 func (rpq *RedisProxyQueue) Close() error {
 	return support.CloseRedisClient()
 }
 
-func (rpq *RedisProxyQueue) Reschedule(interval time.Duration) error {
-	if rpq == nil {
-		return errors.New("redis proxy queue is nil")
-	}
-
-	client, err := rpq.clientOrErr()
-	if err != nil {
-		return err
-	}
-	ctx := rpq.baseContext()
-
-	if interval <= 0 {
-		interval = time.Second
-	}
-
-	if err := client.Set(ctx, queueRescheduleStateKey, strconv.FormatInt(interval.Milliseconds(), 10), 0).Err(); err != nil {
-		return fmt.Errorf("reschedule: failed to persist interval state: %w", err)
-	}
-
-	// Existing queue members keep their current due times and converge naturally
-	// to the new interval as they are popped and requeued.
-	if err := rpq.refreshQueueHeads(); err != nil {
-		return fmt.Errorf("reschedule: failed to refresh queue heads: %w", err)
-	}
-
-	log.Debug("proxy queue interval updated; existing entries converge lazily", "interval", interval)
-	return nil
-}
 func parseProxyPopResult(result interface{}) (proxyPopResult, error) {
 	resSlice, ok := result.([]interface{})
 	if !ok {

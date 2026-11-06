@@ -9,6 +9,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/auth"
+	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -205,4 +206,73 @@ func parsePositivePathUint(w http.ResponseWriter, r *http.Request, name string) 
 		return 0, false
 	}
 	return uint(parsed), true
+}
+
+// updateWorkspaceAllowances lets a global administrator set one workspace's
+// monthly check and scrape allowances. Zero inherits the instance default.
+func updateWorkspaceAllowances(w http.ResponseWriter, r *http.Request) {
+	workspaceID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil || workspaceID == 0 {
+		writeError(w, "Invalid workspace id", http.StatusBadRequest)
+		return
+	}
+	var payload dto.WorkspaceAllowanceUpdateRequest
+	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
+		return
+	}
+	if err := database.UpdateWorkspaceAllowances(r.Context(), uint(workspaceID), payload); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			writeError(w, "Workspace not found", http.StatusNotFound)
+			return
+		}
+		log.Error("update workspace allowances", "workspace_id", workspaceID, "error", err)
+		writeError(w, "Failed to update workspace allowances", http.StatusInternalServerError)
+		return
+	}
+	checkpace.RequestRefresh()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"workspace_id":      workspaceID,
+		"monthly_checks":    payload.MonthlyChecks,
+		"monthly_scrapes":   payload.MonthlyScrapes,
+		"unlimited_checks":  payload.UnlimitedChecks,
+		"unlimited_scrapes": payload.UnlimitedScrapes,
+	})
+}
+
+// updateWorkspaceCadence lets an operator choose fixed check and scrape
+// intervals for the selected workspace, or zero for automatic spreading. A
+// fixed interval runs until the monthly allowance is used up; the response
+// warns when the interval needs more than the allowance. A workspace without a
+// monthly limit must choose fixed intervals.
+func updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
+	workspaceID, err := workspaceIDFromRequest(r)
+	if err != nil {
+		writeWorkspaceAccessError(w, err)
+		return
+	}
+	var payload dto.WorkspaceCadenceUpdateRequest
+	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
+		return
+	}
+	if err := database.UpdateWorkspaceCadence(r.Context(), workspaceID, payload); err != nil {
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			writeError(w, "Workspace not found", http.StatusNotFound)
+		case errors.Is(err, database.ErrCheckIntervalTooShort), errors.Is(err, database.ErrScrapeIntervalTooShort),
+			errors.Is(err, database.ErrIntervalTooLong), errors.Is(err, database.ErrUnlimitedNeedsInterval):
+			writeError(w, err.Error(), http.StatusBadRequest)
+		default:
+			log.Error("update workspace cadence", "workspace_id", workspaceID, "error", err)
+			writeError(w, "Failed to update workspace intervals", http.StatusInternalServerError)
+		}
+		return
+	}
+	checkpace.RequestRefresh()
+	var subscription domain.WorkspaceSubscription
+	database.DB.WithContext(r.Context()).Where("workspace_id = ?", workspaceID).Limit(1).Find(&subscription)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"check_interval_seconds":  payload.CheckIntervalSeconds,
+		"scrape_interval_seconds": payload.ScrapeIntervalSeconds,
+		"warnings":                database.CadenceWarnings(workspaceID, subscription, payload),
+	})
 }

@@ -12,6 +12,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
+	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -152,18 +153,19 @@ func getAutoThreads(cfg config.Config) uint32 {
 
 	perInstanceProxies := (totalProxies + int64(activeInstances) - 1) / int64(activeInstances)
 
-	checkingPeriodMs := config.CalculateMillisecondsOfCheckingPeriod(cfg.Checker.CheckerTimer)
-	protocolsCount := 4
-	retries := cfg.Checker.Retries
-	timeoutMs := cfg.Checker.Timeout
-
-	numerator := uint64(perInstanceProxies) * uint64(protocolsCount) * uint64(retries+1) * uint64(timeoutMs)
-	if checkingPeriodMs == 0 {
-		log.Warn("Checking Period is set to 0 Milliseconds. Setting it to 1 Day automatically")
-		checkingPeriodMs = 86400000
+	// Workspace allowances set the planned check rate. Before the first
+	// allowance snapshot, assume one protocol per route at the fallback cadence.
+	checksPerSecond := float64(totalProxies) / checkpace.FallbackInterval.Seconds()
+	if pace := currentPace(); pace != nil {
+		checksPerSecond = pace.ChecksPerSecond
 	}
-
-	requiredThreads := (numerator + checkingPeriodMs - 1) / checkingPeriodMs
+	perInstanceRate := checksPerSecond / float64(activeInstances)
+	worstCaseSeconds := float64(cfg.Checker.Retries+1) * float64(cfg.Checker.Timeout) / 1000
+	required := math.Ceil(perInstanceRate * worstCaseSeconds)
+	if required > math.MaxUint32 {
+		required = math.MaxUint32
+	}
+	requiredThreads := uint64(required)
 
 	if requiredThreads == 0 && perInstanceProxies > 0 {
 		requiredThreads = 1
@@ -209,7 +211,17 @@ func work(parent context.Context) {
 		var payloadChanged bool
 		proxy, payloadChanged = refreshProxyWorkspaces(proxy)
 
-		judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy)
+		dueProxy, anyDue := selectDueWorkspaces(proxy, scheduledTime)
+		if !anyDue {
+			// Every owner is between cadence boundaries or out of allowance.
+			// Revisit later without outbound requests or database work.
+			if err := requeueCheckedProxy(proxy, scheduledTime, payloadChanged); err != nil {
+				log.Error("failed to requeue proxy without due workspaces", "proxy_id", proxy.ID, "error", err)
+			}
+			continue
+		}
+
+		judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries := buildRequestAssignments(dueProxy)
 		saveResponses := config.GetConfig().Checker.SaveResponses
 		if err := processJudgeAssignments(proxy, judgeRequests, workspaceSuccess, maxTimeout, maxRetries, saveResponses); err != nil {
 			continue
@@ -257,6 +269,39 @@ func work(parent context.Context) {
 		}
 	}
 }
+
+// selectDueWorkspaces keeps the owners whose monthly allowance cadence is due
+// this cycle. The route's fastest owner is always due, so single-owner routes
+// return the proxy unchanged without allocating. The decision uses only the
+// in-memory allowance snapshot: no Redis, database, JSON or cryptographic work.
+func selectDueWorkspaces(proxy domain.Proxy, scheduled time.Time) (domain.Proxy, bool) {
+	pace := currentPace()
+	if pace == nil || len(proxy.Workspaces) == 0 {
+		return proxy, len(proxy.Workspaces) > 0
+	}
+	routeInterval := pace.RouteCheckInterval(proxy.Workspaces)
+	var due []domain.Workspace
+	for index, workspace := range proxy.Workspaces {
+		if pace.CheckDue(workspace.ID, proxy.ID, scheduled, routeInterval) {
+			if due != nil {
+				due = append(due, workspace)
+			}
+			continue
+		}
+		if due == nil {
+			due = make([]domain.Workspace, index, len(proxy.Workspaces))
+			copy(due, proxy.Workspaces[:index])
+		}
+	}
+	if due == nil {
+		return proxy, true
+	}
+	filtered := proxy
+	filtered.Workspaces = due
+	return filtered, len(due) > 0
+}
+
+var currentPace = checkpace.Current
 
 // requeueCheckedProxy rewrites the payload only when queued ownership changed.
 // Refreshed checker settings live in runtime snapshots and do not need a payload

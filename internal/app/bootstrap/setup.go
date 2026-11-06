@@ -12,6 +12,7 @@ import (
 
 	"magpie/internal/blacklist"
 	"magpie/internal/checkerconfig"
+	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -98,8 +99,6 @@ func (running *Runtime) setup(ctx context.Context) error {
 	}
 	running.producers.start(maintainRuntimeCaches)
 	config.SetBetweenTime()
-	running.producers.start(proxyqueue.PublicProxyQueue.StartIntervalUpdates)
-	running.producers.start(sitequeue.PublicScrapeSiteQueue.StartIntervalUpdates)
 
 	if err := blacklist.Initialize(ctx); err != nil {
 		log.Warn("Blacklist initialisation failed", "error", err)
@@ -121,6 +120,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	startCheckPacing(ctx, running)
 
 	running.producers.start(recoverRedisSynchronization)
 
@@ -244,6 +244,54 @@ func (running *Runtime) setup(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// startCheckPacing publishes workspace cadences before any route is queued,
+// so startup imports already spread routes over their workspaces' intervals.
+func startCheckPacing(ctx context.Context, running *Runtime) {
+	convertLegacyCadence(ctx)
+	if err := checkpace.Refresh(ctx, database.LoadWorkspaceAllowances); err != nil {
+		log.Warn("initial workspace check allowance load failed; using fallback cadence", "error", err)
+	}
+	config.OnConfigApplied(checkpace.RequestRefresh)
+	running.producers.start(func(ctx context.Context) {
+		checkpace.Run(ctx, database.LoadWorkspaceAllowances)
+	})
+}
+
+// convertLegacyCadence replaces the fixed timers of an older settings file
+// with instance allowances that keep every workspace at its previous cadence.
+func convertLegacyCadence(ctx context.Context) {
+	legacy := config.PendingLegacyCadence()
+	if legacy == nil {
+		return
+	}
+	period := func(timer *config.Timer) time.Duration {
+		if timer == nil {
+			return 0
+		}
+		return config.CalculateBetweenTime(*timer)
+	}
+	checks, scrapes, err := database.LegacyCadenceAllowances(ctx, period(legacy.CheckerTimer), period(legacy.ScraperTimer))
+	if err != nil {
+		log.Warn("convert legacy checker and scraper timers", "error", err)
+		return
+	}
+	cfg := config.GetConfig()
+	if legacy.CheckerTimer != nil {
+		cfg.Checker.MonthlyChecksPerWorkspace = checks
+	}
+	if legacy.ScraperTimer != nil {
+		cfg.Scraper.MonthlyScrapesPerWorkspace = scrapes
+	}
+	if err := config.SetConfig(cfg); err != nil {
+		log.Warn("save converted check allowances", "error", err)
+		return
+	}
+	config.ClearLegacyCadence()
+	log.Info("Converted legacy checker and scraper timers to monthly allowances",
+		"monthly_checks_per_workspace", cfg.Checker.MonthlyChecksPerWorkspace,
+		"monthly_scrapes_per_workspace", cfg.Scraper.MonthlyScrapesPerWorkspace)
 }
 
 func StartupQueueBootstrapCompleted() bool {

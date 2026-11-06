@@ -73,6 +73,10 @@ type workspaceSubscriptionMigrationRow struct {
 	IncludedOperators           uint32 `gorm:"not null;default:0"`
 	StatisticsRetentionDays     uint32 `gorm:"not null;default:0"`
 	MinimumCheckIntervalSeconds uint32 `gorm:"not null;default:0"`
+	MonthlyChecks               uint64 `gorm:"not null;default:0"`
+	MonthlyScrapes              uint64 `gorm:"not null;default:0"`
+	UnlimitedChecks             bool   `gorm:"not null;default:false"`
+	UnlimitedScrapes            bool   `gorm:"not null;default:false"`
 	BillingProvider             string `gorm:"size:32;default:''"`
 	ProviderCustomerID          string `gorm:"size:191;default:''"`
 	ProviderSubscriptionID      string `gorm:"size:191;default:''"`
