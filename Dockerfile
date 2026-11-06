@@ -1,5 +1,6 @@
 ###############  Stage 1 – Go build  ###############
-FROM golang:1.27.3-alpine AS backend-build
+# Run the compiler natively and cross-compile for the target architecture.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS backend-build
 
 ARG BUILD_VERSION=dev
 ARG BUILD_TIME=unknown
