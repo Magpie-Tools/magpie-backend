@@ -63,13 +63,39 @@ is retried unchanged before new usage is batched, because its commit may have
 succeeded without an acknowledgement. The database records each process's
 last applied sequence in `workspace_usage_flushes` within the same
 transaction and skips any batch at or below it, so a replay never charges
-twice. Marks of processes that stopped flushing more than seven days ago are
-deleted at startup. While a batch is unacknowledged, the pacer keeps
-its current snapshot instead of loading usage, because a load could count the
-committed batch both in the database and in the local counters. The kept
-snapshot still counts every local request, and the flush that finally
-commits the batch reloads at once. `check_attempts`, written by the statistics pipeline,
-remains an analytics counter and is not used for allowances.
+twice. While a batch is unacknowledged, the pacer keeps its current snapshot
+instead of loading usage, because a load could count the committed batch both
+in the database and in the local counters. The kept snapshot still counts
+every local request, and the flush that finally commits the batch reloads at
+once. `check_attempts`, written by the statistics pipeline, remains an
+analytics counter and is not used for allowances.
+
+### Unwritten usage
+
+A failed batch is resent every 10 seconds, without limit, until it commits.
+Counters are fixed-size per workspace and month, so a long outage grows
+memory with workspaces × unwritten months, not with requests or retries. To
+bound that growth and the spending a frozen snapshot allows, an instance
+pauses checking once usage has stayed unwritten for `CHECK_USAGE_PAUSE_AFTER`
+(default 15 minutes; `0` never pauses). Paused routes are not due and no
+request is admitted. Counting and resending continue, nothing is discarded,
+and the first successful write resumes checking. After a minute of failed
+writes, `/readyz` reports a degraded `check_usage` component, still ready;
+an error is logged when checking pauses and an info line when it resumes.
+
+While the snapshot is from an earlier month, which lasts up to a minute after
+midnight or longer during an outage, the last known monthly allowance applies
+to this instance's own usage in the new month, so the soft limit still bounds
+spending. Unlimited workspaces stay unlimited.
+
+Replay marks must outlive every resend. Each process registers its mark, with
+sequence 0, in its own acknowledged write before its first batch, and an idle
+process writes an empty batch once a day to refresh it. Startup deletes marks
+not written for 30 days. A mark missing at write time can therefore only have
+been pruned. A first send then recreates it, since that batch cannot have been
+applied. A resend instead fails with `checkpace.ErrBatchOutcomeUnknown` and is
+dropped: it may already be in the database, and losing it is preferred to
+charging it twice. Reaching this needs a 30-day outage on a live process.
 
 By default, cadence is derived rather than configured. Every minute, each instance loads
 allowances and current-month usage and publishes an immutable snapshot
@@ -219,7 +245,9 @@ milliseconds.
   overshoot by one per worker. Other instances' checks are seen at the next
   snapshot refresh, so a workspace checked by several instances can overshoot
   by about one minute of their checks. Requests are charged before they are
-  sent, so a crashed instance loses at most its last 10 seconds of charges.
+  sent, so a crashed instance loses the usage charged since its last
+  successful write: normally at most 10 seconds, and up to
+  `CHECK_USAGE_PAUSE_AFTER` plus the time paused while writes fail.
 - A workspace that runs out during a protocol test's retries has paid for the
   requests already sent and receives no result for that test.
 - On a shared route, the gap between a cycle's due time and its completion is

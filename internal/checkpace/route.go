@@ -41,8 +41,12 @@ func (s *Snapshot) RouteCheckInterval(workspaces []domain.Workspace) time.Durati
 // fastest owner is due on every cycle. A slower owner is due when one of its
 // own cadence boundaries fell inside the cycle's window, so it is checked about
 // once per its own interval without per-workspace state. Each route has its
-// own phase, which spreads a workspace's routes across its interval.
+// own phase, which spreads a workspace's routes across its interval. Nothing
+// is due while checking is paused because usage could not be written.
 func (s *Snapshot) CheckDue(workspaceID uint, routeID uint64, scheduled time.Time, routeInterval time.Duration) bool {
+	if checksPaused() {
+		return false
+	}
 	if s == nil {
 		return true
 	}
@@ -50,7 +54,7 @@ func (s *Snapshot) CheckDue(workspaceID uint, routeID uint64, scheduled time.Tim
 	if pace == nil {
 		return true
 	}
-	if pace.checksExhausted() {
+	if pace.exhaustedIn(monthOf(scheduled)) {
 		return false
 	}
 	return due(pace.CheckInterval, routeInterval, scheduled, routeID, workspaceID)

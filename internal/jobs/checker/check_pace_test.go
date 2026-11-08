@@ -114,12 +114,12 @@ func BenchmarkSelectDueWorkspaces(b *testing.B) {
 			previous := currentPace
 			currentPace = func() *checkpace.Snapshot { return snapshot }
 			b.Cleanup(func() { currentPace = previous })
-			scheduled := now
+			// Cycles stay within one month, as live routes do.
+			scheduled, _ := checkpace.UsagePeriod(now)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = selectDueWorkspaces(proxy, scheduled)
-				scheduled = scheduled.Add(5 * time.Minute)
+				_, _ = selectDueWorkspaces(proxy, scheduled.Add(time.Duration(i%8000)*5*time.Minute))
 			}
 		})
 	}

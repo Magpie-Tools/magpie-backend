@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -249,6 +251,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 // startCheckPacing publishes workspace cadences before any route is queued,
 // so startup imports already spread routes over their workspaces' intervals.
 func startCheckPacing(ctx context.Context, running *Runtime) {
+	checkpace.SetPauseAfter(checkUsagePauseAfter())
 	checkpace.Configure(checkpace.Store{
 		Load:       database.LoadWorkspaceAllowances,
 		FlushUsage: database.FlushWorkspaceCheckUsage,
@@ -262,6 +265,26 @@ func startCheckPacing(ctx context.Context, running *Runtime) {
 	}
 	config.OnConfigApplied(checkpace.RequestRefresh)
 	running.producers.start(checkpace.Run)
+}
+
+// envCheckUsagePauseAfter sets how long check usage may stay unwritten before
+// this instance pauses checking. Zero never pauses.
+const envCheckUsagePauseAfter = "CHECK_USAGE_PAUSE_AFTER"
+
+func checkUsagePauseAfter() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(envCheckUsagePauseAfter))
+	if raw == "" {
+		return checkpace.DefaultPauseAfter
+	}
+	if raw == "0" {
+		return 0
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value < 0 {
+		log.Warn("invalid "+envCheckUsagePauseAfter+"; using the default", "value", raw, "default", checkpace.DefaultPauseAfter)
+		return checkpace.DefaultPauseAfter
+	}
+	return value
 }
 
 // convertLegacyCadence keeps an upgraded installation at the cadence of its

@@ -416,6 +416,7 @@ func Run(ctx context.Context) {
 				log.Warn("flush workspace check usage", "error", err)
 			}
 			cancel()
+			logPauseOnce()
 		case <-refreshCh:
 			if time.Since(last) < 5*time.Second {
 				continue

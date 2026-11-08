@@ -9,6 +9,7 @@ import (
 
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/app/version"
+	"magpie/internal/checkpace"
 	"magpie/internal/database"
 	"magpie/internal/support"
 )
@@ -67,8 +68,9 @@ func readyz(w http.ResponseWriter, r *http.Request) {
 	redisRequired := !support.GetEnvBool(envReadyzAllowRedisDegraded, false)
 	redisComponent := checkRedisComponent(ctx)
 	components := map[string]probeComponent{
-		"database": checkDatabaseComponent(ctx),
-		"redis":    redisComponent,
+		"database":    checkDatabaseComponent(ctx),
+		"redis":       redisComponent,
+		"check_usage": checkUsageComponent(),
 		"startup_queue_bootstrap": checkStartupBootstrapComponent(
 			redisComponent,
 			redisRequired,
@@ -82,6 +84,7 @@ func readyz(w http.ResponseWriter, r *http.Request) {
 		(components["redis"].Status == componentStatusUp || !redisRequired)
 
 	degraded := components["redis"].Status == componentStatusDegraded ||
+		components["check_usage"].Status == componentStatusDegraded ||
 		components["startup_queue_bootstrap"].Status == componentStatusDegraded
 
 	responseStatus := http.StatusOK
@@ -205,4 +208,21 @@ func classifyRedisError(err error, lastErr string) string {
 	default:
 		return "unavailable"
 	}
+}
+
+// checkUsageComponent reports whether this instance writes metered check
+// usage. Failing writes degrade readiness without making the instance
+// unready: usage stays counted in memory and is retried, and checking pauses
+// by itself after CHECK_USAGE_PAUSE_AFTER.
+func checkUsageComponent() probeComponent {
+	health := checkpace.Health()
+	if health.Healthy {
+		return probeComponent{Status: componentStatusUp}
+	}
+	details := "check usage writes failing since " + health.FailingSince.Format(time.RFC3339)
+	if health.Paused {
+		details += "; checking is paused until a write succeeds"
+	}
+	// The error itself is logged, not exposed: it may name internal hosts.
+	return probeComponent{Status: componentStatusDegraded, Details: details}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"magpie/internal/checkpace"
@@ -256,7 +257,7 @@ func FlushWorkspaceCheckUsage(ctx context.Context, batch checkpace.UsageBatch) e
 }
 
 func flushWorkspaceCheckUsage(db *gorm.DB, batch checkpace.UsageBatch) error {
-	if db == nil || len(batch.Usage) == 0 {
+	if db == nil {
 		return nil
 	}
 	if batch.Instance == "" || batch.Sequence == 0 {
@@ -273,9 +274,7 @@ func flushWorkspaceCheckUsage(db *gorm.DB, batch checkpace.UsageBatch) error {
 			Checks: delta.Attempts, ProtocolChecks: delta.ProtocolChecks,
 		})
 	}
-	if len(periods) == 0 {
-		return nil
-	}
+	// An empty batch only refreshes the replay mark of an idle process.
 	// A consistent row order keeps concurrent flushers from deadlocking.
 	sort.Slice(periods, func(i, j int) bool {
 		if periods[i].WorkspaceID != periods[j].WorkspaceID {
@@ -283,21 +282,37 @@ func flushWorkspaceCheckUsage(db *gorm.DB, batch checkpace.UsageBatch) error {
 		}
 		return periods[i].PeriodStart.Before(periods[j].PeriodStart)
 	})
+	if err := registerUsageFlushInstance(db, batch.Instance); err != nil {
+		return err
+	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		// The mark row serializes one process's batches, and a replayed
 		// sequence updates nothing.
-		mark := tx.Model(&domain.WorkspaceUsageFlush{}).Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "instance"}},
-			DoUpdates: clause.Assignments(map[string]any{
-				"sequence":   gorm.Expr("EXCLUDED.sequence"),
-				"updated_at": gorm.Expr("EXCLUDED.updated_at"),
-			}),
-			Where: clause.Where{Exprs: []clause.Expression{gorm.Expr("workspace_usage_flushes.sequence < EXCLUDED.sequence")}},
-		}).Create(&domain.WorkspaceUsageFlush{Instance: batch.Instance, Sequence: batch.Sequence, UpdatedAt: time.Now().UTC()})
+		now := time.Now().UTC()
+		mark := tx.Model(&domain.WorkspaceUsageFlush{}).
+			Where("instance = ? AND sequence < ?", batch.Instance, batch.Sequence).
+			Updates(map[string]any{"sequence": batch.Sequence, "updated_at": now})
 		if mark.Error != nil {
 			return mark.Error
 		}
 		if mark.RowsAffected == 0 {
+			var marks int64
+			if err := tx.Model(&domain.WorkspaceUsageFlush{}).Where("instance = ?", batch.Instance).Count(&marks).Error; err != nil {
+				return err
+			}
+			if marks > 0 {
+				return nil // already applied
+			}
+			// The mark was registered and later pruned. A first send cannot
+			// have been applied before, but a resend may have been.
+			if batch.Resend {
+				return checkpace.ErrBatchOutcomeUnknown
+			}
+			if err := tx.Create(&domain.WorkspaceUsageFlush{Instance: batch.Instance, Sequence: batch.Sequence, UpdatedAt: now}).Error; err != nil {
+				return err
+			}
+		}
+		if len(periods) == 0 {
 			return nil
 		}
 		rows := workspaceUsageDeltaRows(periods)
@@ -313,9 +328,30 @@ func flushWorkspaceCheckUsage(db *gorm.DB, batch checkpace.UsageBatch) error {
 	})
 }
 
-// workspaceUsageFlushRetention is how long a stopped process's last batch
-// mark is kept. Its batches are retried for seconds, never for days.
-const workspaceUsageFlushRetention = 7 * 24 * time.Hour
+// registeredUsageFlushInstances holds the processes whose replay mark was
+// written in this process. Each mark is registered once, acknowledged, before
+// its first batch, so a mark missing later can only have been pruned.
+var registeredUsageFlushInstances sync.Map
+
+func registerUsageFlushInstance(db *gorm.DB, instance string) error {
+	if _, ok := registeredUsageFlushInstances.Load(instance); ok {
+		return nil
+	}
+	err := db.Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&domain.WorkspaceUsageFlush{Instance: instance, Sequence: 0, UpdatedAt: time.Now().UTC()}).Error
+	if err != nil {
+		return fmt.Errorf("register check usage instance: %w", err)
+	}
+	registeredUsageFlushInstances.Store(instance, struct{}{})
+	return nil
+}
+
+// workspaceUsageFlushRetention is how long a replay mark is kept after its
+// last write. A process resends a batch until it succeeds, so a mark can be
+// needed for as long as an outage lasts. A resend that finds its mark pruned
+// is dropped rather than applied twice (checkpace.ErrBatchOutcomeUnknown);
+// this retention makes that practically unreachable.
+const workspaceUsageFlushRetention = 30 * 24 * time.Hour
 
 // PruneWorkspaceUsageFlushes deletes batch marks of processes that stopped
 // flushing long ago. Each process start adds one mark; this runs at startup.

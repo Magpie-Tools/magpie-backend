@@ -25,6 +25,8 @@ type fakeStore struct {
 	// when the acknowledgement of a commit is lost.
 	failFlush bool
 	loseAck   bool
+	// unknown answers like a database whose replay mark was pruned.
+	unknown bool
 }
 
 func (f *fakeStore) load(_ context.Context, now time.Time) ([]Allowance, error) {
@@ -38,6 +40,9 @@ func (f *fakeStore) flush(_ context.Context, batch UsageBatch) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.batches = append(f.batches, batch)
+	if f.unknown {
+		return ErrBatchOutcomeUnknown
+	}
 	if f.failFlush {
 		return errors.New("database unavailable")
 	}
@@ -252,6 +257,120 @@ func TestUsageStaysInTheMonthItWasMade(t *testing.T) {
 	meter.mu.Unlock()
 	if months != 1 {
 		t.Fatalf("%d monthly counters kept, want only the current month", months)
+	}
+}
+
+func TestChecksPauseWhileUsageStaysUnwrittenAndResume(t *testing.T) {
+	store := useFakeStore(t, 1_000)
+	if err := Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	SetPauseAfter(time.Minute)
+	store.failFlush = true
+	check(7, 2)
+	if err := Flush(context.Background()); err == nil {
+		t.Fatal("expected the flush to fail")
+	}
+	if health := Health(); !health.Healthy || health.Paused || health.FailingSince.IsZero() {
+		t.Fatalf("health right after one failure = %+v; want healthy, failing, not paused", health)
+	}
+	if check(7, 1) != 1 {
+		t.Fatal("checking paused before the limit")
+	}
+	// Writes have now failed for longer than the limit.
+	failingSince.Store(time.Now().Add(-2 * time.Minute).UnixNano())
+	if health := Health(); health.Healthy || !health.Paused || health.LastError == "" {
+		t.Fatalf("health after the limit = %+v; want unhealthy and paused", health)
+	}
+	if check(7, 1) != 0 || Current().CheckDue(7, 1, time.Now(), time.Minute) {
+		t.Fatal("checking continued after usage stayed unwritten past the limit")
+	}
+	// Nothing was discarded, and the first successful write resumes checking.
+	store.failFlush = false
+	if err := Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.total(7, time.Now()).Attempts; got != 3 {
+		t.Fatalf("wrote %d checks after recovery, want 3", got)
+	}
+	if health := Health(); !health.Healthy || health.Paused {
+		t.Fatalf("health after recovery = %+v", health)
+	}
+	if check(7, 1) != 1 {
+		t.Fatal("checking did not resume after recovery")
+	}
+
+	// A limit of zero never pauses.
+	SetPauseAfter(0)
+	failingSince.Store(time.Now().Add(-24 * time.Hour).UnixNano())
+	if check(7, 1) != 1 {
+		t.Fatal("checking paused with pausing disabled")
+	}
+}
+
+func TestStaleSnapshotKeepsLastKnownAllowanceInANewMonth(t *testing.T) {
+	useFakeStore(t, 3)
+	if err := Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := Current()
+	// Writes fail across midnight, so the snapshot stays on last month.
+	nextMonth := snapshot.PeriodEnd.Add(time.Hour)
+	admitted := 0
+	for range 5 {
+		if snapshot.ChargeRequest(7, true, nextMonth) {
+			admitted++
+		}
+	}
+	if admitted != 3 {
+		t.Fatalf("admitted %d requests in the new month with a last known allowance of 3", admitted)
+	}
+	if snapshot.CheckDue(7, 1, nextMonth, time.Minute) {
+		t.Fatal("a workspace at its last known allowance in the new month is still due")
+	}
+	// The new month's usage is its own: last month's counter is untouched.
+	if pace, _ := snapshot.Pace(7); pace.CurrentUsedChecks() != 0 {
+		t.Fatalf("new-month requests counted against the old month: %d", pace.CurrentUsedChecks())
+	}
+}
+
+func TestIdleProcessRefreshesItsReplayMark(t *testing.T) {
+	store := useFakeStore(t, 1_000)
+	if err := Flush(context.Background()); err != nil || len(store.batches) != 0 {
+		t.Fatalf("an idle flush wrote %d batches: %v", len(store.batches), err)
+	}
+	refreshMu.Lock()
+	lastWritten = time.Now().Add(-markKeepAlive - time.Minute)
+	refreshMu.Unlock()
+	if err := Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.batches) != 1 || len(store.batches[0].Usage) != 0 || store.batches[0].Sequence != 1 {
+		t.Fatalf("batches = %+v; want one empty keepalive batch", store.batches)
+	}
+}
+
+func TestBatchWithUnknownOutcomeIsDroppedNotChargedTwice(t *testing.T) {
+	store := useFakeStore(t, 1_000)
+	check(7, 2)
+	store.failFlush = true
+	_ = Flush(context.Background())
+	// Much later, the database no longer has the replay mark.
+	store.failFlush, store.unknown = false, true
+	if err := Flush(context.Background()); err != nil {
+		t.Fatalf("an unknown outcome should resolve the batch: %v", err)
+	}
+	if !store.batches[1].Resend || !Health().Healthy {
+		t.Fatalf("resend flag = %v, health = %+v", store.batches[1].Resend, Health())
+	}
+	store.unknown = false
+	check(7, 1)
+	if err := Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	last := store.batches[len(store.batches)-1]
+	if last.Resend || len(last.Usage) != 1 || last.Usage[0].Attempts != 1 {
+		t.Fatalf("next batch = %+v; want only the new request", last)
 	}
 }
 

@@ -301,6 +301,48 @@ func testReplayedUsageBatch(t *testing.T, db *gorm.DB) {
 	}
 }
 
+func TestResendAfterItsReplayMarkWasPrunedIsNotApplied(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) { testPrunedReplayMark(t, setupRotatingProxyTestDB(t), "pruned-sqlite") })
+	t.Run("postgres", func(t *testing.T) { testPrunedReplayMark(t, setupProxyIngestionPostgresTest(t), "pruned-postgres") })
+}
+
+func testPrunedReplayMark(t *testing.T, db *gorm.DB, instance string) {
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceUsageFlush{}); err != nil {
+		t.Fatal(err)
+	}
+	thisMonth, _ := workspaceUsageMonth(time.Now())
+	usage := []checkpace.CheckUsage{{WorkspaceID: 43, PeriodStart: thisMonth, Attempts: 5, ProtocolChecks: 1}}
+	checks := func() uint64 {
+		var period domain.WorkspaceUsagePeriod
+		db.Where("workspace_id = 43").Limit(1).Find(&period)
+		return period.Checks
+	}
+	prune := func() {
+		if err := db.Where("instance = ?", instance).Delete(&domain.WorkspaceUsageFlush{}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An empty keepalive batch registers and refreshes the mark only.
+	if err := flushWorkspaceCheckUsage(db, checkpace.UsageBatch{Instance: instance, Sequence: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var mark domain.WorkspaceUsageFlush
+	if err := db.First(&mark, "instance = ?", instance).Error; err != nil || mark.Sequence != 1 || checks() != 0 {
+		t.Fatalf("keepalive left mark %+v and %d checks: %v", mark, checks(), err)
+	}
+	// A first send after its mark was pruned cannot have been applied.
+	prune()
+	if err := flushWorkspaceCheckUsage(db, checkpace.UsageBatch{Instance: instance, Sequence: 2, Usage: usage}); err != nil {
+		t.Fatal(err)
+	}
+	// A resend after its mark was pruned may have been applied: refuse it.
+	prune()
+	err := flushWorkspaceCheckUsage(db, checkpace.UsageBatch{Instance: instance, Sequence: 2, Usage: usage, Resend: true})
+	if !errors.Is(err, checkpace.ErrBatchOutcomeUnknown) || checks() != 5 {
+		t.Fatalf("pruned resend: err = %v, checks = %d; want ErrBatchOutcomeUnknown and 5", err, checks())
+	}
+}
+
 // useCheckerSnapshot publishes a checker snapshot for one workspace until the
 // test ends.
 func useCheckerSnapshot(t *testing.T, workspaceID uint, snapshot *checkerconfig.Workspace) {
