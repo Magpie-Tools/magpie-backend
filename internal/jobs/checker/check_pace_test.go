@@ -1,12 +1,16 @@
 package checker
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"magpie/internal/checkpace"
 	"magpie/internal/domain"
+	proxyqueue "magpie/internal/jobs/queue/proxy"
+	"magpie/internal/support"
 )
 
 func withPace(t *testing.T, snapshot *checkpace.Snapshot) {
@@ -99,7 +103,14 @@ func BenchmarkSelectDueWorkspaces(b *testing.B) {
 				allowances = append(allowances, checkpace.Allowance{WorkspaceID: uint(i), MonthlyChecks: uint64(remaining / cadence), ChecksPerCycle: 1})
 				proxy.Workspaces = append(proxy.Workspaces, domain.Workspace{ID: uint(i)})
 			}
-			snapshot := checkpace.Compute(now, allowances)
+			// Refresh attaches the check meter, so the measurement includes
+			// reading each owner's metered usage.
+			checkpace.Configure(checkpace.Store{Load: func(context.Context, time.Time) ([]checkpace.Allowance, error) { return allowances, nil }})
+			if err := checkpace.Refresh(context.Background()); err != nil {
+				b.Fatal(err)
+			}
+			snapshot := checkpace.Current()
+			b.Cleanup(func() { checkpace.Configure(checkpace.Store{}); checkpace.Publish(nil) })
 			previous := currentPace
 			currentPace = func() *checkpace.Snapshot { return snapshot }
 			b.Cleanup(func() { currentPace = previous })
@@ -111,5 +122,55 @@ func BenchmarkSelectDueWorkspaces(b *testing.B) {
 				scheduled = scheduled.Add(5 * time.Minute)
 			}
 		})
+	}
+}
+
+func TestEveryRequestIsChargedEvenWhenStatisticsAreDropped(t *testing.T) {
+	originalCheck, originalEnqueue, originalCharge := checkProxyWithRetries, enqueueProxyStatistic, chargeChecks
+	t.Cleanup(func() {
+		checkProxyWithRetries, enqueueProxyStatistic, chargeChecks = originalCheck, originalEnqueue, originalCharge
+	})
+	charged := map[uint]uint64{}
+	chargeChecks = func(workspaceID uint, requests uint64) { charged[workspaceID] += requests }
+	// The statistics pipeline is overloaded and drops every result.
+	enqueueProxyStatistic = func(domain.ProxyStatistic, []uint) {}
+	// Two retries after the first request: three requests.
+	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8) (string, error, int64, uint8) {
+		return "", errors.New("timeout"), 0, 2
+	}
+	assignments := map[string]*requestAssignment{
+		"1_http_tcp": {
+			judge: &domain.Judge{ID: 1}, proxyProtocol: "http", transportProtocol: support.TransportTCP, protocolID: 1,
+			// Workspace 4 has two profiles on the same request.
+			checks: []workspaceCheck{{workspaceID: 4, regex: "a"}, {workspaceID: 5, regex: "a"}, {workspaceID: 4, regex: "b"}},
+		},
+	}
+	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, 1000, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	if charged[4] != 3 || charged[5] != 3 {
+		t.Fatalf("charged = %v, want three requests for each workspace", charged)
+	}
+
+	// A lost lease after two requests still charges the two that were sent.
+	charged = map[uint]uint64{}
+	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8) (string, error, int64, uint8) {
+		return "", errors.Join(proxyqueue.ErrProxyLeaseLost, errors.New("expired")), 0, 2
+	}
+	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, 1000, 2, false); !errors.Is(err, proxyqueue.ErrProxyLeaseLost) {
+		t.Fatalf("err = %v", err)
+	}
+	if charged[4] != 2 || charged[5] != 2 {
+		t.Fatalf("charged after a lost lease = %v, want two requests each", charged)
+	}
+}
+
+func TestChargeCheckAttemptsDoesNotAllocate(t *testing.T) {
+	originalCharge := chargeChecks
+	t.Cleanup(func() { chargeChecks = originalCharge })
+	chargeChecks = func(uint, uint64) {}
+	checks := []workspaceCheck{{workspaceID: 1}, {workspaceID: 2}, {workspaceID: 1}}
+	if allocations := testing.AllocsPerRun(100, func() { chargeCheckAttempts(checks, 3) }); allocations != 0 {
+		t.Fatalf("charging allocated %.0f times", allocations)
 	}
 }

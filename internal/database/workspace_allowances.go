@@ -33,11 +33,24 @@ func LoadWorkspaceAllowances(ctx context.Context, now time.Time) ([]checkpace.Al
 }
 
 type workspaceAllowanceUsage struct {
-	activeRoutes uint64
-	checks       uint64
-	scrapes      uint64
-	periodStart  time.Time
-	current      bool
+	activeRoutes   uint64
+	checks         uint64
+	protocolChecks uint64
+	scrapes        uint64
+	periodStart    time.Time
+	current        bool
+}
+
+// requestsPerCheck is the observed average of requests per protocol check,
+// retries included, from the latest usage period. It needs enough checks to
+// be meaningful; until then every check is assumed to need one request, and
+// recomputing from the remaining allowance corrects the difference.
+func (usage workspaceAllowanceUsage) requestsPerCheck() float64 {
+	const minimumSample = 100
+	if usage.protocolChecks < minimumSample || usage.checks < usage.protocolChecks {
+		return 1
+	}
+	return float64(usage.checks) / float64(usage.protocolChecks)
 }
 
 func loadWorkspaceAllowances(db *gorm.DB, now time.Time) ([]checkpace.Allowance, error) {
@@ -104,12 +117,16 @@ func loadWorkspaceAllowances(db *gorm.DB, now time.Time) ([]checkpace.Allowance,
 	for _, workspaceID := range workspaceIDs {
 		subscription := subscriptionByWorkspace[workspaceID]
 		used := usage[workspaceID]
+		protocolChecks, err := protocolChecksPerCycle(db, workspaceID, used.activeRoutes, now)
+		if err != nil {
+			return nil, err
+		}
 		allowance := checkpace.Allowance{
 			WorkspaceID:          workspaceID,
 			UnlimitedChecks:      subscription.ChecksUnlimited(cfg.Checker.UnlimitedMonthlyChecks),
 			UnlimitedScrapes:     subscription.ScrapesUnlimited(cfg.Scraper.UnlimitedMonthlyScrapes),
 			MonthlyChecks:        subscription.EffectiveMonthlyChecks(defaultChecks),
-			ChecksPerCycle:       checksPerCycle(workspaceID, used.activeRoutes),
+			ChecksPerCycle:       uint64(math.Ceil(float64(protocolChecks) * used.requestsPerCheck())),
 			MinimumCheckInterval: time.Duration(subscription.MinimumCheckIntervalSeconds) * time.Second,
 			MonthlyScrapes:       subscription.EffectiveMonthlyScrapes(defaultScrapes),
 			ScrapesPerCycle:      sources[workspaceID],
@@ -130,7 +147,7 @@ func loadWorkspaceAllowances(db *gorm.DB, now time.Time) ([]checkpace.Allowance,
 // count of every workspace that changed or was checked recently.
 func loadAllowanceUsage(db *gorm.DB, periodStart time.Time) (map[uint]workspaceAllowanceUsage, error) {
 	var rows []domain.WorkspaceUsagePeriod
-	if err := db.Select("workspace_id", "period_start", "active_routes", "checks", "scrapes").
+	if err := db.Select("workspace_id", "period_start", "active_routes", "checks", "protocol_checks", "scrapes").
 		Where("period_start >= ? AND period_start <= ?", periodStart.AddDate(0, -1, 0), periodStart).
 		Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load workspace usage periods: %w", err)
@@ -143,7 +160,7 @@ func loadAllowanceUsage(db *gorm.DB, periodStart time.Time) (map[uint]workspaceA
 			continue
 		}
 		usage[row.WorkspaceID] = workspaceAllowanceUsage{
-			activeRoutes: row.ActiveRoutes, checks: row.Checks, scrapes: row.Scrapes,
+			activeRoutes: row.ActiveRoutes, checks: row.Checks, protocolChecks: row.ProtocolChecks, scrapes: row.Scrapes,
 			periodStart: start, current: start.Equal(periodStart),
 		}
 	}
@@ -172,40 +189,93 @@ func countMissingActiveRoutes(db *gorm.DB, workspaceIDs []uint, usage map[uint]w
 	return nil
 }
 
-// planProtocolDeltas caches, per published checker snapshot, how many protocol
-// checks its tag-rule plans add to or remove from the default plan. Snapshots
-// are immutable, so a pointer identifies the result.
-var planProtocolDeltas sync.Map // *checkerconfig.Workspace -> int64
+// Tag rules can enable more or fewer protocols for some routes. Their effect on
+// checks per cycle depends on which of those routes are active, which needs a
+// database count. The result is cached per workspace until the checker
+// snapshot or the active route count changes, a lifecycle write on this
+// instance invalidates it, or planDeltaTTL passes (which also catches a pause
+// and an activation on another instance that leave the count unchanged).
+const planDeltaTTL = 10 * time.Minute
 
-func checksPerCycle(workspaceID uint, activeRoutes uint64) uint64 {
+type planDeltaEntry struct {
+	snapshot     *checkerconfig.Workspace
+	activeRoutes uint64
+	delta        int64
+	computedAt   time.Time
+}
+
+var planDeltas sync.Map // uint -> planDeltaEntry
+
+// invalidatePlanDeltas forgets a workspace's cached tag-rule effect after one
+// of its routes changed state.
+func invalidatePlanDeltas(workspaceID uint) { planDeltas.Delete(workspaceID) }
+
+// protocolChecksPerCycle is how many protocol checks one cycle over the
+// workspace's active routes makes: active routes × default protocols,
+// adjusted by tag rules that apply to active routes. Paused and archived
+// routes are not checked and do not count.
+func protocolChecksPerCycle(db *gorm.DB, workspaceID uint, activeRoutes uint64, now time.Time) (uint64, error) {
 	if activeRoutes == 0 {
-		return 0
+		return 0, nil
 	}
 	snapshot, _ := checkerconfig.Lookup(workspaceID)
 	if snapshot == nil || snapshot.Default == nil {
-		return activeRoutes
+		return activeRoutes, nil
 	}
 	defaultProtocols := enabledProtocols(snapshot.Default)
-	var delta int64
-	if cached, ok := planProtocolDeltas.Load(snapshot); ok {
-		delta = cached.(int64)
-	} else {
-		snapshot.Proxies.Range(func(_ uint64, plan *checkerconfig.Plan) {
-			delta += enabledProtocols(plan) - defaultProtocols
-		})
-		planProtocolDeltas.Range(func(key, _ any) bool {
-			if previous := key.(*checkerconfig.Workspace); previous.Value.ID == workspaceID {
-				planProtocolDeltas.Delete(key)
-			}
-			return true
-		})
-		planProtocolDeltas.Store(snapshot, delta)
+	delta, err := cachedPlanDelta(db, workspaceID, snapshot, defaultProtocols, activeRoutes, now)
+	if err != nil {
+		return 0, err
 	}
 	total := int64(min(activeRoutes, math.MaxInt64/4))*defaultProtocols + delta
 	if total < 0 {
-		return 0
+		return 0, nil
 	}
-	return uint64(total)
+	return uint64(total), nil
+}
+
+func cachedPlanDelta(db *gorm.DB, workspaceID uint, snapshot *checkerconfig.Workspace, defaultProtocols int64, activeRoutes uint64, now time.Time) (int64, error) {
+	if cached, ok := planDeltas.Load(workspaceID); ok {
+		entry := cached.(planDeltaEntry)
+		if entry.snapshot == snapshot && entry.activeRoutes == activeRoutes && now.Sub(entry.computedAt) < planDeltaTTL {
+			return entry.delta, nil
+		}
+	}
+	if snapshot.Proxies.Len() == 0 {
+		return 0, nil
+	}
+	delta, err := activePlanDelta(db, workspaceID, snapshot, defaultProtocols)
+	if err != nil {
+		return 0, err
+	}
+	planDeltas.Store(workspaceID, planDeltaEntry{snapshot: snapshot, activeRoutes: activeRoutes, delta: delta, computedAt: now})
+	return delta, nil
+}
+
+// activePlanDelta sums, over active routes with a tag-rule plan, how many
+// protocols the plan enables beyond the default. Routes whose plan enables
+// the same number as the default need no lookup.
+func activePlanDelta(db *gorm.DB, workspaceID uint, snapshot *checkerconfig.Workspace, defaultProtocols int64) (int64, error) {
+	byDelta := map[int64][]uint64{}
+	snapshot.Proxies.Range(func(proxyID uint64, plan *checkerconfig.Plan) {
+		if difference := enabledProtocols(plan) - defaultProtocols; difference != 0 {
+			byDelta[difference] = append(byDelta[difference], proxyID)
+		}
+	})
+	const chunk = 1000
+	var delta int64
+	for difference, proxyIDs := range byDelta {
+		for start := 0; start < len(proxyIDs); start += chunk {
+			var active int64
+			if err := db.Model(&domain.ManagedProxy{}).
+				Where("workspace_id = ? AND state = ? AND proxy_id IN ?", workspaceID, domain.ManagedProxyStateActive, proxyIDs[start:min(start+chunk, len(proxyIDs))]).
+				Count(&active).Error; err != nil {
+				return 0, fmt.Errorf("count active routes with tag-rule protocols: %w", err)
+			}
+			delta += difference * active
+		}
+	}
+	return delta, nil
 }
 
 func enabledProtocols(plan *checkerconfig.Plan) int64 {
@@ -295,32 +365,53 @@ func CadenceWarnings(workspaceID uint, subscription domain.WorkspaceSubscription
 	return warnings
 }
 
-// LegacyCadenceAllowances converts the fixed timers of an older settings file
-// into instance allowances. The result is the larger of the shipped default and
-// what the busiest workspace needed for its previous cadence over a 31-day
-// month, so no existing workspace becomes slower after the upgrade.
-func LegacyCadenceAllowances(ctx context.Context, checkPeriod, scrapePeriod time.Duration) (uint64, uint64, error) {
-	allowances, err := LoadWorkspaceAllowances(ctx, time.Now())
+// PreserveLegacyCadence gives every workspace that still uses automatic
+// spreading a fixed interval equal to an older settings file's timer, so an
+// upgrade keeps each workspace's cadence. A zero period leaves that kind
+// unchanged. Intervals are raised to the workspace's minimum and lowered to
+// the 31-day maximum. It returns how many workspaces received each interval.
+func PreserveLegacyCadence(ctx context.Context, checkPeriod, scrapePeriod time.Duration) (int, int, error) {
+	if DB == nil {
+		return 0, 0, fmt.Errorf("database not initialised")
+	}
+	db := DB
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
+	return preserveLegacyCadence(db, checkPeriod, scrapePeriod)
+}
+
+func preserveLegacyCadence(db *gorm.DB, checkPeriod, scrapePeriod time.Duration) (int, int, error) {
+	var workspaces []domain.Workspace
+	if err := db.Select("id", "check_interval_seconds", "scrape_interval_seconds").Preload("Subscription").
+		Find(&workspaces).Error; err != nil {
+		return 0, 0, fmt.Errorf("list workspaces: %w", err)
+	}
+	seconds := func(value time.Duration) uint32 { return uint32(value / time.Second) }
+	var checks, scrapes int
+	err := db.Transaction(func(tx *gorm.DB) error {
+		for _, workspace := range workspaces {
+			updates := map[string]any{}
+			if checkPeriod > 0 && workspace.CheckIntervalSeconds == 0 {
+				floor := checkpace.CheckFloor(time.Duration(workspace.Subscription.MinimumCheckIntervalSeconds) * time.Second)
+				updates["check_interval_seconds"] = seconds(min(max(checkPeriod, floor), maxRequestedInterval))
+				checks++
+			}
+			if scrapePeriod > 0 && workspace.ScrapeIntervalSeconds == 0 {
+				updates["scrape_interval_seconds"] = seconds(min(max(scrapePeriod, checkpace.MinimumScrapeInterval), maxRequestedInterval))
+				scrapes++
+			}
+			if len(updates) == 0 {
+				continue
+			}
+			if err := tx.Model(&domain.Workspace{}).Where("id = ?", workspace.ID).UpdateColumns(updates).Error; err != nil {
+				return fmt.Errorf("preserve workspace %d cadence: %w", workspace.ID, err)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, 0, err
 	}
-	var checksPerCycle, scrapesPerCycle uint64
-	for _, allowance := range allowances {
-		checksPerCycle = max(checksPerCycle, allowance.ChecksPerCycle)
-		scrapesPerCycle = max(scrapesPerCycle, allowance.ScrapesPerCycle)
-	}
-	const month = 31 * 24 * time.Hour
-	convert := func(perCycle uint64, period time.Duration, fallback uint64) uint64 {
-		if period <= 0 || perCycle == 0 {
-			return fallback
-		}
-		cycles := math.Ceil(float64(month) / float64(period))
-		needed := math.Ceil(float64(perCycle) * cycles)
-		if needed >= math.MaxUint64/2 {
-			return math.MaxUint64 / 2
-		}
-		return max(fallback, uint64(needed))
-	}
-	return convert(checksPerCycle, checkPeriod, config.DefaultMonthlyChecksPerWorkspace),
-		convert(scrapesPerCycle, scrapePeriod, config.DefaultMonthlyScrapesPerWorkspace), nil
+	return checks, scrapes, nil
 }

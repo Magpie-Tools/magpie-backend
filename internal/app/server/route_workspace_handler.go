@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/app/bootstrap"
@@ -229,7 +231,7 @@ func updateWorkspaceAllowances(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Failed to update workspace allowances", http.StatusInternalServerError)
 		return
 	}
-	checkpace.RequestRefresh()
+	refreshCheckPace(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace_id":      workspaceID,
 		"monthly_checks":    payload.MonthlyChecks,
@@ -267,7 +269,7 @@ func updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	checkpace.RequestRefresh()
+	refreshCheckPace(r.Context())
 	var subscription domain.WorkspaceSubscription
 	database.DB.WithContext(r.Context()).Where("workspace_id = ?", workspaceID).Limit(1).Find(&subscription)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -275,4 +277,17 @@ func updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
 		"scrape_interval_seconds": payload.ScrapeIntervalSeconds,
 		"warnings":                database.CadenceWarnings(workspaceID, subscription, payload),
 	})
+}
+
+// refreshCheckPace publishes a snapshot that includes a just-saved allowance
+// or interval before the handler responds, so the workspace data the client
+// reloads next already shows the new cadence. If the load fails, the regular
+// refresh picks the change up within a minute.
+func refreshCheckPace(ctx context.Context) {
+	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkpace.Refresh(refreshCtx); err != nil {
+		log.Warn("refresh check pacing after a workspace change", "error", err)
+		checkpace.RequestRefresh()
+	}
 }

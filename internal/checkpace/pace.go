@@ -6,6 +6,7 @@ package checkpace
 import (
 	"context"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -77,11 +78,17 @@ type Pace struct {
 	ScrapesRunOutAt         time.Time
 
 	Allowance Allowance
+
+	// counter and flushedMark connect a published snapshot to this
+	// instance's check meter, so checks made since the load count at once.
+	counter     *checkCounter
+	flushedMark uint64
 }
 
 // Snapshot is immutable after Compute returns.
 type Snapshot struct {
-	paces map[uint]Pace
+	// paces holds pointers so hot-path lookups do not copy a Pace.
+	paces map[uint]*Pace
 	// uniform, set only by Uniform, applies to every workspace.
 	uniform *Pace
 
@@ -117,7 +124,7 @@ func Compute(now time.Time, allowances []Allowance) *Snapshot {
 		remaining = time.Minute
 	}
 	snapshot := &Snapshot{
-		paces:       make(map[uint]Pace, len(allowances)),
+		paces:       make(map[uint]*Pace, len(allowances)),
 		PeriodStart: start,
 		PeriodEnd:   end,
 		ComputedAt:  now,
@@ -149,7 +156,7 @@ func Compute(now time.Time, allowances []Allowance) *Snapshot {
 				pace.ScrapesRunOutAt = runOutAt(now, end, allowance.MonthlyScrapes-allowance.UsedScrapes, allowance.ScrapesPerCycle, scrapeInterval)
 			}
 		}
-		snapshot.paces[allowance.WorkspaceID] = pace
+		snapshot.paces[allowance.WorkspaceID] = &pace
 		if !checksExhausted && allowance.ChecksPerCycle > 0 {
 			snapshot.ChecksPerSecond += float64(allowance.ChecksPerCycle) / checkInterval.Seconds()
 			if snapshot.FastestCheckInterval == 0 || checkInterval < snapshot.FastestCheckInterval {
@@ -228,13 +235,21 @@ func (s *Snapshot) Pace(workspaceID uint) (Pace, bool) {
 	if s == nil {
 		return Pace{}, false
 	}
-	if pace, ok := s.paces[workspaceID]; ok {
-		return pace, true
-	}
-	if s.uniform != nil {
-		return *s.uniform, true
+	if pace := s.lookup(workspaceID); pace != nil {
+		return *pace, true
 	}
 	return Pace{}, false
+}
+
+// lookup is Pace without copying, for the checker's per-dequeue decisions.
+func (s *Snapshot) lookup(workspaceID uint) *Pace {
+	if s == nil {
+		return nil
+	}
+	if pace, ok := s.paces[workspaceID]; ok {
+		return pace
+	}
+	return s.uniform
 }
 
 // Uniform returns a snapshot that gives every workspace the same cadence,
@@ -243,7 +258,7 @@ func (s *Snapshot) Pace(workspaceID uint) (Pace, bool) {
 func Uniform(checkInterval, scrapeInterval time.Duration) *Snapshot {
 	start, end := UsagePeriod(time.Now())
 	return &Snapshot{
-		paces:                 map[uint]Pace{},
+		paces:                 map[uint]*Pace{},
 		uniform:               &Pace{CheckInterval: checkInterval, ScrapeInterval: scrapeInterval},
 		PeriodStart:           start,
 		PeriodEnd:             end,
@@ -285,42 +300,102 @@ func RequestRefresh() {
 // Loader reads every workspace's allowance and current-period usage.
 type Loader func(ctx context.Context, now time.Time) ([]Allowance, error)
 
-// Refresh loads allowances and publishes a new snapshot. A failed load keeps
-// the previous snapshot.
-func Refresh(ctx context.Context, loader Loader) error {
+// Store connects the pacer to persistent allowances and the usage meter.
+type Store struct {
+	Load       Loader
+	FlushUsage Flusher
+}
+
+var (
+	storeValue atomic.Pointer[Store]
+	// refreshMu serializes flushes with snapshot loads, which keeps flushed
+	// marks consistent with the usage a snapshot read.
+	refreshMu sync.Mutex
+)
+
+// Configure sets the store used by Refresh, Flush and Run.
+func Configure(store Store) { storeValue.Store(&store) }
+
+// Refresh flushes metered check usage, loads allowances and publishes a new
+// snapshot. A failed load keeps the previous snapshot. API handlers call it
+// after changing an allowance or interval, so the response already reflects
+// the change on this instance.
+func Refresh(ctx context.Context) error {
+	store := storeValue.Load()
+	if store == nil || store.Load == nil {
+		return nil
+	}
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	if err := flushLocked(ctx, store.FlushUsage); err != nil {
+		// Usage stays counted in memory and is retried; the load below still
+		// sees this instance's checks through the counters.
+		log.Warn("flush workspace check usage", "error", err)
+	}
 	now := time.Now()
-	allowances, err := loader(ctx, now)
+	allowances, err := store.Load(ctx, now)
 	if err != nil {
 		return err
 	}
-	Publish(Compute(now, allowances))
+	snapshot := Compute(now, allowances)
+	for workspaceID, pace := range snapshot.paces {
+		pace.counter = counterFor(workspaceID)
+		pace.flushedMark = flushed[workspaceID].Attempts
+	}
+	Publish(snapshot)
 	return nil
 }
 
-// Run refreshes immediately, then on RefreshInterval and on RequestRefresh.
-// Explicit requests are coalesced to at most one load per five seconds.
-func Run(ctx context.Context, loader Loader) {
+// Flush writes metered check usage without reloading allowances.
+func Flush(ctx context.Context) error {
+	store := storeValue.Load()
+	if store == nil {
+		return nil
+	}
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	return flushLocked(ctx, store.FlushUsage)
+}
+
+// Run refreshes immediately, then on RefreshInterval and on RequestRefresh,
+// and flushes metered usage every FlushInterval. Explicit requests are
+// coalesced to at most one load per five seconds. Usage is flushed once more
+// when ctx ends.
+func Run(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	refresh := func() {
 		loadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		if err := Refresh(loadCtx, loader); err != nil && ctx.Err() == nil {
+		if err := Refresh(loadCtx); err != nil && ctx.Err() == nil {
 			log.Warn("refresh workspace check allowances", "error", err)
 		}
 	}
 	refresh()
 	ticker := time.NewTicker(RefreshInterval)
 	defer ticker.Stop()
+	flushTicker := time.NewTicker(FlushInterval)
+	defer flushTicker.Stop()
 	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := Flush(flushCtx); err != nil {
+				log.Warn("final flush of workspace check usage", "error", err)
+			}
+			cancel()
 			return
 		case <-ticker.C:
 			refresh()
 			last = time.Now()
+		case <-flushTicker.C:
+			flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := Flush(flushCtx); err != nil && ctx.Err() == nil {
+				log.Warn("flush workspace check usage", "error", err)
+			}
+			cancel()
 		case <-refreshCh:
 			if time.Since(last) < 5*time.Second {
 				continue

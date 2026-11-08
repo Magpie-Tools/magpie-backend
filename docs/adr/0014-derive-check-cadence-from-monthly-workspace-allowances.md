@@ -22,11 +22,31 @@ Each workspace has a monthly check allowance and a monthly scrape allowance:
   inherits the instance defaults `checker.monthly_checks_per_workspace` and
   `scraper.monthly_scrapes_per_workspace`, which replace `checker_timer` and
   `scraper_timer`.
-- One **check** is one protocol test of one route for one workspace. Retries are
-  part of that check and are still metered separately as `check_attempts`. One
-  **scrape** is one fetch of one subscribed source for one workspace.
+- One **check** is one outbound request to a judge for one workspace. Retries
+  are checks, so a protocol test with two retries uses three. Workspace
+  settings accept up to 255 retries; charging per request means retries and
+  the worker time they occupy cannot multiply work without consuming
+  allowance. One **scrape** is one fetch of one subscribed source for one
+  workspace.
 - Usage is metered in `workspace_usage_periods.checks` and `.scrapes` for each
   UTC calendar month, the same periods as the existing usage meter.
+  `protocol_checks` counts protocol tests and is used only to estimate
+  requests per test.
+
+### Metering independent of statistics
+
+The statistics pipeline may drop or delay results under overload, so it
+cannot be the source of allowance usage. The checker charges each request as
+it makes it (`checkpace.ChargeChecks`: two atomic additions on a per-workspace
+counter), before anything can abandon the cycle, including a lost lease. The
+pacer flushes the deltas to the usage meter every 10 seconds and immediately
+before each snapshot load, under one mutex, and records how much of each
+counter the database holds. A snapshot therefore knows exactly which local
+checks it has not yet seen. The checker treats a workspace as exhausted once
+the snapshot's usage plus its own unseen checks reach the allowance, without
+waiting for persistence. A failed flush is retried, and the checks stay
+counted in memory meanwhile. `check_attempts`, written by the statistics
+pipeline, remains an analytics counter and is not used for allowances.
 
 By default, cadence is derived rather than configured. Every minute, each instance loads
 allowances and current-month usage and publishes an immutable snapshot
@@ -34,8 +54,18 @@ allowances and current-month usage and publishes an immutable snapshot
 
 ```
 interval = time left in month × checks per cycle ÷ allowance left
-checks per cycle = active managed routes × enabled protocols (tag rules included)
+checks per cycle = protocol tests per cycle × requests per test
+protocol tests per cycle = active routes × default protocols
+                         + Σ over active routes with tag-rule plans (plan protocols − default protocols)
+requests per test = this month's checks ÷ protocol_checks (1 until 100 tests are seen)
 ```
+
+Tag-rule plans exist in the checker snapshot for paused and archived routes
+too, which are not checked. Their contribution therefore needs a count of
+which of those routes are active. Plans that enable as many protocols as the
+default need no count. The result is cached per workspace until the checker
+snapshot or the active route count changes, a lifecycle write on this
+instance invalidates it, or ten minutes pass.
 
 The interval is limited by `max(1 minute, subscription minimum check interval)`
 for checks and by 15 minutes for scrapes. Because the snapshot is recomputed
@@ -94,9 +124,12 @@ hours.
 ### Upgrades
 
 If a settings file still has the old timers and no allowances, startup converts
-them once. The new instance default is the larger of the shipped default
-(1,500,000 checks, 3,000 scrapes) and what the busiest workspace needed for its
-old cadence over a 31-day month. No existing workspace becomes slower.
+them once without changing behavior. The old timers had no monthly limit, so
+the instance default becomes unlimited, and every existing workspace gets the
+old timer as its fixed interval (raised to the minimum and capped at 31 days).
+An earlier draft gave automatic spreading a large default allowance, which
+made a one-route workspace on a five-hour timer check every minute. Workspaces
+created after the upgrade run hourly until they choose an interval.
 
 ## Hot-path operation count
 
@@ -107,9 +140,13 @@ Per proxy check, with plaintext queue payloads (the default):
 | Cryptographic operations | 0 | 0 |
 | JSON encodes | 0 | 0 |
 | Redis commands (pop, complete) | 3 (pop, `GET` interval, complete) | **2** |
-| Database queries | unchanged | unchanged (the `checks` counter joins the existing usage upsert in the statistics batch) |
+| Database queries | unchanged | unchanged (check usage is flushed in batches every 10 seconds per instance, not per check) |
 
-Outside the proxy check loop, each source fetch adds one small usage upsert
+Each protocol test adds two atomic additions to an in-memory counter (about 19 ns,
+no allocation), and each owner's due decision reads one atomic counter.
+
+Outside the proxy check loop, each instance writes one batched usage upsert per
+10 seconds for the workspaces it checked. Each source fetch adds one small usage upsert
 for the workspaces it served. Scrapes run at most once per subscribed source
 every 15 minutes. Each instance also runs one set of aggregate allowance
 queries per minute.
@@ -136,12 +173,22 @@ an i7-12700H, Go 1.27.3, and the existing benchmark:
 `BenchmarkSelectDueWorkspaces`, the new per-dequeue decision, takes 46 ns with
 0 allocations for one owner. For a route shared by eight owners on different
 cadences, it takes 0.87 µs with one 4.8 KB allocation (the filtered owner list).
+These figures include reading each owner's metered usage. Snapshots store
+paces by pointer, which kept the meter from adding a per-owner struct copy. In
+back-to-back runs on the same host it measured 46 ns and 0.86 µs, against
+90 ns and 1.3 µs for the version without the meter. `BenchmarkChargeChecks`
+takes 19 ns with 0 allocations.
 
 ## Consequences
 
 - An admin single-route requeue and newly imported routes follow the
   workspace's cadence. On a tight allowance, the first check of a new route can
   wait up to the workspace's interval instead of running at once.
+- A checker stops a workspace as soon as its own count reaches the allowance.
+  Other instances' checks are seen at the next snapshot refresh, so a
+  workspace checked by several instances can overshoot by about one minute of
+  their checks. A crashed instance loses at most its last 10 seconds of
+  unflushed usage.
 - On a shared route, the gap between a cycle's due time and its completion is
   not covered by any window. Slow owners can therefore receive slightly fewer
   checks than their cadence allows. The recomputed snapshot compensates by

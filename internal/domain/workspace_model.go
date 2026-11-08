@@ -330,9 +330,14 @@ type WorkspaceUsagePeriod struct {
 	ActiveRoutes     uint64 `gorm:"not null;default:0"`
 	PeakActiveRoutes uint64 `gorm:"not null;default:0"`
 	CheckAttempts    uint64 `gorm:"not null;default:0"`
-	// Checks counts one protocol check of one route for one workspace,
-	// including its retries. It is what monthly check allowances meter.
+	// Checks is what monthly check allowances charge: one outbound check
+	// request for one workspace, retries included. The checker meters it in
+	// memory and flushes it every few seconds, independently of the
+	// statistics pipeline that maintains CheckAttempts and may drop results.
 	Checks uint64 `gorm:"not null;default:0"`
+	// ProtocolChecks counts protocol checks, each of which may make several
+	// requests. Checks ÷ ProtocolChecks estimates requests per check.
+	ProtocolChecks uint64 `gorm:"not null;default:0"`
 	// Scrapes counts one fetch of one subscribed source for one workspace.
 	Scrapes         uint64 `gorm:"not null;default:0"`
 	ManagedRequests uint64 `gorm:"not null;default:0"`

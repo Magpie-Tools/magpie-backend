@@ -24,12 +24,12 @@ func (s *Snapshot) RouteCheckInterval(workspaces []domain.Workspace) time.Durati
 	}
 	route := MaxRouteInterval
 	for _, workspace := range workspaces {
-		pace, ok := s.Pace(workspace.ID)
+		pace := s.lookup(workspace.ID)
 		switch {
-		case !ok:
+		case pace == nil:
 			RequestRefresh()
 			route = min(route, FallbackInterval)
-		case !pace.ChecksExhausted:
+		case !pace.checksExhausted():
 			route = min(route, pace.CheckInterval)
 		}
 	}
@@ -46,11 +46,11 @@ func (s *Snapshot) CheckDue(workspaceID uint, routeID uint64, scheduled time.Tim
 	if s == nil {
 		return true
 	}
-	pace, ok := s.Pace(workspaceID)
-	if !ok {
+	pace := s.lookup(workspaceID)
+	if pace == nil {
 		return true
 	}
-	if pace.ChecksExhausted {
+	if pace.checksExhausted() {
 		return false
 	}
 	return due(pace.CheckInterval, routeInterval, scheduled, routeID, workspaceID)

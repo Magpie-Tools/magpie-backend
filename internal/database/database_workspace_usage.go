@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
@@ -52,9 +53,9 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 				usageByPeriod[key] = usage
 			}
 			// Attempt is zero-based: zero means one outbound request.
+			// Allowance usage (checks) is metered by the checker itself, not
+			// here: this pipeline may drop statistics under load.
 			usage.CheckAttempts += uint64(statistic.Attempt) + 1
-			// One statistic is one protocol check, whatever its retry count.
-			usage.Checks++
 		}
 	}
 	if len(usageByPeriod) == 0 {
@@ -78,7 +79,6 @@ func recordWorkspaceCheckUsage(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 		DoUpdates: clause.Assignments(map[string]any{
 			"period_end":     gorm.Expr("EXCLUDED.period_end"),
 			"check_attempts": gorm.Expr("workspace_usage_periods.check_attempts + EXCLUDED.check_attempts"),
-			"checks":         gorm.Expr("workspace_usage_periods.checks + EXCLUDED.checks"),
 			"updated_at":     gorm.Expr("CURRENT_TIMESTAMP"),
 		}),
 	}).CreateInBatches(&rows, 1000).Error
@@ -117,6 +117,9 @@ func refreshWorkspaceUsageActiveRoutes(tx *gorm.DB, workspaceID uint) error {
 		Count(&active).Error; err != nil {
 		return err
 	}
+	// Which routes are active changed, so tag-rule protocol counts must be
+	// recomputed for check pacing.
+	invalidatePlanDeltas(workspaceID)
 	return UpdateWorkspaceUsageActiveRoutes(tx, workspaceID, uint64(active))
 }
 
@@ -229,11 +232,57 @@ func workspaceUsageDeltaRows(periods []domain.WorkspaceUsagePeriod) []map[string
 			"workspace_id": period.WorkspaceID, "period_start": period.PeriodStart, "period_end": period.PeriodEnd,
 			"active_routes": capacity, "peak_active_routes": capacity,
 			"check_attempts": period.CheckAttempts, "managed_requests": period.ManagedRequests, "managed_bytes": period.ManagedBytes,
-			"checks": period.Checks, "scrapes": period.Scrapes,
+			"checks": period.Checks, "protocol_checks": period.ProtocolChecks, "scrapes": period.Scrapes,
 			"created_at": now, "updated_at": now,
 		})
 	}
 	return rows
+}
+
+// FlushWorkspaceCheckUsage adds check usage metered in memory by a checker
+// instance (checkpace.ChargeChecks). It runs every checkpace.FlushInterval,
+// never per check, and writes one upsert row per workspace that was checked.
+func FlushWorkspaceCheckUsage(ctx context.Context, at time.Time, usage []checkpace.CheckUsage) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialised")
+	}
+	tx := DB
+	if ctx != nil {
+		tx = tx.WithContext(ctx)
+	}
+	return flushWorkspaceCheckUsage(tx, at, usage)
+}
+
+func flushWorkspaceCheckUsage(tx *gorm.DB, at time.Time, usage []checkpace.CheckUsage) error {
+	if tx == nil || len(usage) == 0 {
+		return nil
+	}
+	periodStart, periodEnd := workspaceUsageMonth(at)
+	periods := make([]domain.WorkspaceUsagePeriod, 0, len(usage))
+	for _, delta := range usage {
+		if delta.WorkspaceID == 0 {
+			continue
+		}
+		periods = append(periods, domain.WorkspaceUsagePeriod{
+			WorkspaceID: delta.WorkspaceID, PeriodStart: periodStart, PeriodEnd: periodEnd,
+			Checks: delta.Attempts, ProtocolChecks: delta.ProtocolChecks,
+		})
+	}
+	if len(periods) == 0 {
+		return nil
+	}
+	// A consistent row order keeps concurrent flushers from deadlocking.
+	sort.Slice(periods, func(i, j int) bool { return periods[i].WorkspaceID < periods[j].WorkspaceID })
+	rows := workspaceUsageDeltaRows(periods)
+	return tx.Model(&domain.WorkspaceUsagePeriod{}).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "workspace_id"}, {Name: "period_start"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"period_end":      gorm.Expr("EXCLUDED.period_end"),
+			"checks":          gorm.Expr("workspace_usage_periods.checks + EXCLUDED.checks"),
+			"protocol_checks": gorm.Expr("workspace_usage_periods.protocol_checks + EXCLUDED.protocol_checks"),
+			"updated_at":      gorm.Expr("CURRENT_TIMESTAMP"),
+		}),
+	}).CreateInBatches(&rows, 1000).Error
 }
 
 // RecordWorkspaceScrapeUsage charges one scrape to each workspace served by a

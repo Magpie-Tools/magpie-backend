@@ -3,12 +3,12 @@ package database
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/checkerconfig"
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/domain"
@@ -68,6 +68,10 @@ func TestWorkspaceAllowancesMeterChecksScrapesAndInheritDefaults(t *testing.T) {
 	if err := recordWorkspaceCheckUsage(db, statistics); err != nil {
 		t.Fatalf("record check usage: %v", err)
 	}
+	// Allowance usage comes from the checker's own meter, not from statistics.
+	if err := flushWorkspaceCheckUsage(db, now, []checkpace.CheckUsage{{WorkspaceID: workspace.ID, Attempts: 4, ProtocolChecks: 2}}); err != nil {
+		t.Fatalf("flush metered check usage: %v", err)
+	}
 	if err := recordWorkspaceScrapeUsage(db, []uint{workspace.ID, workspace.ID}, now); err != nil {
 		t.Fatalf("record scrape usage: %v", err)
 	}
@@ -84,9 +88,10 @@ func TestWorkspaceAllowancesMeterChecksScrapesAndInheritDefaults(t *testing.T) {
 	if err := db.Where("workspace_id = ? AND period_start = ?", workspace.ID, periodStart).First(&usage).Error; err != nil {
 		t.Fatal(err)
 	}
-	// Retries count as attempts, not as extra checks.
-	if usage.Checks != 2 || usage.CheckAttempts != 4 || usage.Scrapes != 1 {
-		t.Fatalf("usage = checks %d, attempts %d, scrapes %d; want 2, 4, 1", usage.Checks, usage.CheckAttempts, usage.Scrapes)
+	// Every request, retries included, is a charged check.
+	if usage.Checks != 4 || usage.ProtocolChecks != 2 || usage.CheckAttempts != 4 || usage.Scrapes != 1 {
+		t.Fatalf("usage = checks %d, protocol checks %d, attempts %d, scrapes %d; want 4, 2, 4, 1",
+			usage.Checks, usage.ProtocolChecks, usage.CheckAttempts, usage.Scrapes)
 	}
 
 	if err := UpdateWorkspaceAllowances(context.Background(), quiet.ID, dto.WorkspaceAllowanceUpdateRequest{MonthlyChecks: 77, MonthlyScrapes: 0}); err != nil {
@@ -105,7 +110,7 @@ func TestWorkspaceAllowancesMeterChecksScrapesAndInheritDefaults(t *testing.T) {
 		}
 	}
 	got := byWorkspace[workspace.ID]
-	if got.checks != 1_000 || got.used != 2 || got.perCycle != 2 || got.scrapes != 50 || got.usedScrapes != 1 || got.sources != 1 {
+	if got.checks != 1_000 || got.used != 4 || got.perCycle != 2 || got.scrapes != 50 || got.usedScrapes != 1 || got.sources != 1 {
 		t.Fatalf("inheriting workspace allowance = %+v", got)
 	}
 	got = byWorkspace[quiet.ID]
@@ -114,44 +119,149 @@ func TestWorkspaceAllowancesMeterChecksScrapesAndInheritDefaults(t *testing.T) {
 	}
 }
 
-func TestLegacyCadenceAllowancesKeepBusiestWorkspaceCadence(t *testing.T) {
+func TestPreserveLegacyCadenceKeepsEveryWorkspaceAtItsOldTimer(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
-	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceScrapeSite{}); err != nil {
-		t.Fatal(err)
-	}
 	owner := domain.User{Email: "legacy-owner@example.test", Password: "hash", Role: "user"}
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
+	plain := createTestWorkspaceForUser(t, db, owner)
+	other := domain.User{Email: "legacy-other@example.test", Password: "hash", Role: "user"}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	slowPlan := createTestWorkspaceForUser(t, db, other)
+	if err := db.Model(&domain.WorkspaceSubscription{}).Where("workspace_id = ?", slowPlan.ID).
+		Update("minimum_check_interval_seconds", 6*3600).Error; err != nil {
+		t.Fatal(err)
+	}
+	third := domain.User{Email: "legacy-chosen@example.test", Password: "hash", Role: "user"}
+	if err := db.Create(&third).Error; err != nil {
+		t.Fatal(err)
+	}
+	chosen := createTestWorkspaceForUser(t, db, third)
+	if err := db.Model(&domain.Workspace{}).Where("id = ?", chosen.ID).Update("check_interval_seconds", 600).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	checks, scrapes, err := preserveLegacyCadence(db, 5*time.Hour, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checks != 2 || scrapes != 3 {
+		t.Fatalf("converted %d check and %d scrape intervals, want 2 and 3", checks, scrapes)
+	}
+	interval := func(id uint) (uint32, uint32) {
+		var workspace domain.Workspace
+		if err := db.Select("check_interval_seconds", "scrape_interval_seconds").First(&workspace, id).Error; err != nil {
+			t.Fatal(err)
+		}
+		return workspace.CheckIntervalSeconds, workspace.ScrapeIntervalSeconds
+	}
+	// The old five-hour timer stays five hours: no workspace starts checking
+	// every minute after the upgrade.
+	if check, scrape := interval(plain.ID); check != 5*3600 || scrape != 15*60 {
+		t.Fatalf("plain workspace intervals = %d / %d", check, scrape)
+	}
+	if check, _ := interval(slowPlan.ID); check != 6*3600 {
+		t.Fatalf("plan minimum not applied: %d", check)
+	}
+	if check, _ := interval(chosen.ID); check != 600 {
+		t.Fatalf("an interval chosen before the upgrade was replaced: %d", check)
+	}
+}
+
+func TestChecksPerCycleCountsOnlyActiveRoutesAndObservedRetries(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceScrapeSite{}); err != nil {
+		t.Fatal(err)
+	}
+	owner := domain.User{Email: "tag-owner@example.test", Password: "hash", Role: "user"}
+	if err := db.Create(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
 	workspace := createTestWorkspaceForUser(t, db, owner)
-	proxies := make([]domain.Proxy, 0, 40)
-	for i := 0; i < 40; i++ {
-		proxies = append(proxies, domain.Proxy{IP: fmt.Sprintf("198.51.100.%d", i+1), Port: 8080, Country: "N/A", EstimatedType: "N/A"})
+	routes, err := InsertAndGetProxiesWithWorkspace([]domain.Proxy{
+		{IP: "203.0.113.10", Port: 8080, Country: "N/A", EstimatedType: "N/A"},
+		{IP: "203.0.113.11", Port: 8080, Country: "N/A", EstimatedType: "N/A"},
+	}, workspace.ID)
+	if err != nil || len(routes) != 2 {
+		t.Fatalf("create routes: %d %v", len(routes), err)
 	}
-	if _, err := InsertAndGetProxiesWithWorkspace(proxies, workspace.ID); err != nil {
+	paused := routes[1]
+	if err := db.Model(&domain.ManagedProxy{}).Where("workspace_id = ? AND proxy_id = ?", workspace.ID, paused.ID).
+		Update("state", domain.ManagedProxyStatePaused).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshWorkspaceUsageActiveRoutes(db, workspace.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	checks, scrapes, err := LegacyCadenceAllowances(context.Background(), time.Minute, 5*time.Hour)
-	if err != nil {
-		t.Fatal(err)
+	// Default: HTTP only. A tag rule adds SOCKS5 to the paused route alone.
+	const tagID = 41
+	value := domain.Workspace{ID: workspace.ID, CheckerConfig: &dto.CheckerSettings{
+		Defaults: dto.CheckerProfileSettings{Protocols: []string{"http"}, Transport: "tcp", Timeout: 1000},
+		Rules:    []dto.TagCheckerRule{{TagID: tagID, Mode: "add", Protocols: []string{"socks5"}}},
+	}}
+	snapshot := checkerconfig.Build(value, []domain.ProxyTagAssignment{{WorkspaceID: workspace.ID, ProxyID: paused.ID, ProxyTagID: tagID}}, nil, nil)
+	if snapshot.Proxies.Len() != 1 {
+		t.Fatalf("tag rule plans = %d, want 1", snapshot.Proxies.Len())
 	}
-	// 40 routes every minute for 31 days exceeds the shipped default.
-	if want := uint64(40 * 31 * 24 * 60); checks != want {
-		t.Fatalf("converted checks = %d, want %d", checks, want)
+	useCheckerSnapshot(t, workspace.ID, snapshot)
+
+	now := time.Now()
+	perCycle := func() uint64 {
+		allowances, err := loadWorkspaceAllowances(db, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return allowances[0].ChecksPerCycle
 	}
-	// No subscribed sources: the default still applies.
-	if scrapes != config.DefaultMonthlyScrapesPerWorkspace {
-		t.Fatalf("converted scrapes = %d, want default", scrapes)
+	// One active HTTP route: one check per cycle. The paused route's extra
+	// protocol does not count.
+	if got := perCycle(); got != 1 {
+		t.Fatalf("checks per cycle = %d, want 1", got)
 	}
 
-	slow, _, err := LegacyCadenceAllowances(context.Background(), 24*time.Hour, 0)
-	if err != nil {
+	// Activating the tagged route invalidates the cached count.
+	if err := db.Model(&domain.ManagedProxy{}).Where("workspace_id = ? AND proxy_id = ?", workspace.ID, paused.ID).
+		Update("state", domain.ManagedProxyStateActive).Error; err != nil {
 		t.Fatal(err)
 	}
-	if slow != config.DefaultMonthlyChecksPerWorkspace {
-		t.Fatalf("a slow legacy timer must not lower the default: %d", slow)
+	if err := refreshWorkspaceUsageActiveRoutes(db, workspace.ID); err != nil {
+		t.Fatal(err)
 	}
+	if got := perCycle(); got != 3 {
+		t.Fatalf("checks per cycle after activation = %d, want 3 (HTTP + HTTP and SOCKS5)", got)
+	}
+
+	// Retries observed this month raise the estimate: 300 requests for 200
+	// protocol checks is 1.5 requests per check.
+	if err := flushWorkspaceCheckUsage(db, now, []checkpace.CheckUsage{{WorkspaceID: workspace.ID, Attempts: 300, ProtocolChecks: 200}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := perCycle(); got != 5 {
+		t.Fatalf("checks per cycle with retries = %d, want ceil(3 × 1.5) = 5", got)
+	}
+}
+
+// useCheckerSnapshot publishes a checker snapshot for one workspace until the
+// test ends.
+func useCheckerSnapshot(t *testing.T, workspaceID uint, snapshot *checkerconfig.Workspace) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := checkerconfig.Initialize(ctx, nil,
+		func(context.Context, uint) (*checkerconfig.Workspace, error) { return snapshot, nil },
+		func(context.Context) ([]uint, error) { return []uint{workspaceID}, nil }); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		stopped, stop := context.WithCancel(context.Background())
+		stop()
+		_ = checkerconfig.Initialize(stopped, nil, nil, func(context.Context) ([]uint, error) { return nil, nil })
+	})
 }
 
 func TestWorkspaceCadenceValidationLoadingAndWarnings(t *testing.T) {

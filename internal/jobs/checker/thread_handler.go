@@ -554,7 +554,12 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 			timeout, retries = maxTimeout, maxRetries
 		}
 		html, err, responseTime, attempt := checkProxyWithRetries(proxy, item.judge, item.proxyProtocol, item.transportProtocol, timeout, retries)
-		if errors.Is(err, proxyqueue.ErrProxyLeaseLost) {
+		leaseLost := errors.Is(err, proxyqueue.ErrProxyLeaseLost)
+		// Charge every outbound request, retries included, before anything
+		// can abandon the cycle. Metering does not wait for the statistics
+		// pipeline, which may drop results under load.
+		chargeCheckAttempts(item.checks, requestsMade(attempt, leaseLost))
+		if leaseLost {
 			return err
 		}
 		if ctxErr := proxyCheckContext(proxy).Err(); ctxErr != nil {
@@ -608,6 +613,42 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 	}
 	return nil
 }
+
+// requestsMade converts checkProxyWithRetries' zero-based attempt index into
+// a request count. When the lease is lost, the index is the request that was
+// never sent.
+func requestsMade(attempt uint8, leaseLost bool) uint64 {
+	if leaseLost {
+		return uint64(attempt)
+	}
+	return uint64(attempt) + 1
+}
+
+// chargeCheckAttempts charges each workspace sharing a request once.
+// Assignments rarely serve more than a few workspaces, so a linear duplicate
+// scan avoids allocating.
+func chargeCheckAttempts(checks []workspaceCheck, requests uint64) {
+	if requests == 0 {
+		return
+	}
+	for index, check := range checks {
+		if check.workspaceID == 0 {
+			continue
+		}
+		duplicate := false
+		for _, earlier := range checks[:index] {
+			if earlier.workspaceID == check.workspaceID {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			chargeChecks(check.workspaceID, requests)
+		}
+	}
+}
+
+var chargeChecks = checkpace.ChargeChecks
 
 func collectCheckWorkspaceIDs(checks []workspaceCheck) []uint {
 	if len(checks) == 0 {

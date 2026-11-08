@@ -533,11 +533,11 @@ func workspaceAllowancesDTO(workspace domain.Workspace, subscription domain.Work
 	}
 	computedAt := snapshot.ComputedAt.UTC()
 	result.ComputedAt = &computedAt
-	result.UsedChecks = pace.Allowance.UsedChecks
+	result.UsedChecks = pace.CurrentUsedChecks()
 	result.UsedScrapes = pace.Allowance.UsedScrapes
 	result.ChecksPerCycle = pace.Allowance.ChecksPerCycle
 	result.ScrapesPerCycle = pace.Allowance.ScrapesPerCycle
-	result.ChecksExhausted = pace.ChecksExhausted
+	result.ChecksExhausted = pace.CurrentChecksExhausted()
 	result.ScrapesExhausted = pace.ScrapesExhausted
 	result.CheckIntervalSeconds = uint64(pace.CheckInterval / time.Second)
 	result.ScrapeIntervalSeconds = uint64(pace.ScrapeInterval / time.Second)

@@ -249,18 +249,22 @@ func (running *Runtime) setup(ctx context.Context) error {
 // startCheckPacing publishes workspace cadences before any route is queued,
 // so startup imports already spread routes over their workspaces' intervals.
 func startCheckPacing(ctx context.Context, running *Runtime) {
+	checkpace.Configure(checkpace.Store{
+		Load:       database.LoadWorkspaceAllowances,
+		FlushUsage: database.FlushWorkspaceCheckUsage,
+	})
 	convertLegacyCadence(ctx)
-	if err := checkpace.Refresh(ctx, database.LoadWorkspaceAllowances); err != nil {
+	if err := checkpace.Refresh(ctx); err != nil {
 		log.Warn("initial workspace check allowance load failed; using fallback cadence", "error", err)
 	}
 	config.OnConfigApplied(checkpace.RequestRefresh)
-	running.producers.start(func(ctx context.Context) {
-		checkpace.Run(ctx, database.LoadWorkspaceAllowances)
-	})
+	running.producers.start(checkpace.Run)
 }
 
-// convertLegacyCadence replaces the fixed timers of an older settings file
-// with instance allowances that keep every workspace at its previous cadence.
+// convertLegacyCadence keeps an upgraded installation at the cadence of its
+// older settings file. Old timers had no monthly limit, so the converted
+// instance default is unlimited, and every workspace receives the old timer as
+// its fixed interval. Nothing becomes faster or slower, and nothing stops.
 func convertLegacyCadence(ctx context.Context) {
 	legacy := config.PendingLegacyCadence()
 	if legacy == nil {
@@ -272,26 +276,27 @@ func convertLegacyCadence(ctx context.Context) {
 		}
 		return config.CalculateBetweenTime(*timer)
 	}
-	checks, scrapes, err := database.LegacyCadenceAllowances(ctx, period(legacy.CheckerTimer), period(legacy.ScraperTimer))
+	checkPeriod, scrapePeriod := period(legacy.CheckerTimer), period(legacy.ScraperTimer)
+	checks, scrapes, err := database.PreserveLegacyCadence(ctx, checkPeriod, scrapePeriod)
 	if err != nil {
 		log.Warn("convert legacy checker and scraper timers", "error", err)
 		return
 	}
 	cfg := config.GetConfig()
-	if legacy.CheckerTimer != nil {
-		cfg.Checker.MonthlyChecksPerWorkspace = checks
+	if checkPeriod > 0 {
+		cfg.Checker.UnlimitedMonthlyChecks = true
 	}
-	if legacy.ScraperTimer != nil {
-		cfg.Scraper.MonthlyScrapesPerWorkspace = scrapes
+	if scrapePeriod > 0 {
+		cfg.Scraper.UnlimitedMonthlyScrapes = true
 	}
 	if err := config.SetConfig(cfg); err != nil {
 		log.Warn("save converted check allowances", "error", err)
 		return
 	}
 	config.ClearLegacyCadence()
-	log.Info("Converted legacy checker and scraper timers to monthly allowances",
-		"monthly_checks_per_workspace", cfg.Checker.MonthlyChecksPerWorkspace,
-		"monthly_scrapes_per_workspace", cfg.Scraper.MonthlyScrapesPerWorkspace)
+	log.Info("Converted legacy checker and scraper timers to fixed workspace intervals without a monthly limit",
+		"check_interval", checkPeriod, "workspaces_with_check_interval", checks,
+		"scrape_interval", scrapePeriod, "workspaces_with_scrape_interval", scrapes)
 }
 
 func StartupQueueBootstrapCompleted() bool {

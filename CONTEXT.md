@@ -29,7 +29,7 @@ A workspace's plan and billing lifecycle. Member subscriptions and pooled member
 _Avoid_: User subscription, donated plan
 
 **Check allowance**:
-A workspace's monthly number of checks. One check is one protocol test of one proxy route for that workspace, including its retries. Magpie spreads the remaining allowance evenly over the rest of the month, which sets the workspace's check cadence. An administrator may make it unlimited. An unlimited workspace must choose a fixed interval, and runs hourly until it does.
+A workspace's monthly number of checks. One check is one outbound request to a judge for that workspace; each retry is another check. The checker meters checks as it sends them, independently of proxy history. Magpie spreads the remaining allowance evenly over the rest of the month, which sets the workspace's check cadence. An administrator may make it unlimited. An unlimited workspace must choose a fixed interval, and runs hourly until it does.
 _Avoid_: Check interval setting, checker timer
 
 **Scrape allowance**:
