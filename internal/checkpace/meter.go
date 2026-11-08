@@ -314,6 +314,7 @@ func resetMeterForTest() {
 	})
 	pending = nil
 	batchSequence = 0
+	reloadPending = false
 }
 
 // CurrentUsedChecks is the snapshot's used checks plus this instance's checks

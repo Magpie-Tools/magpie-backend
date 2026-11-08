@@ -147,14 +147,18 @@ func TestFlushAndReloadNeverCountUsageTwice(t *testing.T) {
 
 func TestFailedFlushIsRetriedWithoutLosingUsage(t *testing.T) {
 	store := useFakeStore(t, 1_000)
+	if err := Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	store.failFlush = true
 	check(7, 5)
 	if err := Flush(context.Background()); err == nil {
 		t.Fatal("expected the flush to fail")
 	}
-	// The load still works, and this instance still counts its checks.
-	if err := Refresh(context.Background()); err != nil {
-		t.Fatal(err)
+	// The refresh keeps the snapshot, which still counts this instance's
+	// checks through the counters.
+	if err := Refresh(context.Background()); err == nil {
+		t.Fatal("a refresh after a failed flush reported success")
 	}
 	if pace, _ := Current().Pace(7); pace.CurrentUsedChecks() != 5 {
 		t.Fatalf("used after a failed flush = %d, want 5", pace.CurrentUsedChecks())
@@ -166,34 +170,49 @@ func TestFailedFlushIsRetriedWithoutLosingUsage(t *testing.T) {
 	if got := store.total(7, time.Now()).Attempts; got != 5 {
 		t.Fatalf("retried flush wrote %d checks, want 5", got)
 	}
+	if pace, _ := Current().Pace(7); pace.Allowance.UsedChecks != 5 || pace.CurrentUsedChecks() != 5 {
+		t.Fatalf("after the retry the snapshot read %d and counts %d; want a reload with 5", pace.Allowance.UsedChecks, pace.CurrentUsedChecks())
+	}
 }
 
 func TestLostAcknowledgementDoesNotChargeTwice(t *testing.T) {
-	store := useFakeStore(t, 1_000)
+	store := useFakeStore(t, 5)
+	if err := Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	check(7, 3)
 	store.loseAck = true
+	// The batch commits, but the checker cannot know. Neither the flush nor
+	// a refresh may count those three checks twice.
 	if err := Flush(context.Background()); err == nil {
 		t.Fatal("expected the flush to report a failure")
 	}
+	if err := Refresh(context.Background()); err == nil {
+		t.Fatal("expected the refresh to report the failed flush")
+	}
+	pace, _ := Current().Pace(7)
+	if pace.CurrentUsedChecks() != 3 || pace.CurrentChecksExhausted() {
+		t.Fatalf("used = %d, exhausted = %v after a lost acknowledgement; want 3, false", pace.CurrentUsedChecks(), pace.CurrentChecksExhausted())
+	}
 	// More usage arrives while the outcome is unknown. The retry resends the
-	// first batch unchanged, then flushes the new usage as its own batch.
-	check(7, 2)
+	// first batch unchanged, then flushes the new usage as its own batch,
+	// then reloads.
+	check(7, 1)
 	store.loseAck = false
 	if err := Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := store.total(7, time.Now()).Attempts; got != 5 {
-		t.Fatalf("five requests were charged as %d checks", got)
+	if got := store.total(7, time.Now()).Attempts; got != 4 {
+		t.Fatalf("four requests were charged as %d checks", got)
 	}
-	if len(store.batches) != 3 || store.batches[0].Sequence != store.batches[1].Sequence ||
-		store.batches[1].Usage[0] != store.batches[0].Usage[0] || store.batches[2].Sequence <= store.batches[1].Sequence {
+	if len(store.batches) != 4 || store.batches[0].Sequence != store.batches[1].Sequence ||
+		store.batches[1].Sequence != store.batches[2].Sequence || store.batches[2].Usage[0] != store.batches[0].Usage[0] ||
+		store.batches[3].Sequence <= store.batches[2].Sequence {
 		t.Fatalf("batches = %+v; want the first resent unchanged, then a new one", store.batches)
 	}
-	if err := Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if pace, _ := Current().Pace(7); pace.CurrentUsedChecks() != 5 {
-		t.Fatalf("used after the retry = %d, want 5", pace.CurrentUsedChecks())
+	pace, _ = Current().Pace(7)
+	if pace.Allowance.UsedChecks != 4 || pace.CurrentUsedChecks() != 4 || pace.CurrentChecksExhausted() {
+		t.Fatalf("after the retry the snapshot read %d and counts %d; want a reload with 4", pace.Allowance.UsedChecks, pace.CurrentUsedChecks())
 	}
 }
 

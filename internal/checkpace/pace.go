@@ -5,6 +5,7 @@ package checkpace
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -311,6 +312,9 @@ var (
 	// refreshMu serializes flushes with snapshot loads, which keeps flushed
 	// marks consistent with the usage a snapshot read.
 	refreshMu sync.Mutex
+	// reloadPending records that a load was skipped because a flush failed.
+	// Guarded by refreshMu.
+	reloadPending bool
 )
 
 // Configure sets the store used by Refresh, Flush and Run.
@@ -320,6 +324,12 @@ func Configure(store Store) { storeValue.Store(&store) }
 // snapshot. A failed load keeps the previous snapshot. API handlers call it
 // after changing an allowance or interval, so the response already reflects
 // the change on this instance.
+//
+// A failed flush also keeps the previous snapshot. The batch may have
+// committed without an acknowledgement, and a load would then count it both
+// in the database usage and in this instance's unflushed counters. The kept
+// snapshot still counts every local request through its counters, and the
+// next flush that commits the batch reloads.
 func Refresh(ctx context.Context) error {
 	store := storeValue.Load()
 	if store == nil || store.Load == nil {
@@ -328,10 +338,15 @@ func Refresh(ctx context.Context) error {
 	refreshMu.Lock()
 	defer refreshMu.Unlock()
 	if err := flushLocked(ctx, store.FlushUsage); err != nil {
-		// Usage stays counted in memory and is retried; the load below still
-		// sees this instance's checks through the counters.
-		log.Warn("flush workspace check usage", "error", err)
+		reloadPending = true
+		return fmt.Errorf("flush workspace check usage; keeping the current snapshot: %w", err)
 	}
+	return loadLocked(ctx, store)
+}
+
+// loadLocked loads allowances and publishes a snapshot. The caller holds
+// refreshMu and has just flushed successfully.
+func loadLocked(ctx context.Context, store *Store) error {
 	now := time.Now()
 	allowances, err := store.Load(ctx, now)
 	if err != nil {
@@ -340,10 +355,12 @@ func Refresh(ctx context.Context) error {
 	snapshot := Compute(now, allowances)
 	attachMeter(snapshot)
 	Publish(snapshot)
+	reloadPending = false
 	return nil
 }
 
-// Flush writes metered check usage without reloading allowances.
+// Flush writes metered check usage without reloading allowances, unless an
+// earlier load was skipped because a flush failed.
 func Flush(ctx context.Context) error {
 	store := storeValue.Load()
 	if store == nil {
@@ -351,7 +368,13 @@ func Flush(ctx context.Context) error {
 	}
 	refreshMu.Lock()
 	defer refreshMu.Unlock()
-	return flushLocked(ctx, store.FlushUsage)
+	if err := flushLocked(ctx, store.FlushUsage); err != nil {
+		return err
+	}
+	if reloadPending && store.Load != nil {
+		return loadLocked(ctx, store)
+	}
+	return nil
 }
 
 // Run refreshes immediately, then on RefreshInterval and on RequestRefresh,

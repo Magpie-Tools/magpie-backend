@@ -64,7 +64,11 @@ succeeded without an acknowledgement. The database records each process's
 last applied sequence in `workspace_usage_flushes` within the same
 transaction and skips any batch at or below it, so a replay never charges
 twice. Marks of processes that stopped flushing more than seven days ago are
-deleted at startup. `check_attempts`, written by the statistics pipeline,
+deleted at startup. While a batch is unacknowledged, the pacer keeps
+its current snapshot instead of loading usage, because a load could count the
+committed batch both in the database and in the local counters. The kept
+snapshot still counts every local request, and the flush that finally
+commits the batch reloads at once. `check_attempts`, written by the statistics pipeline,
 remains an analytics counter and is not used for allowances.
 
 By default, cadence is derived rather than configured. Every minute, each instance loads
