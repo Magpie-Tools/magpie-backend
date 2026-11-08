@@ -12,11 +12,13 @@ import (
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+
+	"gorm.io/gorm"
 )
 
 func TestWorkspaceAllowancesMeterChecksScrapesAndInheritDefaults(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
-	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceScrapeSite{}); err != nil {
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceUsageFlush{}, &domain.WorkspaceScrapeSite{}); err != nil {
 		t.Fatalf("migrate usage tables: %v", err)
 	}
 	t.Chdir(t.TempDir())
@@ -69,7 +71,7 @@ func TestWorkspaceAllowancesMeterChecksScrapesAndInheritDefaults(t *testing.T) {
 		t.Fatalf("record check usage: %v", err)
 	}
 	// Allowance usage comes from the checker's own meter, not from statistics.
-	if err := flushWorkspaceCheckUsage(db, now, []checkpace.CheckUsage{{WorkspaceID: workspace.ID, Attempts: 4, ProtocolChecks: 2}}); err != nil {
+	if err := flushWorkspaceCheckUsage(db, testUsageBatch(checkpace.CheckUsage{WorkspaceID: workspace.ID, PeriodStart: now, Attempts: 4, ProtocolChecks: 2})); err != nil {
 		t.Fatalf("flush metered check usage: %v", err)
 	}
 	if err := recordWorkspaceScrapeUsage(db, []uint{workspace.ID, workspace.ID}, now); err != nil {
@@ -173,7 +175,7 @@ func TestPreserveLegacyCadenceKeepsEveryWorkspaceAtItsOldTimer(t *testing.T) {
 
 func TestChecksPerCycleCountsOnlyActiveRoutesAndObservedRetries(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
-	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceScrapeSite{}); err != nil {
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceUsageFlush{}, &domain.WorkspaceScrapeSite{}); err != nil {
 		t.Fatal(err)
 	}
 	owner := domain.User{Email: "tag-owner@example.test", Password: "hash", Role: "user"}
@@ -237,11 +239,65 @@ func TestChecksPerCycleCountsOnlyActiveRoutesAndObservedRetries(t *testing.T) {
 
 	// Retries observed this month raise the estimate: 300 requests for 200
 	// protocol checks is 1.5 requests per check.
-	if err := flushWorkspaceCheckUsage(db, now, []checkpace.CheckUsage{{WorkspaceID: workspace.ID, Attempts: 300, ProtocolChecks: 200}}); err != nil {
+	if err := flushWorkspaceCheckUsage(db, testUsageBatch(checkpace.CheckUsage{WorkspaceID: workspace.ID, PeriodStart: now, Attempts: 300, ProtocolChecks: 200})); err != nil {
 		t.Fatal(err)
 	}
 	if got := perCycle(); got != 5 {
 		t.Fatalf("checks per cycle with retries = %d, want ceil(3 × 1.5) = 5", got)
+	}
+}
+
+var testUsageSequence uint64
+
+// testUsageBatch numbers a flush batch the way one checker process would.
+func testUsageBatch(usage ...checkpace.CheckUsage) checkpace.UsageBatch {
+	testUsageSequence++
+	return checkpace.UsageBatch{Instance: "test-instance", Sequence: testUsageSequence, Usage: usage}
+}
+
+func TestReplayedUsageBatchIsAppliedOnceInItsOwnMonth(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) { testReplayedUsageBatch(t, setupRotatingProxyTestDB(t)) })
+	t.Run("postgres", func(t *testing.T) { testReplayedUsageBatch(t, setupProxyIngestionPostgresTest(t)) })
+}
+
+func testReplayedUsageBatch(t *testing.T, db *gorm.DB) {
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceUsageFlush{}); err != nil {
+		t.Fatal(err)
+	}
+	workspace := domain.Workspace{ID: 42}
+	thisMonth, _ := workspaceUsageMonth(time.Now())
+	lastMonth := thisMonth.AddDate(0, -1, 0)
+	batch := checkpace.UsageBatch{Instance: "replay-instance", Sequence: 1, Usage: []checkpace.CheckUsage{
+		{WorkspaceID: workspace.ID, PeriodStart: lastMonth, Attempts: 2, ProtocolChecks: 1},
+		{WorkspaceID: workspace.ID, PeriodStart: thisMonth, Attempts: 3, ProtocolChecks: 1},
+	}}
+	// The first commit's acknowledgement was lost, so the checker resends the
+	// same batch.
+	for range 2 {
+		if err := flushWorkspaceCheckUsage(db, batch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Another process's batch with the same number is separate usage.
+	if err := flushWorkspaceCheckUsage(db, checkpace.UsageBatch{Instance: "other-instance", Sequence: 1, Usage: []checkpace.CheckUsage{
+		{WorkspaceID: workspace.ID, PeriodStart: thisMonth, Attempts: 1, ProtocolChecks: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	checks := func(period time.Time) uint64 {
+		var usage domain.WorkspaceUsagePeriod
+		if err := db.Where("workspace_id = ? AND period_start = ?", workspace.ID, period).First(&usage).Error; err != nil {
+			t.Fatal(err)
+		}
+		return usage.Checks
+	}
+	if previous, current := checks(lastMonth), checks(thisMonth); previous != 2 || current != 4 {
+		t.Fatalf("checks = %d last month, %d this month; want 2 and 4", previous, current)
+	}
+	// A batch without a sequence could not be told apart from a replay.
+	batch.Sequence = 0
+	if err := flushWorkspaceCheckUsage(db, batch); err == nil {
+		t.Fatal("a batch without a sequence was accepted")
 	}
 }
 
@@ -266,7 +322,7 @@ func useCheckerSnapshot(t *testing.T, workspaceID uint, snapshot *checkerconfig.
 
 func TestWorkspaceCadenceValidationLoadingAndWarnings(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
-	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceScrapeSite{}); err != nil {
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceUsageFlush{}, &domain.WorkspaceScrapeSite{}); err != nil {
 		t.Fatal(err)
 	}
 	owner := domain.User{Email: "cadence-owner@example.test", Password: "hash", Role: "user"}
@@ -322,7 +378,7 @@ func TestWorkspaceCadenceValidationLoadingAndWarnings(t *testing.T) {
 
 func TestUnlimitedWorkspaceRequiresFixedIntervalAndInheritsInstanceDefault(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
-	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceScrapeSite{}); err != nil {
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceUsageFlush{}, &domain.WorkspaceScrapeSite{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(t.TempDir())

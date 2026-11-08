@@ -239,10 +239,12 @@ func workspaceUsageDeltaRows(periods []domain.WorkspaceUsagePeriod) []map[string
 	return rows
 }
 
-// FlushWorkspaceCheckUsage adds check usage metered in memory by a checker
-// instance (checkpace.ChargeChecks). It runs every checkpace.FlushInterval,
-// never per check, and writes one upsert row per workspace that was checked.
-func FlushWorkspaceCheckUsage(ctx context.Context, at time.Time, usage []checkpace.CheckUsage) error {
+// FlushWorkspaceCheckUsage adds a batch of check usage metered in memory by a
+// checker process (checkpace.Snapshot.ChargeRequest). It runs every
+// checkpace.FlushInterval, never per check: one transaction with one mark
+// upsert and one usage upsert row per workspace and month. A batch whose
+// sequence the process already applied changes nothing.
+func FlushWorkspaceCheckUsage(ctx context.Context, batch checkpace.UsageBatch) error {
 	if DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
@@ -250,19 +252,22 @@ func FlushWorkspaceCheckUsage(ctx context.Context, at time.Time, usage []checkpa
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}
-	return flushWorkspaceCheckUsage(tx, at, usage)
+	return flushWorkspaceCheckUsage(tx, batch)
 }
 
-func flushWorkspaceCheckUsage(tx *gorm.DB, at time.Time, usage []checkpace.CheckUsage) error {
-	if tx == nil || len(usage) == 0 {
+func flushWorkspaceCheckUsage(db *gorm.DB, batch checkpace.UsageBatch) error {
+	if db == nil || len(batch.Usage) == 0 {
 		return nil
 	}
-	periodStart, periodEnd := workspaceUsageMonth(at)
-	periods := make([]domain.WorkspaceUsagePeriod, 0, len(usage))
-	for _, delta := range usage {
-		if delta.WorkspaceID == 0 {
+	if batch.Instance == "" || batch.Sequence == 0 {
+		return fmt.Errorf("check usage batch needs an instance and a sequence")
+	}
+	periods := make([]domain.WorkspaceUsagePeriod, 0, len(batch.Usage))
+	for _, delta := range batch.Usage {
+		if delta.WorkspaceID == 0 || (delta.Attempts == 0 && delta.ProtocolChecks == 0) {
 			continue
 		}
+		periodStart, periodEnd := workspaceUsageMonth(delta.PeriodStart)
 		periods = append(periods, domain.WorkspaceUsagePeriod{
 			WorkspaceID: delta.WorkspaceID, PeriodStart: periodStart, PeriodEnd: periodEnd,
 			Checks: delta.Attempts, ProtocolChecks: delta.ProtocolChecks,
@@ -272,17 +277,54 @@ func flushWorkspaceCheckUsage(tx *gorm.DB, at time.Time, usage []checkpace.Check
 		return nil
 	}
 	// A consistent row order keeps concurrent flushers from deadlocking.
-	sort.Slice(periods, func(i, j int) bool { return periods[i].WorkspaceID < periods[j].WorkspaceID })
-	rows := workspaceUsageDeltaRows(periods)
-	return tx.Model(&domain.WorkspaceUsagePeriod{}).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "workspace_id"}, {Name: "period_start"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"period_end":      gorm.Expr("EXCLUDED.period_end"),
-			"checks":          gorm.Expr("workspace_usage_periods.checks + EXCLUDED.checks"),
-			"protocol_checks": gorm.Expr("workspace_usage_periods.protocol_checks + EXCLUDED.protocol_checks"),
-			"updated_at":      gorm.Expr("CURRENT_TIMESTAMP"),
-		}),
-	}).CreateInBatches(&rows, 1000).Error
+	sort.Slice(periods, func(i, j int) bool {
+		if periods[i].WorkspaceID != periods[j].WorkspaceID {
+			return periods[i].WorkspaceID < periods[j].WorkspaceID
+		}
+		return periods[i].PeriodStart.Before(periods[j].PeriodStart)
+	})
+	return db.Transaction(func(tx *gorm.DB) error {
+		// The mark row serializes one process's batches, and a replayed
+		// sequence updates nothing.
+		mark := tx.Model(&domain.WorkspaceUsageFlush{}).Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "instance"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"sequence":   gorm.Expr("EXCLUDED.sequence"),
+				"updated_at": gorm.Expr("EXCLUDED.updated_at"),
+			}),
+			Where: clause.Where{Exprs: []clause.Expression{gorm.Expr("workspace_usage_flushes.sequence < EXCLUDED.sequence")}},
+		}).Create(&domain.WorkspaceUsageFlush{Instance: batch.Instance, Sequence: batch.Sequence, UpdatedAt: time.Now().UTC()})
+		if mark.Error != nil {
+			return mark.Error
+		}
+		if mark.RowsAffected == 0 {
+			return nil
+		}
+		rows := workspaceUsageDeltaRows(periods)
+		return tx.Model(&domain.WorkspaceUsagePeriod{}).Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "workspace_id"}, {Name: "period_start"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"period_end":      gorm.Expr("EXCLUDED.period_end"),
+				"checks":          gorm.Expr("workspace_usage_periods.checks + EXCLUDED.checks"),
+				"protocol_checks": gorm.Expr("workspace_usage_periods.protocol_checks + EXCLUDED.protocol_checks"),
+				"updated_at":      gorm.Expr("CURRENT_TIMESTAMP"),
+			}),
+		}).CreateInBatches(&rows, 1000).Error
+	})
+}
+
+// workspaceUsageFlushRetention is how long a stopped process's last batch
+// mark is kept. Its batches are retried for seconds, never for days.
+const workspaceUsageFlushRetention = 7 * 24 * time.Hour
+
+// PruneWorkspaceUsageFlushes deletes batch marks of processes that stopped
+// flushing long ago. Each process start adds one mark; this runs at startup.
+func PruneWorkspaceUsageFlushes(ctx context.Context) error {
+	if DB == nil {
+		return fmt.Errorf("database not initialised")
+	}
+	return DB.WithContext(ctx).Where("updated_at < ?", time.Now().UTC().Add(-workspaceUsageFlushRetention)).
+		Delete(&domain.WorkspaceUsageFlush{}).Error
 }
 
 // RecordWorkspaceScrapeUsage charges one scrape to each workspace served by a

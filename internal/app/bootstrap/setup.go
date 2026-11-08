@@ -254,6 +254,9 @@ func startCheckPacing(ctx context.Context, running *Runtime) {
 		FlushUsage: database.FlushWorkspaceCheckUsage,
 	})
 	convertLegacyCadence(ctx)
+	if err := database.PruneWorkspaceUsageFlushes(ctx); err != nil {
+		log.Warn("prune workspace check usage batch marks", "error", err)
+	}
 	if err := checkpace.Refresh(ctx); err != nil {
 		log.Warn("initial workspace check allowance load failed; using fallback cadence", "error", err)
 	}

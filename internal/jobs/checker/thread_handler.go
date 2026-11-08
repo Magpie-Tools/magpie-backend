@@ -223,7 +223,7 @@ func work(parent context.Context) {
 
 		judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries := buildRequestAssignments(dueProxy)
 		saveResponses := config.GetConfig().Checker.SaveResponses
-		if err := processJudgeAssignments(proxy, judgeRequests, workspaceSuccess, maxTimeout, maxRetries, saveResponses); err != nil {
+		if err := processJudgeAssignments(proxy, judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries, saveResponses); err != nil {
 			continue
 		}
 		if err := proxyqueue.PublicProxyQueue.RenewLeaseIfNeeded(ctx, proxy); err != nil {
@@ -543,38 +543,50 @@ func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool
 }
 
 // processJudgeAssignments runs assignments serially and updates the worker's
-// success map. Each physical check hands off one statistic with independent
-// workspace verdicts, even on a transport failure. Lease loss or cancellation
-// aborts the cycle; statistics already handed off are not undone. A nil error
-// does not mean those statistics have committed to PostgreSQL.
-func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, workspaceSuccess map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
+// success and eligibility maps. Each physical check hands off one statistic
+// with independent workspace verdicts, even on a transport failure. Every
+// request is charged to the workspaces it serves just before it is sent; a
+// workspace whose allowance ran out receives no further requests or results
+// and, unless another assignment served it, no failure-streak update. Lease
+// loss or cancellation aborts the cycle; statistics already handed off are not
+// undone. A nil error does not mean those statistics have committed to
+// PostgreSQL.
+func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, workspaceSuccess, workspaceHasChecks map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
+	for workspaceID := range workspaceHasChecks {
+		workspaceHasChecks[workspaceID] = false
+	}
+	// One meter per cycle, reused by its assignments.
+	meter := &requestMeter{}
 	for _, item := range assignments {
 		timeout, retries := item.timeout, item.retries
 		if !item.budgetSet {
 			timeout, retries = maxTimeout, maxRetries
 		}
-		html, err, responseTime, attempt := checkProxyWithRetries(proxy, item.judge, item.proxyProtocol, item.transportProtocol, timeout, retries)
-		leaseLost := errors.Is(err, proxyqueue.ErrProxyLeaseLost)
-		// Charge every outbound request, retries included, before anything
-		// can abandon the cycle. Metering does not wait for the statistics
-		// pipeline, which may drop results under load.
-		chargeCheckAttempts(item.checks, requestsMade(attempt, leaseLost))
-		if leaseLost {
+		meter.reset(item.checks)
+		html, err, responseTime, attempt := checkProxyWithRetries(proxy, item.judge, item.proxyProtocol, item.transportProtocol, timeout, retries, meter)
+		if errors.Is(err, proxyqueue.ErrProxyLeaseLost) {
 			return err
 		}
 		if ctxErr := proxyCheckContext(proxy).Err(); ctxErr != nil {
 			return ctxErr
 		}
+		if errors.Is(err, errAllowanceExhausted) {
+			// Every workspace on the assignment ran out of checks. No
+			// result was completed for them.
+			continue
+		}
+		checks := meter.checks
 		truncatedBody := ""
 		if saveResponses {
 			truncatedBody = truncateResponseBody(html)
 		}
-		responseValidByRegex := make(map[string]bool, len(item.checks))
+		responseValidByRegex := make(map[string]bool, len(checks))
 		statAlive := false
 		createdAt := time.Now().UTC()
-		evidence := make([]domain.WorkspaceCheckEvidence, 0, len(item.checks))
+		evidence := make([]domain.WorkspaceCheckEvidence, 0, len(checks))
 
-		for _, check := range item.checks {
+		for _, check := range checks {
+			workspaceHasChecks[check.workspaceID] = true
 			validationKey := check.regex
 			if strings.EqualFold(validationKey, "default") {
 				validationKey += check.configKey
@@ -608,47 +620,90 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 			statistic.LevelID = new(support.GetProxyLevel(html))
 		}
 
-		workspaceIDs := collectCheckWorkspaceIDs(item.checks)
+		workspaceIDs := collectCheckWorkspaceIDs(checks)
 		enqueueProxyStatistic(statistic, workspaceIDs)
 	}
 	return nil
 }
 
-// requestsMade converts checkProxyWithRetries' zero-based attempt index into
-// a request count. When the lease is lost, the index is the request that was
-// never sent.
-func requestsMade(attempt uint8, leaseLost bool) uint64 {
-	if leaseLost {
-		return uint64(attempt)
-	}
-	return uint64(attempt) + 1
+// errAllowanceExhausted stops an assignment before a request because none of
+// its workspaces has checks left.
+var errAllowanceExhausted = errors.New("workspace check allowance exhausted")
+
+// requestMeter admits and charges one assignment's requests. checks starts as
+// the assignment's own slice and is copied only when a workspace drops out, so
+// the common path does not allocate.
+type requestMeter struct {
+	checks  []workspaceCheck
+	owned   bool
+	started bool
 }
 
-// chargeCheckAttempts charges each workspace sharing a request once.
-// Assignments rarely serve more than a few workspaces, so a linear duplicate
-// scan avoids allocating.
-func chargeCheckAttempts(checks []workspaceCheck, requests uint64) {
-	if requests == 0 {
-		return
+func (m *requestMeter) reset(checks []workspaceCheck) {
+	m.checks, m.owned, m.started = checks, false, false
+}
+
+// admit is called after the lease is renewed and before each request. It
+// charges the request once to each workspace still served and drops those
+// whose allowance is used up. It returns false when none is left. A nil meter
+// admits everything.
+func (m *requestMeter) admit() bool {
+	if m == nil {
+		return true
 	}
-	for index, check := range checks {
-		if check.workspaceID == 0 {
+	snapshot, at, first := currentPace(), time.Now(), !m.started
+	checks := m.checks
+	for index := 0; index < len(checks); index++ {
+		workspaceID := checks[index].workspaceID
+		if workspaceID == 0 || servedEarlier(checks[:index], workspaceID) {
 			continue
 		}
-		duplicate := false
-		for _, earlier := range checks[:index] {
-			if earlier.workspaceID == check.workspaceID {
-				duplicate = true
-				break
-			}
+		if chargeRequest(snapshot, workspaceID, first, at) {
+			continue
 		}
-		if !duplicate {
-			chargeChecks(check.workspaceID, requests)
-		}
+		checks = withoutWorkspace(checks, workspaceID, m.owned)
+		m.owned = true
+		index--
 	}
+	m.checks = checks
+	if len(checks) == 0 {
+		return false
+	}
+	m.started = true
+	return true
 }
 
-var chargeChecks = checkpace.ChargeChecks
+// servedEarlier reports whether a workspace shares the request through an
+// earlier check, so it is charged once per request.
+func servedEarlier(checks []workspaceCheck, workspaceID uint) bool {
+	for _, check := range checks {
+		if check.workspaceID == workspaceID {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutWorkspace removes a workspace's checks, copying first unless the
+// slice is already the meter's own.
+func withoutWorkspace(checks []workspaceCheck, workspaceID uint, owned bool) []workspaceCheck {
+	var kept []workspaceCheck
+	if owned {
+		kept = checks[:0]
+	} else {
+		kept = make([]workspaceCheck, 0, len(checks)-1)
+	}
+	for _, check := range checks {
+		if check.workspaceID != workspaceID {
+			kept = append(kept, check)
+		}
+	}
+	return kept
+}
+
+var chargeRequest = func(snapshot *checkpace.Snapshot, workspaceID uint, firstOfCheck bool, at time.Time) bool {
+	return snapshot.ChargeRequest(workspaceID, firstOfCheck, at)
+}
 
 func collectCheckWorkspaceIDs(checks []workspaceCheck) []uint {
 	if len(checks) == 0 {
@@ -723,7 +778,9 @@ func filterRemovedWorkspaces(proxy domain.Proxy, removed map[uint]struct{}) doma
 // request. Timing is in milliseconds; the fourth result is a zero-based attempt
 // index, not a request count. A failed lease renewal returns before that attempt
 // and joins ErrProxyLeaseLost to the error so the worker abandons the cycle.
-func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeout uint16, retries uint8) (string, error, int64, uint8) {
+// meter admits and charges each request after the lease renewal; when it
+// refuses, the attempt is not sent and errAllowanceExhausted is returned.
+func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol string, transportProtocol string, timeout uint16, retries uint8, meter *requestMeter) (string, error, int64, uint8) {
 	var (
 		html         string
 		err          error
@@ -734,6 +791,9 @@ func CheckProxyWithRetries(proxy domain.Proxy, judge *domain.Judge, protocol str
 		ctx := proxyCheckContext(proxy)
 		if err := proxyqueue.PublicProxyQueue.RenewLeaseIfNeeded(ctx, proxy); err != nil {
 			return html, errors.Join(proxyqueue.ErrProxyLeaseLost, err), responseTime, uint8(i)
+		}
+		if !meter.admit() {
+			return html, errAllowanceExhausted, responseTime, uint8(i)
 		}
 		timeStart := time.Now()
 		html, err = proxyCheckRequestContext(ctx, proxy, judge, protocol, transportProtocol, timeout)

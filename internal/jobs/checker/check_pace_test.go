@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
 	"magpie/internal/checkpace"
 	"magpie/internal/domain"
-	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"magpie/internal/support"
 )
 
@@ -125,52 +125,149 @@ func BenchmarkSelectDueWorkspaces(b *testing.B) {
 	}
 }
 
-func TestEveryRequestIsChargedEvenWhenStatisticsAreDropped(t *testing.T) {
-	originalCheck, originalEnqueue, originalCharge := checkProxyWithRetries, enqueueProxyStatistic, chargeChecks
-	t.Cleanup(func() {
-		checkProxyWithRetries, enqueueProxyStatistic, chargeChecks = originalCheck, originalEnqueue, originalCharge
-	})
-	charged := map[uint]uint64{}
-	chargeChecks = func(workspaceID uint, requests uint64) { charged[workspaceID] += requests }
-	// The statistics pipeline is overloaded and drops every result.
-	enqueueProxyStatistic = func(domain.ProxyStatistic, []uint) {}
-	// Two retries after the first request: three requests.
-	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8) (string, error, int64, uint8) {
-		return "", errors.New("timeout"), 0, 2
-	}
-	assignments := map[string]*requestAssignment{
-		"1_http_tcp": {
-			judge: &domain.Judge{ID: 1}, proxyProtocol: "http", transportProtocol: support.TransportTCP, protocolID: 1,
-			// Workspace 4 has two profiles on the same request.
-			checks: []workspaceCheck{{workspaceID: 4, regex: "a"}, {workspaceID: 5, regex: "a"}, {workspaceID: 4, regex: "b"}},
-		},
-	}
-	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, 1000, 2, false); err != nil {
+// useMeteredPace publishes a snapshot connected to the check meter. The meter
+// lives for the process, so each test uses its own workspace IDs.
+func useMeteredPace(t testing.TB, allowances ...checkpace.Allowance) {
+	t.Helper()
+	checkpace.Configure(checkpace.Store{Load: func(context.Context, time.Time) ([]checkpace.Allowance, error) { return allowances, nil }})
+	if err := checkpace.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if charged[4] != 3 || charged[5] != 3 {
-		t.Fatalf("charged = %v, want three requests for each workspace", charged)
-	}
+	snapshot := checkpace.Current()
+	t.Cleanup(func() { checkpace.Configure(checkpace.Store{}); checkpace.Publish(nil) })
+	previous := currentPace
+	currentPace = func() *checkpace.Snapshot { return snapshot }
+	t.Cleanup(func() { currentPace = previous })
+}
 
-	// A lost lease after two requests still charges the two that were sent.
-	charged = map[uint]uint64{}
-	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8) (string, error, int64, uint8) {
-		return "", errors.Join(proxyqueue.ErrProxyLeaseLost, errors.New("expired")), 0, 2
+func usedChecks(t *testing.T, workspaceID uint) uint64 {
+	t.Helper()
+	pace, ok := currentPace().Pace(workspaceID)
+	if !ok {
+		t.Fatalf("workspace %d has no pace", workspaceID)
 	}
-	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, 1000, 2, false); !errors.Is(err, proxyqueue.ErrProxyLeaseLost) {
-		t.Fatalf("err = %v", err)
-	}
-	if charged[4] != 2 || charged[5] != 2 {
-		t.Fatalf("charged after a lost lease = %v, want two requests each", charged)
+	return pace.CurrentUsedChecks()
+}
+
+// failingJudge makes every request fail at the transport and calls onSend as
+// each request goes out.
+func failingJudge(t *testing.T, onSend func()) {
+	t.Helper()
+	originalFactory := checkerTransportFactory
+	resetCheckerHTTPClientCacheForTests()
+	t.Cleanup(func() { checkerTransportFactory = originalFactory; resetCheckerHTTPClientCacheForTests() })
+	checkerTransportFactory = func(domain.Proxy, *domain.Judge, string, string, ...uint16) (http.RoundTripper, func(), error) {
+		return roundTripFunc(func(*http.Request) (*http.Response, error) {
+			onSend()
+			return nil, errors.New("unreachable")
+		}), nil, nil
 	}
 }
 
-func TestChargeCheckAttemptsDoesNotAllocate(t *testing.T) {
-	originalCharge := chargeChecks
-	t.Cleanup(func() { chargeChecks = originalCharge })
-	chargeChecks = func(uint, uint64) {}
-	checks := []workspaceCheck{{workspaceID: 1}, {workspaceID: 2}, {workspaceID: 1}}
-	if allocations := testing.AllocsPerRun(100, func() { chargeCheckAttempts(checks, 3) }); allocations != 0 {
-		t.Fatalf("charging allocated %.0f times", allocations)
+func failingAssignment(protocol string, retries uint8, checks ...workspaceCheck) *requestAssignment {
+	return &requestAssignment{
+		judge: &domain.Judge{ID: 1, FullString: "http://127.0.0.1/"}, proxyProtocol: protocol, transportProtocol: support.TransportTCP,
+		protocolID: 1, timeout: 1000, retries: retries, budgetSet: true, checks: checks,
+	}
+}
+
+func TestRequestsAreChargedBeforeTheyAreSentAndStopAtTheAllowance(t *testing.T) {
+	// One check left, and two protocol tests with five retries each.
+	useMeteredPace(t, checkpace.Allowance{WorkspaceID: 201, MonthlyChecks: 10, UsedChecks: 9, ChecksPerCycle: 1})
+	sent := 0
+	failingJudge(t, func() {
+		sent++
+		if used := usedChecks(t, 201); used != 9+uint64(sent) {
+			t.Errorf("request %d went out with %d checks charged", sent, used)
+		}
+	})
+	originalEnqueue := enqueueProxyStatistic
+	t.Cleanup(func() { enqueueProxyStatistic = originalEnqueue })
+	enqueueProxyStatistic = func(domain.ProxyStatistic, []uint) {
+		t.Error("a statistic was reported for a test that never finished")
+	}
+	assignments := map[string]*requestAssignment{
+		"http":  failingAssignment("http", 5, workspaceCheck{workspaceID: 201, regex: "default"}),
+		"https": failingAssignment("https", 5, workspaceCheck{workspaceID: 201, regex: "default"}),
+	}
+	hasChecks := map[uint]bool{201: true}
+	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, hasChecks, 1000, 5, false); err != nil {
+		t.Fatal(err)
+	}
+	if sent != 1 || usedChecks(t, 201) != 10 {
+		t.Fatalf("sent %d requests and charged %d checks with one check left; want 1 and 10", sent, usedChecks(t, 201))
+	}
+	if hasChecks[201] {
+		t.Fatal("an unfinished test would count as a failed check")
+	}
+}
+
+func TestSharedRequestDropsOnlyTheExhaustedWorkspace(t *testing.T) {
+	useMeteredPace(t,
+		checkpace.Allowance{WorkspaceID: 202, MonthlyChecks: 10, UsedChecks: 9, ChecksPerCycle: 1},
+		checkpace.Allowance{WorkspaceID: 203, MonthlyChecks: 1_000, ChecksPerCycle: 1},
+	)
+	sent := 0
+	failingJudge(t, func() { sent++ })
+	var reported []uint
+	originalEnqueue := enqueueProxyStatistic
+	t.Cleanup(func() { enqueueProxyStatistic = originalEnqueue })
+	// The statistics pipeline drops the result: charging does not depend on it.
+	enqueueProxyStatistic = func(_ domain.ProxyStatistic, workspaceIDs []uint) { reported = workspaceIDs }
+	shared := []workspaceCheck{{workspaceID: 202, regex: "a"}, {workspaceID: 203, regex: "a"}, {workspaceID: 203, regex: "b"}}
+	assignments := map[string]*requestAssignment{"http": failingAssignment("http", 2, shared...)}
+	hasChecks := map[uint]bool{202: true, 203: true}
+	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, hasChecks, 1000, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	if sent != 3 || usedChecks(t, 202) != 10 || usedChecks(t, 203) != 3 {
+		t.Fatalf("sent %d, charged %d and %d; want 3 requests, 10 and 3 checks", sent, usedChecks(t, 202), usedChecks(t, 203))
+	}
+	if len(reported) != 1 || reported[0] != 203 || hasChecks[202] || !hasChecks[203] {
+		t.Fatalf("reported to %v with eligibility %v; only workspace 203 finished the test", reported, hasChecks)
+	}
+	if len(shared) != 3 || shared[0].workspaceID != 202 {
+		t.Fatal("dropping a workspace changed the assignment's own checks")
+	}
+}
+
+func TestRequestMeterDoesNotAllocateWhileAllowanceLasts(t *testing.T) {
+	useMeteredPace(t,
+		checkpace.Allowance{WorkspaceID: 204, MonthlyChecks: 1 << 40, ChecksPerCycle: 1},
+		checkpace.Allowance{WorkspaceID: 205, MonthlyChecks: 1 << 40, ChecksPerCycle: 1},
+	)
+	checks := []workspaceCheck{{workspaceID: 204}, {workspaceID: 205}, {workspaceID: 204}}
+	meter := &requestMeter{}
+	if allocations := testing.AllocsPerRun(100, func() {
+		meter.reset(checks)
+		if !meter.admit() || !meter.admit() {
+			t.Fatal("request refused")
+		}
+	}); allocations != 0 {
+		t.Fatalf("admitting requests allocated %.0f times", allocations)
+	}
+}
+
+// BenchmarkRequestMeterAdmit measures the work added before each outbound
+// request: per owner, a snapshot map read, an atomic load and two atomic adds.
+func BenchmarkRequestMeterAdmit(b *testing.B) {
+	for _, owners := range []int{1, 8} {
+		b.Run(fmt.Sprintf("owners=%d", owners), func(b *testing.B) {
+			allowances := make([]checkpace.Allowance, 0, owners)
+			checks := make([]workspaceCheck, 0, owners)
+			for i := 1; i <= owners; i++ {
+				id := uint(300 + owners*10 + i)
+				allowances = append(allowances, checkpace.Allowance{WorkspaceID: id, MonthlyChecks: 1 << 62, ChecksPerCycle: 1})
+				checks = append(checks, workspaceCheck{workspaceID: id})
+			}
+			useMeteredPace(b, allowances...)
+			meter := &requestMeter{}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				meter.reset(checks)
+				meter.admit()
+			}
+		})
 	}
 }

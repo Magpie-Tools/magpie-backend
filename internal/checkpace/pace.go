@@ -81,7 +81,7 @@ type Pace struct {
 
 	// counter and flushedMark connect a published snapshot to this
 	// instance's check meter, so checks made since the load count at once.
-	counter     *checkCounter
+	counter     *monthCounter
 	flushedMark uint64
 }
 
@@ -338,10 +338,7 @@ func Refresh(ctx context.Context) error {
 		return err
 	}
 	snapshot := Compute(now, allowances)
-	for workspaceID, pace := range snapshot.paces {
-		pace.counter = counterFor(workspaceID)
-		pace.flushedMark = flushed[workspaceID].Attempts
-	}
+	attachMeter(snapshot)
 	Publish(snapshot)
 	return nil
 }

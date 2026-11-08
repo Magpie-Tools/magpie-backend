@@ -346,3 +346,13 @@ type WorkspaceUsagePeriod struct {
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime"`
 }
+
+// WorkspaceUsageFlush is the last check usage batch a checker process added
+// to WorkspaceUsagePeriod. A batch is retried unchanged when its commit was not
+// acknowledged, and a sequence at or below the recorded one is skipped, so a
+// retry never charges the same requests twice.
+type WorkspaceUsageFlush struct {
+	Instance  string    `gorm:"primaryKey;size:64"`
+	Sequence  uint64    `gorm:"not null"`
+	UpdatedAt time.Time `gorm:"not null;index"`
+}

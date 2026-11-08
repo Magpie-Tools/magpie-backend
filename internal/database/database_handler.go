@@ -200,6 +200,7 @@ func defaultMigrations() []any {
 		domain.WorkspaceMemberPreference{},
 		domain.WorkspaceSubscription{},
 		domain.WorkspaceUsagePeriod{},
+		domain.WorkspaceUsageFlush{},
 		domain.PasswordResetToken{},
 		domain.EmailOutbox{},
 		domain.AlertRule{},

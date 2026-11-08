@@ -57,7 +57,7 @@ func TestLongRouteRetriesRenewLeaseBetweenAttempts(t *testing.T) {
 			return nil, errors.New("unreachable")
 		}), nil, nil
 	}
-	_, err, _, attempt := CheckProxyWithRetries(worker, &domain.Judge{FullString: "http://127.0.0.1/"}, "http", "tcp", 60000, 5)
+	_, err, _, attempt := CheckProxyWithRetries(worker, &domain.Judge{FullString: "http://127.0.0.1/"}, "http", "tcp", 60000, 5, nil)
 	if err == nil || attempts != 6 || attempt != 5 {
 		t.Fatalf("retry budget changed: attempts=%d final=%d error=%v", attempts, attempt, err)
 	}
@@ -103,7 +103,7 @@ func TestBulkRequeueKeepsRetryingWorkerExclusive(t *testing.T) {
 			return nil, errors.New("unreachable")
 		}), nil, nil
 	}
-	_, err, _, _ = CheckProxyWithRetries(worker, &domain.Judge{FullString: "http://127.0.0.1/"}, "http", "tcp", 1000, 2)
+	_, err, _, _ = CheckProxyWithRetries(worker, &domain.Judge{FullString: "http://127.0.0.1/"}, "http", "tcp", 1000, 2, nil)
 	if attempts != 3 || errors.Is(err, proxyqueue.ErrProxyLeaseLost) {
 		t.Fatalf("original worker's retry ownership changed: attempts=%d error=%v", attempts, err)
 	}

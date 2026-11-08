@@ -49,7 +49,7 @@ func TestTaggedAssignmentsShareProfileBudgetAndCaptureSettings(t *testing.T) {
 	capturedKeys := snap.Plan(3).Keys
 	snap = checkerconfig.Build(domain.Workspace{ID: 1, Timeout: 9000, Retries: 4}, nil, js, nil)
 	calls := map[string][2]uint16{}
-	checkProxyWithRetries = func(_ domain.Proxy, _ *domain.Judge, protocol, transport string, timeout uint16, retries uint8) (string, error, int64, uint8) {
+	checkProxyWithRetries = func(_ domain.Proxy, _ *domain.Judge, protocol, transport string, timeout uint16, retries uint8, _ *requestMeter) (string, error, int64, uint8) {
 		calls[protocol] = [2]uint16{timeout, uint16(retries)}
 		if transport != "tcp" {
 			t.Fatal(transport)
@@ -58,7 +58,7 @@ func TestTaggedAssignmentsShareProfileBudgetAndCaptureSettings(t *testing.T) {
 	}
 	var statistics []domain.ProxyStatistic
 	enqueueProxyStatistic = func(stat domain.ProxyStatistic, _ []uint) { statistics = append(statistics, stat) }
-	processJudgeAssignments(refreshed, assignments, success, maxTimeout, maxRetries, false)
+	processJudgeAssignments(refreshed, assignments, success, map[uint]bool{}, maxTimeout, maxRetries, false)
 	if calls["http"] != [2]uint16{1200, 0} || calls["socks5"] != [2]uint16{1200, 0} {
 		t.Fatal(calls)
 	}
@@ -77,7 +77,7 @@ func TestTaggedAssignmentsShareProfileBudgetAndCaptureSettings(t *testing.T) {
 func TestSharedRequestKeepsWorkspaceValidationEvidence(t *testing.T) {
 	oldCheck, oldEnqueue := checkProxyWithRetries, enqueueProxyStatistic
 	t.Cleanup(func() { checkProxyWithRetries = oldCheck; enqueueProxyStatistic = oldEnqueue })
-	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8) (string, error, int64, uint8) {
+	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8, *requestMeter) (string, error, int64, uint8) {
 		return "HEADER-A", nil, 1, 0
 	}
 	var captured []domain.ProxyStatistic
@@ -87,7 +87,7 @@ func TestSharedRequestKeepsWorkspaceValidationEvidence(t *testing.T) {
 		{workspaceID: 2, regex: "DEFAULT", headers: []string{"HEADER-B"}, configKey: "second"},
 	}}}
 	success := map[uint]bool{}
-	processJudgeAssignments(domain.Proxy{ID: 1}, assignments, success, 8000, 4, false)
+	processJudgeAssignments(domain.Proxy{ID: 1}, assignments, success, map[uint]bool{}, 8000, 4, false)
 	if len(captured) != 1 || len(captured[0].CheckEvidence) != 2 || !captured[0].CheckEvidence[0].Alive || captured[0].CheckEvidence[1].Alive || !success[1] || success[2] {
 		t.Fatal(captured, success)
 	}
@@ -112,11 +112,11 @@ func TestProtocolTimeoutAndRetriesExecuteAgainstProxy(t *testing.T) {
 	proxy := domain.Proxy{IP: host, Port: uint16(n)}
 	judge := &domain.Judge{FullString: "http://judge.invalid/"}
 	judge.SetUp()
-	_, err, _, attempt := CheckProxyWithRetries(proxy, judge, "http", "tcp", 20, 2)
+	_, err, _, attempt := CheckProxyWithRetries(proxy, judge, "http", "tcp", 20, 2, nil)
 	if err == nil || attempt != 2 || requests.Load() != 3 {
 		t.Fatal(err, attempt, requests.Load())
 	}
-	_, err, _, attempt = CheckProxyWithRetries(proxy, judge, "http", "tcp", 500, 0)
+	_, err, _, attempt = CheckProxyWithRetries(proxy, judge, "http", "tcp", 500, 0, nil)
 	if err != nil || attempt != 0 || requests.Load() != 4 {
 		t.Fatal(err, attempt, requests.Load())
 	}
