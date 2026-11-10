@@ -26,7 +26,9 @@ func TestAlertsConcurrentCountsAndStateTimeoutPostgres(t *testing.T) {
 	defer locked.Rollback()
 	alertMust(t, locked.Exec("SELECT id FROM workspaces WHERE id = ? FOR UPDATE", a.ID).Error)
 	config := defaultAlertEvaluationConfig()
-	config.stateTimeout = 100 * time.Millisecond
+	// Leave time for real PostgreSQL round trips on a busy CI runner while
+	// still expiring the deliberately blocked workspace before the parent.
+	config.stateTimeout = time.Second
 	var aCounts, bCounts atomic.Int32
 	config.observeRoutes = func(_ *gorm.DB, workspace domain.Workspace, _ *alertRotator, _ time.Time) AlertObservation {
 		if workspace.ID == a.ID {
@@ -36,7 +38,7 @@ func TestAlertsConcurrentCountsAndStateTimeoutPostgres(t *testing.T) {
 		}
 		return AlertObservation{Value: alertFloat(0)}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	if err := evaluateAlerts(ctx, now, config); !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {

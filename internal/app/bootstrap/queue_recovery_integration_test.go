@@ -95,6 +95,11 @@ func TestApplicationStartupRecoversLostQueues(t *testing.T) {
 	settings.Checker.Threads, settings.Checker.MaxThreads = 1, 1
 	settings.Scraper.Threads, settings.Scraper.MaxThreads = 1, 1
 	settings.Checker.Judges, settings.Checker.IpLookup = nil, ""
+	// Keep this recovery fixture hourly regardless of the default allowance
+	// or how much of the month remains. A one-route automatic cadence can
+	// reach the one-minute floor, below scheduledQueues' safety margin.
+	settings.Checker.UnlimitedMonthlyChecks = true
+	settings.Scraper.UnlimitedMonthlyScrapes = true
 	settings.BlacklistSources = nil
 	settings.Plugins.GeoLite.Enabled, settings.Plugins.AbuseIPDB.Enabled = false, false
 	data, err = json.Marshal(settings)
