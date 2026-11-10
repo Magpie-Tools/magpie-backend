@@ -91,11 +91,9 @@ func TestQueueHeadRepairPreservesConcurrentEnqueue(t *testing.T) {
 }
 
 func TestOwnershipChangingCompletionPreservesNewWorkspace(t *testing.T) {
-	queue, client, proxy := queueConcurrencyFixture(t)
+	queue, _, proxy := queueConcurrencyFixture(t)
 	ctx := context.Background()
-	if err := client.Set(ctx, queueRescheduleStateKey, "1", 0).Err(); err != nil {
-		t.Fatal(err)
-	}
+	useUniformPace(t, time.Millisecond)
 	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +264,9 @@ func TestPlaintextProxyCycleCommandBudgetAndPayload(t *testing.T) {
 	if err := queue.RequeueProxy(worker, scheduled); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(hook.commands, []string{"evalsha", "get", "evalsha"}) {
+	// One claim and one completion. The cadence comes from the in-memory
+	// allowance snapshot, so requeueing reads no interval key.
+	if !reflect.DeepEqual(hook.commands, []string{"evalsha", "evalsha"}) {
 		t.Fatalf("hot cycle commands = %v", hook.commands)
 	}
 	stored, err := client.Get(ctx, proxyKeyPrefix+string(proxy.Hash)).Result()

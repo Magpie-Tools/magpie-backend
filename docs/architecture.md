@@ -133,8 +133,11 @@ Scraping joins the same path in `handleScrapedHTML` in the
 source's subscribed workspaces, records source associations, applies source tags
 and adds the routes to the proxy queue.
 
-Every completed source fetch uses the configured scrape interval after success
-or failure, without failure multipliers. Redis stores the next attempt for each
+Every completed source fetch waits for the fetch mode's scrape cadence after
+success or failure, without failure multipliers. That cadence comes from the
+subscribed workspaces' monthly scrape allowances, and only subscribers that are
+due are fetched and charged (see
+[ADR 0014](adr/0014-derive-check-cadence-from-monthly-workspace-allowances.md)). Redis stores the next attempt for each
 URL and fetch mode separately from the source payload. A pending browser fetch
 therefore cannot repeat completed HTTP work. Local browser or subscription-lookup
 failures defer pending work without replacing the last scrape result. Valid

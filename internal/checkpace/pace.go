@@ -1,0 +1,428 @@
+// Package checkpace turns each workspace's monthly check and scrape allowances
+// into cadences. Snapshots are computed off the hot path from aggregated usage
+// rows; checker and scraper workers only read an immutable published map.
+package checkpace
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/charmbracelet/log"
+)
+
+const (
+	// MinimumCheckInterval is the fastest cadence any workspace can reach. A
+	// subscription's minimum check interval can only make its cadence slower.
+	MinimumCheckInterval = time.Minute
+	// MinimumScrapeInterval is the fastest cadence for one subscribed source,
+	// which keeps small allowances from refetching a list every few minutes.
+	MinimumScrapeInterval = 15 * time.Minute
+	// MaxRouteInterval bounds how long a queued route or source waits before it
+	// is revisited. Slower workspace cadences are enforced by the due test, so
+	// an allowance refill or upgrade takes effect within this bound.
+	MaxRouteInterval = 6 * time.Hour
+	// FallbackInterval applies before the first snapshot is published and to
+	// workspaces created since the last refresh.
+	FallbackInterval = time.Hour
+	// UnlimitedDefaultInterval applies to a workspace without a monthly limit
+	// until it chooses a fixed interval. Automatic spreading needs a limit.
+	UnlimitedDefaultInterval = time.Hour
+	// RefreshInterval is how often allowances and usage are re-read.
+	RefreshInterval = time.Minute
+
+	maxComputedInterval = 400 * 24 * time.Hour
+)
+
+// Allowance is one workspace's monthly entitlement and current-month usage.
+// A zero monthly allowance means the workspace may not check or scrape, unless
+// the matching Unlimited flag is set.
+type Allowance struct {
+	WorkspaceID uint
+
+	// UnlimitedChecks removes the monthly check limit. The workspace runs at
+	// its requested interval, or UnlimitedDefaultInterval if it has none.
+	UnlimitedChecks      bool
+	MonthlyChecks        uint64
+	UsedChecks           uint64
+	ChecksPerCycle       uint64 // active managed routes × enabled protocols
+	MinimumCheckInterval time.Duration
+	// RequestedCheckInterval is the workspace's own choice. Zero spreads the
+	// remaining allowance automatically. A fixed interval runs until the
+	// allowance is used up.
+	RequestedCheckInterval time.Duration
+
+	UnlimitedScrapes        bool
+	MonthlyScrapes          uint64
+	UsedScrapes             uint64
+	ScrapesPerCycle         uint64 // subscribed scrape sources
+	RequestedScrapeInterval time.Duration
+}
+
+// Pace is the cadence derived from one workspace's allowance, together with
+// the allowance and usage it was derived from.
+type Pace struct {
+	CheckInterval    time.Duration
+	ChecksExhausted  bool
+	ScrapeInterval   time.Duration
+	ScrapesExhausted bool
+
+	// Projections at the current cadence, used to warn that a fixed interval
+	// needs more than the allowance. RunOut is zero when the allowance lasts
+	// until the period ends.
+	ProjectedMonthlyChecks  uint64
+	ChecksRunOutAt          time.Time
+	ProjectedMonthlyScrapes uint64
+	ScrapesRunOutAt         time.Time
+
+	Allowance Allowance
+
+	// counter and flushedMark connect a published snapshot to this
+	// instance's check meter, so checks made since the load count at once.
+	counter     *monthCounter
+	flushedMark uint64
+}
+
+// Snapshot is immutable after Compute returns.
+type Snapshot struct {
+	// paces holds pointers so hot-path lookups do not copy a Pace.
+	paces map[uint]*Pace
+	// uniform, set only by Uniform, applies to every workspace.
+	uniform *Pace
+
+	PeriodStart time.Time
+	PeriodEnd   time.Time
+	ComputedAt  time.Time
+
+	// Planned rates are upper bounds: shared routes and sources serve several
+	// workspaces with one outbound request.
+	ChecksPerSecond  float64
+	ScrapesPerSecond float64
+
+	FastestCheckInterval  time.Duration
+	FastestScrapeInterval time.Duration
+}
+
+// UsagePeriod returns the calendar month (UTC) that allowances apply to. It
+// matches the workspace usage meter's periods.
+func UsagePeriod(now time.Time) (time.Time, time.Time) {
+	utc := now.UTC()
+	start := time.Date(utc.Year(), utc.Month(), 1, 0, 0, 0, 0, time.UTC)
+	return start, start.AddDate(0, 1, 0)
+}
+
+// Compute spreads each workspace's remaining allowance evenly over the rest of
+// the period. Re-running it every RefreshInterval corrects estimation errors:
+// a workspace that consumed faster than planned slows down, one that consumed
+// less speeds up, and remaining allowance can only reach zero at period end.
+func Compute(now time.Time, allowances []Allowance) *Snapshot {
+	start, end := UsagePeriod(now)
+	remaining := end.Sub(now)
+	if remaining < time.Minute {
+		remaining = time.Minute
+	}
+	snapshot := &Snapshot{
+		paces:       make(map[uint]*Pace, len(allowances)),
+		PeriodStart: start,
+		PeriodEnd:   end,
+		ComputedAt:  now,
+	}
+	for _, allowance := range allowances {
+		if allowance.WorkspaceID == 0 {
+			continue
+		}
+		checkFloor := CheckFloor(allowance.MinimumCheckInterval)
+		checkInterval, checksExhausted := interval(remaining, allowance.UnlimitedChecks, allowance.MonthlyChecks, allowance.UsedChecks, allowance.ChecksPerCycle, checkFloor, allowance.RequestedCheckInterval)
+		scrapeInterval, scrapesExhausted := interval(remaining, allowance.UnlimitedScrapes, allowance.MonthlyScrapes, allowance.UsedScrapes, allowance.ScrapesPerCycle, MinimumScrapeInterval, allowance.RequestedScrapeInterval)
+		pace := Pace{
+			CheckInterval: checkInterval, ChecksExhausted: checksExhausted,
+			ScrapeInterval: scrapeInterval, ScrapesExhausted: scrapesExhausted,
+			Allowance: allowance,
+		}
+		periodLength := end.Sub(start)
+		if !checksExhausted {
+			pace.ProjectedMonthlyChecks = ProjectMonthly(allowance.ChecksPerCycle, checkInterval, periodLength)
+			// Automatic cadence is sized to last the period by construction,
+			// and an unlimited workspace never runs out.
+			if allowance.RequestedCheckInterval > 0 && !allowance.UnlimitedChecks {
+				pace.ChecksRunOutAt = runOutAt(now, end, allowance.MonthlyChecks-allowance.UsedChecks, allowance.ChecksPerCycle, checkInterval)
+			}
+		}
+		if !scrapesExhausted {
+			pace.ProjectedMonthlyScrapes = ProjectMonthly(allowance.ScrapesPerCycle, scrapeInterval, periodLength)
+			if allowance.RequestedScrapeInterval > 0 && !allowance.UnlimitedScrapes {
+				pace.ScrapesRunOutAt = runOutAt(now, end, allowance.MonthlyScrapes-allowance.UsedScrapes, allowance.ScrapesPerCycle, scrapeInterval)
+			}
+		}
+		snapshot.paces[allowance.WorkspaceID] = &pace
+		if !checksExhausted && allowance.ChecksPerCycle > 0 {
+			snapshot.ChecksPerSecond += float64(allowance.ChecksPerCycle) / checkInterval.Seconds()
+			if snapshot.FastestCheckInterval == 0 || checkInterval < snapshot.FastestCheckInterval {
+				snapshot.FastestCheckInterval = checkInterval
+			}
+		}
+		if !scrapesExhausted && allowance.ScrapesPerCycle > 0 {
+			snapshot.ScrapesPerSecond += float64(allowance.ScrapesPerCycle) / scrapeInterval.Seconds()
+			if snapshot.FastestScrapeInterval == 0 || scrapeInterval < snapshot.FastestScrapeInterval {
+				snapshot.FastestScrapeInterval = scrapeInterval
+			}
+		}
+	}
+	return snapshot
+}
+
+func interval(remaining time.Duration, unlimited bool, allowance, used, perCycle uint64, floor, requested time.Duration) (time.Duration, bool) {
+	if unlimited {
+		if requested > 0 {
+			return max(floor, requested), false
+		}
+		return max(floor, UnlimitedDefaultInterval), false
+	}
+	if used >= allowance {
+		return 0, true
+	}
+	if requested > 0 {
+		return max(floor, requested), false
+	}
+	if perCycle == 0 {
+		return floor, false
+	}
+	cycles := float64(allowance-used) / float64(perCycle)
+	value := float64(remaining) / cycles
+	if value > float64(maxComputedInterval) || math.IsInf(value, 0) || math.IsNaN(value) {
+		value = float64(maxComputedInterval)
+	}
+	return max(floor, time.Duration(value)), false
+}
+
+// CheckFloor is the fastest check cadence a subscription permits.
+func CheckFloor(subscriptionMinimum time.Duration) time.Duration {
+	return max(MinimumCheckInterval, subscriptionMinimum)
+}
+
+// ProjectMonthly estimates how many checks or scrapes a full period uses at a
+// cadence. It is the basis of the over-allowance warning.
+func ProjectMonthly(perCycle uint64, cadence, period time.Duration) uint64 {
+	if perCycle == 0 || cadence <= 0 {
+		return 0
+	}
+	projected := float64(perCycle) * float64(period) / float64(cadence)
+	if projected >= math.MaxUint64/2 {
+		return math.MaxUint64 / 2
+	}
+	return uint64(math.Ceil(projected))
+}
+
+// runOutAt is when the remaining allowance is used up at this cadence, or zero
+// if it lasts until the period ends.
+func runOutAt(now, end time.Time, remaining, perCycle uint64, cadence time.Duration) time.Time {
+	if perCycle == 0 || cadence <= 0 {
+		return time.Time{}
+	}
+	cycles := float64(remaining) / float64(perCycle)
+	span := cycles * float64(cadence)
+	if span >= float64(end.Sub(now)) {
+		return time.Time{}
+	}
+	return now.Add(time.Duration(span))
+}
+
+// Pace returns one workspace's cadence. Unknown workspaces were created after
+// the snapshot and are reported as not found.
+func (s *Snapshot) Pace(workspaceID uint) (Pace, bool) {
+	if s == nil {
+		return Pace{}, false
+	}
+	if pace := s.lookup(workspaceID); pace != nil {
+		return *pace, true
+	}
+	return Pace{}, false
+}
+
+// lookup is Pace without copying, for the checker's per-dequeue decisions.
+func (s *Snapshot) lookup(workspaceID uint) *Pace {
+	if s == nil {
+		return nil
+	}
+	if pace, ok := s.paces[workspaceID]; ok {
+		return pace
+	}
+	return s.uniform
+}
+
+// Uniform returns a snapshot that gives every workspace the same cadence,
+// without allowance floors. It exists for tests and benchmarks that need
+// short, predictable intervals; production publishes only Compute results.
+func Uniform(checkInterval, scrapeInterval time.Duration) *Snapshot {
+	start, end := UsagePeriod(time.Now())
+	return &Snapshot{
+		paces:                 map[uint]*Pace{},
+		uniform:               &Pace{CheckInterval: checkInterval, ScrapeInterval: scrapeInterval},
+		PeriodStart:           start,
+		PeriodEnd:             end,
+		ComputedAt:            time.Now(),
+		FastestCheckInterval:  checkInterval,
+		FastestScrapeInterval: scrapeInterval,
+	}
+}
+
+// Len reports the number of workspaces in the snapshot.
+func (s *Snapshot) Len() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.paces)
+}
+
+var (
+	current   atomic.Pointer[Snapshot]
+	refreshCh = make(chan struct{}, 1)
+)
+
+// Current returns the latest published snapshot, or nil before the first one.
+func Current() *Snapshot { return current.Load() }
+
+// Publish replaces the current snapshot. Tests may publish nil to restore the
+// startup state.
+func Publish(snapshot *Snapshot) { current.Store(snapshot) }
+
+// RequestRefresh asks the refresh routine to recompute soon. It never blocks,
+// so the checker may call it when it meets a workspace the snapshot lacks.
+func RequestRefresh() {
+	select {
+	case refreshCh <- struct{}{}:
+	default:
+	}
+}
+
+// Loader reads every workspace's allowance and current-period usage.
+type Loader func(ctx context.Context, now time.Time) ([]Allowance, error)
+
+// Store connects the pacer to persistent allowances and the usage meter.
+type Store struct {
+	Load       Loader
+	FlushUsage Flusher
+}
+
+var (
+	storeValue atomic.Pointer[Store]
+	// refreshMu serializes flushes with snapshot loads, which keeps flushed
+	// marks consistent with the usage a snapshot read.
+	refreshMu sync.Mutex
+	// reloadPending records that a load was skipped because a flush failed.
+	// Guarded by refreshMu.
+	reloadPending bool
+)
+
+// Configure sets the store used by Refresh, Flush and Run.
+func Configure(store Store) { storeValue.Store(&store) }
+
+// Refresh flushes metered check usage, loads allowances and publishes a new
+// snapshot. A failed load keeps the previous snapshot. API handlers call it
+// after changing an allowance or interval, so the response already reflects
+// the change on this instance.
+//
+// A failed flush also keeps the previous snapshot. The batch may have
+// committed without an acknowledgement, and a load would then count it both
+// in the database usage and in this instance's unflushed counters. The kept
+// snapshot still counts every local request through its counters, and the
+// next flush that commits the batch reloads.
+func Refresh(ctx context.Context) error {
+	store := storeValue.Load()
+	if store == nil || store.Load == nil {
+		return nil
+	}
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	if err := flushLocked(ctx, store.FlushUsage); err != nil {
+		reloadPending = true
+		return fmt.Errorf("flush workspace check usage; keeping the current snapshot: %w", err)
+	}
+	return loadLocked(ctx, store)
+}
+
+// loadLocked loads allowances and publishes a snapshot. The caller holds
+// refreshMu and has just flushed successfully.
+func loadLocked(ctx context.Context, store *Store) error {
+	now := time.Now()
+	allowances, err := store.Load(ctx, now)
+	if err != nil {
+		return err
+	}
+	snapshot := Compute(now, allowances)
+	attachMeter(snapshot)
+	Publish(snapshot)
+	reloadPending = false
+	return nil
+}
+
+// Flush writes metered check usage without reloading allowances, unless an
+// earlier load was skipped because a flush failed.
+func Flush(ctx context.Context) error {
+	store := storeValue.Load()
+	if store == nil {
+		return nil
+	}
+	refreshMu.Lock()
+	defer refreshMu.Unlock()
+	if err := flushLocked(ctx, store.FlushUsage); err != nil {
+		return err
+	}
+	if reloadPending && store.Load != nil {
+		return loadLocked(ctx, store)
+	}
+	return nil
+}
+
+// Run refreshes immediately, then on RefreshInterval and on RequestRefresh,
+// and flushes metered usage every FlushInterval. Explicit requests are
+// coalesced to at most one load per five seconds. Usage is flushed once more
+// when ctx ends.
+func Run(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	refresh := func() {
+		loadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := Refresh(loadCtx); err != nil && ctx.Err() == nil {
+			log.Warn("refresh workspace check allowances", "error", err)
+		}
+	}
+	refresh()
+	ticker := time.NewTicker(RefreshInterval)
+	defer ticker.Stop()
+	flushTicker := time.NewTicker(FlushInterval)
+	defer flushTicker.Stop()
+	var last time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := Flush(flushCtx); err != nil {
+				log.Warn("final flush of workspace check usage", "error", err)
+			}
+			cancel()
+			return
+		case <-ticker.C:
+			refresh()
+			last = time.Now()
+		case <-flushTicker.C:
+			flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := Flush(flushCtx); err != nil && ctx.Err() == nil {
+				log.Warn("flush workspace check usage", "error", err)
+			}
+			cancel()
+			logPauseOnce()
+		case <-refreshCh:
+			if time.Since(last) < 5*time.Second {
+				continue
+			}
+			refresh()
+			last = time.Now()
+		}
+	}
+}

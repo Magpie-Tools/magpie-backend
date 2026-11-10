@@ -13,12 +13,8 @@
     "save_responses": false,
     "retries": 2,
     "timeout": 7500,
-    "checker_timer": {
-      "days": 0,
-      "hours": 5,
-      "minutes": 0,
-      "seconds": 0
-    },
+    "monthly_checks_per_workspace": 1500000,
+    "unlimited_monthly_checks": false,
 
     "judges_threads": 3,
     "judges_timeout": 5000,
@@ -59,12 +55,8 @@
     "timeout": 7500,
     "respect_robots_txt": true,
 
-    "scraper_timer": {
-      "days": 0,
-      "hours": 10,
-      "minutes": 0,
-      "seconds": 0
-    },
+    "monthly_scrapes_per_workspace": 3000,
+    "unlimited_monthly_scrapes": false,
 
     "scrape_sites": [
     ]

@@ -28,6 +28,18 @@ _Avoid_: User role, global role
 A workspace's plan and billing lifecycle. Member subscriptions and pooled member allowances do not exist.
 _Avoid_: User subscription, donated plan
 
+**Check allowance**:
+A workspace's monthly number of checks. One check is one outbound request to a judge for that workspace; each retry is another check. The checker charges each request just before sending it, independently of proxy history, and stops sending a workspace's requests once its allowance is used up. Usage counts in the month the request was made. Magpie spreads the remaining allowance evenly over the rest of the month, which sets the workspace's check cadence. An administrator may make it unlimited. An unlimited workspace must choose a fixed interval, and runs hourly until it does.
+_Avoid_: Check interval setting, checker timer
+
+**Scrape allowance**:
+A workspace's monthly number of scrapes. One scrape is one fetch of one subscribed scrape source for that workspace. It sets the workspace's scrape cadence the same way a check allowance sets check cadence.
+_Avoid_: Scraper timer
+
+**Check cadence**:
+The interval between a workspace's checks. It is automatic by default, derived from the remaining allowance, active routes and enabled protocols. Workspace operators may choose a fixed interval instead, which runs until the allowance is used up. Either way, its lower limit is the subscription's minimum check interval. Administrators set allowances, never cadence.
+_Avoid_: Global check interval
+
 **Workspace capacity**:
 The maximum number of managed proxies that may be active in a workspace. Capacity belongs to the workspace and does not change when a member leaves.
 _Avoid_: Space, member allowance, donated slots

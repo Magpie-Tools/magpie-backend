@@ -48,13 +48,13 @@ func StartJudgeRoutine(ctx context.Context) {
 }
 
 func getTimeBetweenJudgeChecks(count uint64) time.Duration {
-	var periodTime uint64
-
-	if config.InProductionMode {
-		periodTime = config.CalculateMillisecondsOfCheckingPeriod(config.GetConfig().Checker.JudgeTimer) / count
-	} else {
-		periodTime = config.CalculateMillisecondsOfCheckingPeriod(config.GetConfig().Checker.CheckerTimer) / count / 2 // Twice per period_time
+	// Judge health follows its own timer; checker cadence is now derived from
+	// workspace allowances and no longer suits a judge refresh period.
+	period := config.CalculateMillisecondsOfCheckingPeriod(config.GetConfig().Checker.JudgeTimer)
+	if period == 0 {
+		period = uint64(time.Hour / time.Millisecond)
 	}
+	periodTime := period / max(count, 1)
 
 	return time.Duration(periodTime) * time.Millisecond
 }

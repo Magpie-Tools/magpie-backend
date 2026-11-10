@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"magpie/internal/blacklist"
+	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -259,13 +260,24 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 		if len(group.Workspaces) == 0 {
 			continue
 		}
+		modeInterval, due := dueScrapeSubscribers(site.ID, group.Workspaces, job.Schedule.Modes[mode])
+		if len(due) == 0 {
+			// Every subscriber is between its cadence boundaries or out of
+			// scrape allowance. Revisit without fetching or charging anyone.
+			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(modeInterval).UnixMilli()}
+			continue
+		}
+		group.Workspaces = due
 		attemptedAt := time.Now()
 		if robotsBlocked {
 			recordScrapeResult(group, mode, "blocked", 0, nil, attemptedAt)
-			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(job.Interval).UnixMilli()}
+			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(modeInterval).UnixMilli()}
 			continue
 		}
 		html, err := ScraperRequestContext(ctx, site.URL, mode, timeout)
+		if err == nil || !isScrapeDeferred(err) && ctx.Err() == nil {
+			recordScrapeUsage(group, attemptedAt)
+		}
 		if err != nil {
 			// Retain an observed provider deadline even if cancellation or lease
 			// loss prevents this worker from committing its normal mode progress.
@@ -275,7 +287,7 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 			}
 			if isScrapeDeferred(err) {
 				job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{
-					NextAttemptMS:  time.Now().Add(min(browserRetryDelay, job.Interval)).UnixMilli(),
+					NextAttemptMS:  time.Now().Add(min(browserRetryDelay, modeInterval)).UnixMilli(),
 					DeferredReason: "Waiting for browser capacity or availability",
 				}
 				continue
@@ -285,7 +297,7 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 			}
 			log.Warn("scrape failed", "url", site.URL, "mode", mode, "err", err)
 			recordScrapeResult(group, mode, "error", 0, err, attemptedAt)
-			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(job.Interval).UnixMilli()}
+			job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(modeInterval).UnixMilli()}
 			if job.Schedule.RetryAfterMS > time.Now().UnixMilli() {
 				// Both modes fetch the same URL and must honor this deadline.
 				break
@@ -295,7 +307,7 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 		if err := enqueueScrapedHTML(ctx, group, html, mode, attemptedAt); err != nil {
 			break
 		}
-		job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(job.Interval).UnixMilli()}
+		job.Schedule.Modes[mode] = sitequeue.ScrapeModeSchedule{NextAttemptMS: time.Now().Add(modeInterval).UnixMilli()}
 	}
 	// Modes deferred by Retry-After remain pending even if no fetch ran yet.
 	for mode := range requestedModes {
@@ -304,6 +316,42 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 		}
 	}
 	return true
+}
+
+// dueScrapeSubscribers returns a fetch mode's cadence and the subscribers due
+// for this fetch. A first fetch, or one retried after a deferral, serves every
+// subscriber with remaining allowance.
+func dueScrapeSubscribers(siteID uint64, subscribers []domain.Workspace, previous sitequeue.ScrapeModeSchedule) (time.Duration, []domain.Workspace) {
+	pace := checkpace.Current()
+	ids := support.GetWorkspaceIDsFromList(subscribers)
+	interval := pace.SourceScrapeInterval(ids)
+	firstOrRetry := previous.NextAttemptMS <= 0 || previous.DeferredReason != ""
+	scheduled := time.UnixMilli(previous.NextAttemptMS)
+	due := make([]domain.Workspace, 0, len(subscribers))
+	for _, workspace := range subscribers {
+		if firstOrRetry {
+			if paceFor, ok := pace.Pace(workspace.ID); ok && paceFor.ScrapesExhausted {
+				continue
+			}
+			due = append(due, workspace)
+			continue
+		}
+		if pace.ScrapeDue(workspace.ID, siteID, scheduled, interval) {
+			due = append(due, workspace)
+		}
+	}
+	return interval, due
+}
+
+var recordWorkspaceScrapeUsage = database.RecordWorkspaceScrapeUsage
+
+// recordScrapeUsage charges one scrape to each workspace a fetch served.
+func recordScrapeUsage(site domain.ScrapeSite, fetchedAt time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := recordWorkspaceScrapeUsage(ctx, support.GetWorkspaceIDsFromList(site.Workspaces), fetchedAt); err != nil {
+		log.Error("record scrape usage", "site_id", site.ID, "err", err)
+	}
 }
 
 func recordScrapeResult(site domain.ScrapeSite, mode, status string, count int, scrapeErr error, attemptedAt time.Time) {
@@ -359,14 +407,18 @@ func autoThreadCount(cfg config.Config) uint32 {
 
 	perInstance := (totalSites + int64(instances) - 1) / int64(instances)
 
-	period := config.CalculateMillisecondsOfCheckingPeriod(cfg.Scraper.ScraperTimer)
-	if period == 0 {
-		log.Warn("scraper period 0 → forcing 1 day")
-		period = 86_400_000
+	// Workspace scrape allowances set the planned fetch rate. Before the first
+	// allowance snapshot, assume each source is fetched at the fallback cadence.
+	scrapesPerSecond := float64(totalSites) / checkpace.FallbackInterval.Seconds()
+	if pace := checkpace.Current(); pace != nil {
+		scrapesPerSecond = pace.ScrapesPerSecond
 	}
-
-	numerator := uint64(perInstance) * uint64(cfg.Scraper.Timeout) * uint64(cfg.Scraper.Retries+1)
-	threads := (numerator + period - 1) / period
+	worstCaseSeconds := float64(cfg.Scraper.Retries+1) * float64(cfg.Scraper.Timeout) / 1000
+	required := math.Ceil(scrapesPerSecond / float64(instances) * worstCaseSeconds)
+	if required > math.MaxUint32 {
+		required = math.MaxUint32
+	}
+	threads := uint64(required)
 	maxThreads := cfg.Scraper.MaxThreads
 	if maxThreads == 0 {
 		if cfg.Scraper.Threads > 0 {

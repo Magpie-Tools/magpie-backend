@@ -150,9 +150,7 @@ func TestImportPreservesActiveLeaseInEverySupportedShard(t *testing.T) {
 			assertRouteStillLeased(t, queue, client, worker)
 			// A changed payload must not prevent normal scheduling completion,
 			// and the new owner must survive when the old worker completes.
-			if err := client.Set(ctx, queueRescheduleStateKey, "1", 0).Err(); err != nil {
-				t.Fatal(err)
-			}
+			useUniformPace(t, time.Millisecond)
 			if err := queue.RequeueProxy(worker, scheduled); err != nil {
 				t.Fatal(err)
 			}

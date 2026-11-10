@@ -28,7 +28,12 @@ type Config struct {
 		SaveResponses  bool   `json:"save_responses"`
 		Retries        uint32 `json:"retries"`
 		Timeout        uint32 `json:"timeout"`
-		CheckerTimer   Timer  `json:"checker_timer"`
+		// MonthlyChecksPerWorkspace is the check allowance of every workspace
+		// whose subscription does not set its own. Cadence derives from it.
+		MonthlyChecksPerWorkspace uint64 `json:"monthly_checks_per_workspace"`
+		// UnlimitedMonthlyChecks removes the default limit. Workspaces that
+		// inherit it must choose a fixed check interval.
+		UnlimitedMonthlyChecks bool `json:"unlimited_monthly_checks"`
 
 		JudgesThreads uint32  `json:"judges_threads"`
 		JudgesTimeout uint32  `json:"judges_timeout"`
@@ -49,7 +54,13 @@ type Config struct {
 		Timeout        uint32 `json:"timeout"`
 		RespectRobots  bool   `json:"respect_robots_txt"`
 
-		ScraperTimer Timer `json:"scraper_timer"`
+		// MonthlyScrapesPerWorkspace is the scrape allowance of every workspace
+		// whose subscription does not set its own. One scrape is one fetch of
+		// one subscribed source for one workspace.
+		MonthlyScrapesPerWorkspace uint64 `json:"monthly_scrapes_per_workspace"`
+		// UnlimitedMonthlyScrapes removes the default limit. Workspaces that
+		// inherit it must choose a fixed scrape interval.
+		UnlimitedMonthlyScrapes bool `json:"unlimited_monthly_scrapes"`
 
 		ScrapeSites []string `json:"scrape_sites"`
 	} `json:"scraper"`
@@ -112,6 +123,27 @@ type AbuseIPDBPluginConfig struct {
 }
 
 const settingsFilePath = "data/settings.json"
+
+const (
+	DefaultMonthlyChecksPerWorkspace  uint64 = 1_500_000
+	DefaultMonthlyScrapesPerWorkspace uint64 = 3_000
+)
+
+// LegacyCadence holds the checker and scraper timers of a settings file written
+// before monthly allowances existed. Startup converts them once, after the
+// database is available, so existing workspaces keep their cadence.
+type LegacyCadence struct {
+	CheckerTimer *Timer
+	ScraperTimer *Timer
+}
+
+var legacyCadence atomic.Pointer[LegacyCadence]
+
+// PendingLegacyCadence returns timers that still need conversion, or nil.
+func PendingLegacyCadence() *LegacyCadence { return legacyCadence.Load() }
+
+// ClearLegacyCadence marks the legacy timers as converted.
+func ClearLegacyCadence() { legacyCadence.Store(nil) }
 
 const (
 	settingsDirectoryPath = "data"
@@ -232,6 +264,7 @@ func applyConfigUpdate(newConfig Config, opts configUpdateOptions) error {
 	defer configMu.Unlock()
 
 	normalizeThreadSettings(&newConfig)
+	normalizeAllowances(&newConfig)
 	if err := newConfig.Plugins.IPGeolocation.Validate(); err != nil {
 		return err
 	}
@@ -312,6 +345,7 @@ func applyConfigUpdate(newConfig Config, opts configUpdateOptions) error {
 
 	configValue.Store(newConfig)
 	SetBetweenTime()
+	notifyAllowanceListeners()
 	updateWebsiteBlocklist(newConfig.WebsiteBlacklist)
 
 	if opts.source != "" {
@@ -340,6 +374,17 @@ func normalizeThreadSettings(cfg *Config) {
 	}
 	if cfg.Plugins.AbuseIPDB.MaxAgeInDays > 365 {
 		cfg.Plugins.AbuseIPDB.MaxAgeInDays = 365
+	}
+}
+
+// A missing or zero instance allowance would stop every workspace that has no
+// subscription override, so it falls back to the shipped default.
+func normalizeAllowances(cfg *Config) {
+	if cfg.Checker.MonthlyChecksPerWorkspace == 0 {
+		cfg.Checker.MonthlyChecksPerWorkspace = DefaultMonthlyChecksPerWorkspace
+	}
+	if cfg.Scraper.MonthlyScrapesPerWorkspace == 0 {
+		cfg.Scraper.MonthlyScrapesPerWorkspace = DefaultMonthlyScrapesPerWorkspace
 	}
 }
 
@@ -408,8 +453,14 @@ func applyLegacyDefaults(raw []byte, cfg *Config) {
 
 	var partial struct {
 		Checker struct {
-			SaveResponses *bool `json:"save_responses"`
+			SaveResponses *bool   `json:"save_responses"`
+			MonthlyChecks *uint64 `json:"monthly_checks_per_workspace"`
+			CheckerTimer  *Timer  `json:"checker_timer"`
 		} `json:"checker"`
+		Scraper struct {
+			MonthlyScrapes *uint64 `json:"monthly_scrapes_per_workspace"`
+			ScraperTimer   *Timer  `json:"scraper_timer"`
+		} `json:"scraper"`
 		Plugins struct {
 			GeoLite   *rawGeoLitePluginConfig   `json:"geolite"`
 			AbuseIPDB *rawAbuseIPDBPluginConfig `json:"abuseipdb"`
@@ -423,6 +474,18 @@ func applyLegacyDefaults(raw []byte, cfg *Config) {
 
 	if partial.Checker.SaveResponses == nil {
 		cfg.Checker.SaveResponses = true
+	}
+	legacy := LegacyCadence{}
+	if partial.Checker.MonthlyChecks == nil && partial.Checker.CheckerTimer != nil && CalculateMillisecondsOfCheckingPeriod(*partial.Checker.CheckerTimer) > 0 {
+		legacy.CheckerTimer = partial.Checker.CheckerTimer
+	}
+	if partial.Scraper.MonthlyScrapes == nil && partial.Scraper.ScraperTimer != nil && CalculateMillisecondsOfCheckingPeriod(*partial.Scraper.ScraperTimer) > 0 {
+		legacy.ScraperTimer = partial.Scraper.ScraperTimer
+	}
+	if legacy.CheckerTimer != nil || legacy.ScraperTimer != nil {
+		legacyCadence.Store(&legacy)
+	} else {
+		legacyCadence.Store(nil)
 	}
 	if geolite, ok := normalizeGeoLite(partial.LegacyGeoLite, true); partial.Plugins.GeoLite == nil && ok {
 		cfg.Plugins.GeoLite = geolite
@@ -481,6 +544,31 @@ func enforceSettingsFilePermissions() error {
 	}
 
 	return os.Chmod(settingsFilePath, settingsFileMode)
+}
+
+var (
+	allowanceListenersMu sync.Mutex
+	allowanceListeners   []func()
+)
+
+// OnConfigApplied registers a callback that runs after every applied update,
+// such as an instance allowance change. Callbacks must not block.
+func OnConfigApplied(listener func()) {
+	if listener == nil {
+		return
+	}
+	allowanceListenersMu.Lock()
+	allowanceListeners = append(allowanceListeners, listener)
+	allowanceListenersMu.Unlock()
+}
+
+func notifyAllowanceListeners() {
+	allowanceListenersMu.Lock()
+	listeners := append([]func(){}, allowanceListeners...)
+	allowanceListenersMu.Unlock()
+	for _, listener := range listeners {
+		listener()
+	}
 }
 
 func GetConfig() Config {

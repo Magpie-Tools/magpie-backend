@@ -13,12 +13,8 @@ const (
 )
 
 var (
-	timeBetweenChecks          atomic.Value
-	timeBetweenScrapes         atomic.Value
 	blacklistRefreshInterval   atomic.Value
 	proxyGeoRefreshInterval    atomic.Value
-	checkIntervalListeners     []chan time.Duration
-	scrapeIntervalListeners    []chan time.Duration
 	blacklistIntervalListeners []chan time.Duration
 	proxyGeoRefreshListeners   []chan time.Duration
 	geoLiteUpdateInterval      atomic.Value
@@ -27,8 +23,6 @@ var (
 )
 
 func init() {
-	timeBetweenChecks.Store(time.Second)
-	timeBetweenScrapes.Store(time.Second)
 	blacklistRefreshInterval.Store(time.Second)
 	proxyGeoRefreshInterval.Store(defaultProxyGeoRefreshInterval)
 	geoLiteUpdateInterval.Store(defaultGeoLiteUpdateInterval)
@@ -36,8 +30,6 @@ func init() {
 
 func SetBetweenTime() {
 	cfg := GetConfig()
-	setTimeBetweenChecks(CalculateBetweenTime(cfg.Checker.CheckerTimer))
-	setTimeBetweenScrapes(CalculateBetweenTime(cfg.Scraper.ScraperTimer))
 	setBlacklistRefreshInterval(calculateBlacklistRefreshInterval(cfg))
 	setProxyGeoRefreshInterval(calculateProxyGeoRefreshInterval(cfg))
 	setGeoLiteUpdateInterval(calculateGeoLiteUpdateInterval(cfg))
@@ -62,80 +54,6 @@ func CalculateMillisecondsOfCheckingPeriod(timer Timer) uint64 {
 		uint64(timer.Hours)*60*60*1000 +
 		uint64(timer.Minutes)*60*1000 +
 		uint64(timer.Seconds)*1000
-}
-
-func GetTimeBetweenChecks() time.Duration {
-	return timeBetweenChecks.Load().(time.Duration)
-}
-
-func CheckIntervalUpdates() <-chan time.Duration {
-	ch := make(chan time.Duration, 1)
-	listenersMu.Lock()
-	defer listenersMu.Unlock()
-	ch <- GetTimeBetweenChecks()
-	checkIntervalListeners = append(checkIntervalListeners, ch)
-	return ch
-}
-
-func setTimeBetweenChecks(interval time.Duration) {
-	if interval <= 0 {
-		interval = time.Second
-	}
-	listenersMu.Lock()
-	defer listenersMu.Unlock()
-
-	current := GetTimeBetweenChecks()
-	if current == interval {
-		return
-	}
-
-	timeBetweenChecks.Store(interval)
-
-	for _, ch := range checkIntervalListeners {
-		sendLatestInterval(ch, interval)
-	}
-}
-
-// Called with listenersMu held so an unread update can be replaced without
-// another sender filling the channel between the drain and send.
-func sendLatestInterval(ch chan time.Duration, interval time.Duration) {
-	select {
-	case <-ch:
-	default:
-	}
-	ch <- interval
-}
-
-func setTimeBetweenScrapes(interval time.Duration) {
-	if interval <= 0 {
-		interval = time.Second
-	}
-	listenersMu.Lock()
-	defer listenersMu.Unlock()
-
-	current := GetTimeBetweenScrapes()
-	if current == interval {
-		return
-	}
-
-	timeBetweenScrapes.Store(interval)
-
-	for _, ch := range scrapeIntervalListeners {
-		sendLatestInterval(ch, interval)
-	}
-}
-
-func GetTimeBetweenScrapes() time.Duration {
-	return timeBetweenScrapes.Load().(time.Duration)
-}
-
-func ScrapeIntervalUpdates() <-chan time.Duration {
-	ch := make(chan time.Duration, 1)
-	listenersMu.Lock()
-	defer listenersMu.Unlock()
-	ch <- GetTimeBetweenScrapes()
-	scrapeIntervalListeners = append(scrapeIntervalListeners, ch)
-	return ch
 }
 
 func setBlacklistRefreshInterval(interval time.Duration) {

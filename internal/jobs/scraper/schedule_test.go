@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	sitequeue "magpie/internal/jobs/queue/sites"
@@ -25,13 +26,14 @@ func scrapeScheduleFixture(t *testing.T, modes ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&domain.WorkspaceScrapeSite{}); err != nil {
+	if err := db.AutoMigrate(&domain.WorkspaceScrapeSite{}, &domain.WorkspaceUsagePeriod{}); err != nil {
 		t.Fatal(err)
 	}
-	originalDB, originalQueue, originalBrowser := database.DB, postProcessQueue, sharedBrowser
+	originalDB, originalQueue, originalBrowser, originalPace := database.DB, postProcessQueue, sharedBrowser, checkpace.Current()
 	database.DB = db
 	postProcessQueue = make(chan scrapedHTMLJob, 16)
 	t.Cleanup(func() {
+		checkpace.Publish(originalPace)
 		database.DB, postProcessQueue, sharedBrowser = originalDB, originalQueue, originalBrowser
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
@@ -43,6 +45,8 @@ func scrapeScheduleFixture(t *testing.T, modes ...string) {
 	}
 }
 
+// The cadence now derives from subscriber scrape allowances; a uniform
+// snapshot stands in for an allowance that yields each tested interval.
 func TestCompletedScrapesAlwaysUseCurrentInterval(t *testing.T) {
 	scrapeScheduleFixture(t, domain.ScrapeFetchHTTP)
 	var hits atomic.Int64
@@ -55,8 +59,8 @@ func TestCompletedScrapesAlwaysUseCurrentInterval(t *testing.T) {
 	}))
 	defer server.Close()
 	job := sitequeue.ScrapeSiteJob{Site: domain.ScrapeSite{ID: 1, URL: server.URL}}
-	for _, interval := range []time.Duration{5 * time.Minute, time.Hour, 15 * time.Hour} {
-		job.Interval = interval
+	for _, interval := range []time.Duration{5 * time.Minute, time.Hour, 5 * time.Hour} {
+		checkpace.Publish(checkpace.Uniform(time.Minute, interval))
 		for _, code := range []int{200, 429, 502, 521, 503, 404, 200} {
 			status.Store(int32(code))
 			job.Schedule.Modes = nil // The next scheduled attempt has become due.
@@ -149,5 +153,54 @@ func TestSourceLookupFailureDefersWithoutCompletingAnAttempt(t *testing.T) {
 	next, reason := job.Schedule.NextAttempt(domain.ScrapeFetchHTTP)
 	if next.Before(before.Add(29*time.Second)) || next.After(time.Now().Add(30*time.Second)) || reason != "Waiting for source settings to become available" {
 		t.Fatalf("local deferral next=%v reason=%s", next, reason)
+	}
+}
+
+func TestScrapeChargesOnlyDueSubscribersWithAllowance(t *testing.T) {
+	scrapeScheduleFixture(t, domain.ScrapeFetchHTTP, domain.ScrapeFetchHTTP)
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		fmt.Fprint(w, "8.8.8.8:8080")
+	}))
+	defer server.Close()
+	now := time.Now()
+	checkpace.Publish(checkpace.Compute(now, []checkpace.Allowance{
+		{WorkspaceID: 1, MonthlyChecks: 1, MonthlyScrapes: 1_000_000, ScrapesPerCycle: 1},
+		{WorkspaceID: 2, MonthlyChecks: 1, MonthlyScrapes: 3, UsedScrapes: 3, ScrapesPerCycle: 1},
+	}))
+	job := sitequeue.ScrapeSiteJob{Site: domain.ScrapeSite{ID: 1, URL: server.URL}}
+	if !scrapeSite(context.Background(), &job) {
+		t.Fatal("subscribed source was removed")
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("fetches = %d, want 1", hits.Load())
+	}
+	var usage []domain.WorkspaceUsagePeriod
+	if err := database.DB.Find(&usage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(usage) != 1 || usage[0].WorkspaceID != 1 || usage[0].Scrapes != 1 {
+		t.Fatalf("scrape usage = %+v, want one scrape for workspace 1 only", usage)
+	}
+	if next, _ := job.Schedule.NextAttempt(domain.ScrapeFetchHTTP); next.Before(now.Add(checkpace.MinimumScrapeInterval - time.Second)) {
+		t.Fatalf("next scrape %v is faster than the cadence floor", next)
+	}
+
+	// With every subscriber out of allowance, a due source is revisited
+	// without fetching.
+	checkpace.Publish(checkpace.Compute(now, []checkpace.Allowance{
+		{WorkspaceID: 1, MonthlyScrapes: 1, UsedScrapes: 1, ScrapesPerCycle: 1},
+		{WorkspaceID: 2, MonthlyScrapes: 1, UsedScrapes: 1, ScrapesPerCycle: 1},
+	}))
+	job.Schedule.Modes = nil
+	if !scrapeSite(context.Background(), &job) {
+		t.Fatal("subscribed source was removed")
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("an exhausted source was fetched: %d", hits.Load())
+	}
+	if next, _ := job.Schedule.NextAttempt(domain.ScrapeFetchHTTP); next.Before(now.Add(checkpace.MaxRouteInterval - time.Minute)) {
+		t.Fatalf("exhausted source revisit %v is earlier than the revisit cap", next)
 	}
 }

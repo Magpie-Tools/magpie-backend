@@ -2,12 +2,11 @@ package sitequeue
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
-	"magpie/internal/support"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -63,57 +62,6 @@ func TestParseScrapePopResult(t *testing.T) {
 	}
 }
 
-func TestParseIntervalStateMillis(t *testing.T) {
-	fallback := 2 * time.Second
-	if got := parseIntervalStateMillis("2500", fallback); got != 2500*time.Millisecond {
-		t.Fatalf("parsed interval = %s, want 2500ms", got)
-	}
-	if got := parseIntervalStateMillis("", fallback); got != fallback {
-		t.Fatalf("empty interval should fallback to %s, got %s", fallback, got)
-	}
-	if got := parseIntervalStateMillis("oops", fallback); got != fallback {
-		t.Fatalf("invalid interval should fallback to %s, got %s", fallback, got)
-	}
-}
-
-func TestApplyIntervalUpdateAsLeaderWithRunner_SkipsWhenNotLeader(t *testing.T) {
-	called := false
-	err := applyIntervalUpdateAsLeaderWithRunner(
-		func(context.Context, string, time.Duration, func(context.Context) error) error {
-			return support.ErrLeaderLockNotAcquired
-		},
-		"lock",
-		time.Second,
-		func(time.Duration) error {
-			called = true
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("expected nil on lock-not-acquired, got %v", err)
-	}
-	if called {
-		t.Fatal("reschedule should not run when leadership is not acquired")
-	}
-}
-
-func TestApplyIntervalUpdateAsLeaderWithRunner_PropagatesRescheduleError(t *testing.T) {
-	expected := errors.New("boom")
-	err := applyIntervalUpdateAsLeaderWithRunner(
-		func(_ context.Context, _ string, _ time.Duration, run func(context.Context) error) error {
-			return run(context.Background())
-		},
-		"lock",
-		time.Second,
-		func(time.Duration) error {
-			return expected
-		},
-	)
-	if !errors.Is(err, expected) {
-		t.Fatalf("expected reschedule error %v, got %v", expected, err)
-	}
-}
-
 func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	redisServer, err := miniredis.Run()
 	if err != nil {
@@ -143,9 +91,9 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 		}
 	}
 
-	if err := client.Set(ctx, scrapeQueueRescheduleStateKey, "60000", 0).Err(); err != nil {
-		t.Fatalf("seed interval state: %v", err)
-	}
+	previous := checkpace.Current()
+	checkpace.Publish(checkpace.Uniform(time.Minute, time.Minute))
+	t.Cleanup(func() { checkpace.Publish(previous) })
 
 	before := time.Now().UnixMilli()
 	count, err := queue.RequeueAll()
@@ -169,7 +117,7 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	if scoredMembers[0].Score < float64(before) || scoredMembers[0].Score > float64(after) {
 		t.Fatalf("first member score = %f, expected within [%d, %d]", scoredMembers[0].Score, before, after)
 	}
-	if scoredMembers[len(scoredMembers)-1].Score > float64(after+60000) {
+	if scoredMembers[len(scoredMembers)-1].Score > float64(after+requeueAllMinimumWindow.Milliseconds()) {
 		t.Fatalf("last member score = %f, expected to stay within the configured interval", scoredMembers[len(scoredMembers)-1].Score)
 	}
 

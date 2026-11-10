@@ -19,7 +19,7 @@ func TestCheckProxyWithRetries_PerformsInitialAttemptWhenRetriesZero(t *testing.
 		FullString: "://invalid-url",
 	}
 
-	html, err, _, attempt := CheckProxyWithRetries(proxy, judge, "http", support.TransportTCP, 100, 0)
+	html, err, _, attempt := CheckProxyWithRetries(proxy, judge, "http", support.TransportTCP, 100, 0, nil)
 	if err == nil {
 		t.Fatalf("expected at least one attempt and an error for invalid judge URL, got nil error and html=%q", html)
 	}
@@ -36,7 +36,7 @@ func TestProcessJudgeAssignments_EnqueuesOneStatisticPerNetworkCheck(t *testing.
 		enqueueProxyStatistic = originalEnqueue
 	})
 
-	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8) (string, error, int64, uint8) {
+	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8, *requestMeter) (string, error, int64, uint8) {
 		return "ok", nil, 88, 1
 	}
 
@@ -68,7 +68,7 @@ func TestProcessJudgeAssignments_EnqueuesOneStatisticPerNetworkCheck(t *testing.
 		3: false,
 	}
 
-	processJudgeAssignments(proxy, assignments, workspaceSuccess, 1000, 2, false)
+	processJudgeAssignments(proxy, assignments, workspaceSuccess, map[uint]bool{}, 1000, 2, false)
 
 	if len(captured) != 1 {
 		t.Fatalf("expected 1 proxy statistic, got %d", len(captured))
@@ -108,7 +108,7 @@ func TestProcessJudgeAssignments_RecordsFailedCheckOnce(t *testing.T) {
 		enqueueProxyStatistic = originalEnqueue
 	})
 
-	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8) (string, error, int64, uint8) {
+	checkProxyWithRetries = func(domain.Proxy, *domain.Judge, string, string, uint16, uint8, *requestMeter) (string, error, int64, uint8) {
 		return "", errors.New("failed"), 250, 3
 	}
 
@@ -136,7 +136,7 @@ func TestProcessJudgeAssignments_RecordsFailedCheckOnce(t *testing.T) {
 		11: false,
 	}
 
-	processJudgeAssignments(proxy, assignments, workspaceSuccess, 1000, 1, false)
+	processJudgeAssignments(proxy, assignments, workspaceSuccess, map[uint]bool{}, 1000, 1, false)
 
 	if len(captured) != 1 {
 		t.Fatalf("expected 1 proxy statistic, got %d", len(captured))

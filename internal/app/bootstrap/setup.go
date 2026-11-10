@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 
 	"magpie/internal/blacklist"
 	"magpie/internal/checkerconfig"
+	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -98,8 +101,6 @@ func (running *Runtime) setup(ctx context.Context) error {
 	}
 	running.producers.start(maintainRuntimeCaches)
 	config.SetBetweenTime()
-	running.producers.start(proxyqueue.PublicProxyQueue.StartIntervalUpdates)
-	running.producers.start(sitequeue.PublicScrapeSiteQueue.StartIntervalUpdates)
 
 	if err := blacklist.Initialize(ctx); err != nil {
 		log.Warn("Blacklist initialisation failed", "error", err)
@@ -121,6 +122,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	startCheckPacing(ctx, running)
 
 	running.producers.start(recoverRedisSynchronization)
 
@@ -244,6 +246,83 @@ func (running *Runtime) setup(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// startCheckPacing publishes workspace cadences before any route is queued,
+// so startup imports already spread routes over their workspaces' intervals.
+func startCheckPacing(ctx context.Context, running *Runtime) {
+	checkpace.SetPauseAfter(checkUsagePauseAfter())
+	checkpace.Configure(checkpace.Store{
+		Load:       database.LoadWorkspaceAllowances,
+		FlushUsage: database.FlushWorkspaceCheckUsage,
+	})
+	convertLegacyCadence(ctx)
+	if err := database.PruneWorkspaceUsageFlushes(ctx); err != nil {
+		log.Warn("prune workspace check usage batch marks", "error", err)
+	}
+	if err := checkpace.Refresh(ctx); err != nil {
+		log.Warn("initial workspace check allowance load failed; using fallback cadence", "error", err)
+	}
+	config.OnConfigApplied(checkpace.RequestRefresh)
+	running.producers.start(checkpace.Run)
+}
+
+// envCheckUsagePauseAfter sets how long check usage may stay unwritten before
+// this instance pauses checking. Zero never pauses.
+const envCheckUsagePauseAfter = "CHECK_USAGE_PAUSE_AFTER"
+
+func checkUsagePauseAfter() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(envCheckUsagePauseAfter))
+	if raw == "" {
+		return checkpace.DefaultPauseAfter
+	}
+	if raw == "0" {
+		return 0
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil || value < 0 {
+		log.Warn("invalid "+envCheckUsagePauseAfter+"; using the default", "value", raw, "default", checkpace.DefaultPauseAfter)
+		return checkpace.DefaultPauseAfter
+	}
+	return value
+}
+
+// convertLegacyCadence keeps an upgraded installation at the cadence of its
+// older settings file. Old timers had no monthly limit, so the converted
+// instance default is unlimited, and every workspace receives the old timer as
+// its fixed interval. Nothing becomes faster or slower, and nothing stops.
+func convertLegacyCadence(ctx context.Context) {
+	legacy := config.PendingLegacyCadence()
+	if legacy == nil {
+		return
+	}
+	period := func(timer *config.Timer) time.Duration {
+		if timer == nil {
+			return 0
+		}
+		return config.CalculateBetweenTime(*timer)
+	}
+	checkPeriod, scrapePeriod := period(legacy.CheckerTimer), period(legacy.ScraperTimer)
+	checks, scrapes, err := database.PreserveLegacyCadence(ctx, checkPeriod, scrapePeriod)
+	if err != nil {
+		log.Warn("convert legacy checker and scraper timers", "error", err)
+		return
+	}
+	cfg := config.GetConfig()
+	if checkPeriod > 0 {
+		cfg.Checker.UnlimitedMonthlyChecks = true
+	}
+	if scrapePeriod > 0 {
+		cfg.Scraper.UnlimitedMonthlyScrapes = true
+	}
+	if err := config.SetConfig(cfg); err != nil {
+		log.Warn("save converted check allowances", "error", err)
+		return
+	}
+	config.ClearLegacyCadence()
+	log.Info("Converted legacy checker and scraper timers to fixed workspace intervals without a monthly limit",
+		"check_interval", checkPeriod, "workspaces_with_check_interval", checks,
+		"scrape_interval", scrapePeriod, "workspaces_with_scrape_interval", scrapes)
 }
 
 func StartupQueueBootstrapCompleted() bool {
