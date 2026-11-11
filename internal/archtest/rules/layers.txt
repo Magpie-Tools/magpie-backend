@@ -23,8 +23,9 @@ forbid base: core features transport bootstrap auth
 forbid features: transport bootstrap auth
 # alerts sits below the core: the core may call it, it never imports the core.
 forbid alerts: core
-# geolite sits above the core: it may call the core, the core never imports it.
-forbid core: geolite
+# geolite and blacklist sit above the core: they may call the core, the core
+# never imports them.
+forbid core: geolite blacklist
 # The core never imports transport, bootstrap, checker execution or listeners.
 forbid core: transport bootstrap auth checker-execution listeners
 # Compiled checker settings, judge selection and cadence never import

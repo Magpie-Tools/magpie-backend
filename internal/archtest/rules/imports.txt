@@ -20,7 +20,7 @@ app/server: account alerts api/dto app/bootstrap app/releases app/version auth b
 app/version:
 archtest:
 auth: config support
-blacklist: config database domain jobs/queue/proxy support
+blacklist: config database domain jobs/queue/proxy platform/pg support
 checkerconfig: api/dto domain
 checkpace: domain
 config:

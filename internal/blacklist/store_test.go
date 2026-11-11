@@ -1,4 +1,4 @@
-package database
+package blacklist
 
 import (
 	"net/netip"

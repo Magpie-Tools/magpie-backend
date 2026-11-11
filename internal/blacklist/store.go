@@ -1,4 +1,4 @@
-package database
+package blacklist
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
@@ -356,7 +357,7 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 	)
 
 	for userID, proxyIDs := range perUser {
-		removed, orphans, err := DeleteProxyRelation(userID, proxyIDs)
+		removed, orphans, err := database.DeleteProxyRelation(userID, proxyIDs)
 		if err != nil {
 			return totalRemoved, nil, err
 		}
@@ -407,14 +408,6 @@ func normalizeIPList(ips []string) []string {
 	}
 
 	return out
-}
-
-func normalizeIP(raw string) string {
-	parsed, err := netip.ParseAddr(strings.TrimSpace(raw))
-	if err != nil {
-		return ""
-	}
-	return parsed.Unmap().String()
 }
 
 // RemoveProxiesByRanges removes proxies whose IP falls inside any of the provided ranges.
@@ -472,7 +465,7 @@ func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange
 
 	var totalRemoved int64
 	for userID, proxyIDs := range perUser {
-		removed, orphans, err := DeleteProxyRelation(userID, proxyIDs)
+		removed, orphans, err := database.DeleteProxyRelation(userID, proxyIDs)
 		if err != nil {
 			return totalRemoved, nil, err
 		}

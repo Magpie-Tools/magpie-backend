@@ -19,7 +19,6 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"magpie/internal/config"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"magpie/internal/support"
@@ -108,12 +107,12 @@ func Initialize(ctx context.Context) error {
 
 // LoadCache refreshes the in-memory blacklist IP set from the database.
 func LoadCache(ctx context.Context) error {
-	ips, err := database.ListBlacklistedIPs(ctx)
+	ips, err := ListBlacklistedIPs(ctx)
 	if err != nil {
 		return err
 	}
 	cache.Store(toSet(ips))
-	ranges, err := database.ListBlacklistedRanges(ctx)
+	ranges, err := ListBlacklistedRanges(ctx)
 	if err != nil {
 		return err
 	}
@@ -355,7 +354,7 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 		}
 	}
 
-	if _, _, err := database.ReplaceBlacklistData(ctx, allIPs, allRanges); err != nil {
+	if _, _, err := ReplaceBlacklistData(ctx, allIPs, allRanges); err != nil {
 		return nil, err
 	}
 
@@ -375,13 +374,13 @@ func doRefresh(ctx context.Context, reason string, force bool) (*RefreshOutcome,
 
 	if len(newIPs) > 0 || len(newRanges) > 0 || force {
 		var err error
-		removed, orphans, err = database.RemoveProxiesByIPs(ctx, newIPs)
+		removed, orphans, err = RemoveProxiesByIPs(ctx, newIPs)
 		if err != nil {
 			return nil, err
 		}
 		var rangeRemoved int64
 		var rangeOrphans []domain.Proxy
-		rangeRemoved, rangeOrphans, err = database.RemoveProxiesByRanges(ctx, newRanges)
+		rangeRemoved, rangeOrphans, err = RemoveProxiesByRanges(ctx, newRanges)
 		if err != nil {
 			return nil, err
 		}
