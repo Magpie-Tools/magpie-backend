@@ -17,6 +17,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/scrapestore"
+	"magpie/internal/workspace"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -28,7 +29,7 @@ func listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	workspaces, err := database.ListWorkspaces(userID)
+	workspaces, err := workspace.ListWorkspaces(userID)
 	if err != nil {
 		writeError(w, "Failed to list workspaces", http.StatusInternalServerError)
 		return
@@ -46,7 +47,7 @@ func createWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	workspace, err := database.CreateWorkspace(userID, payload.Name)
+	workspace, err := workspace.CreateWorkspace(userID, payload.Name)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -67,7 +68,7 @@ func getWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	workspace, err := database.GetWorkspace(workspaceID, access.UserID)
+	workspace, err := workspace.GetWorkspace(workspaceID, access.UserID)
 	if err != nil {
 		writeWorkspaceAccessError(w, err)
 		return
@@ -84,7 +85,7 @@ func updateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	if err := database.RenameWorkspace(workspaceID, payload.Name); err != nil {
+	if err := workspace.RenameWorkspace(workspaceID, payload.Name); err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -96,7 +97,7 @@ func selectWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := database.SetDefaultWorkspace(access.UserID, workspaceID); err != nil {
+	if err := workspace.SetDefaultWorkspace(access.UserID, workspaceID); err != nil {
 		writeWorkspaceAccessError(w, err)
 		return
 	}
@@ -108,7 +109,7 @@ func listWorkspaceMembers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	members, err := database.ListWorkspaceMembers(workspaceID)
+	members, err := workspace.ListWorkspaceMembers(workspaceID)
 	if err != nil {
 		writeError(w, "Failed to list workspace members", http.StatusInternalServerError)
 		return
@@ -130,7 +131,7 @@ func updateWorkspaceMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload.Role = strings.ToLower(strings.TrimSpace(payload.Role))
-	existing, err := database.ResolveWorkspaceAccess(memberUserID, workspaceID)
+	existing, err := workspace.ResolveWorkspaceAccess(memberUserID, workspaceID)
 	if err != nil {
 		writeError(w, "Workspace member not found", http.StatusNotFound)
 		return
@@ -144,7 +145,7 @@ func updateWorkspaceMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Only a workspace owner can manage owners, administrators, or billing access", http.StatusForbidden)
 		return
 	}
-	if err := database.UpdateWorkspaceMember(workspaceID, memberUserID, payload.Role, payload.BillingAdmin); err != nil {
+	if err := workspace.UpdateWorkspaceMember(workspaceID, memberUserID, payload.Role, payload.BillingAdmin); err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			status = http.StatusNotFound
@@ -164,7 +165,7 @@ func removeWorkspaceMember(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	existing, err := database.ResolveWorkspaceAccess(memberUserID, workspaceID)
+	existing, err := workspace.ResolveWorkspaceAccess(memberUserID, workspaceID)
 	if err != nil {
 		writeError(w, "Workspace member not found", http.StatusNotFound)
 		return
@@ -173,31 +174,31 @@ func removeWorkspaceMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Only a workspace owner can remove owners, administrators, or billing administrators", http.StatusForbidden)
 		return
 	}
-	if err := database.RemoveWorkspaceMember(workspaceID, memberUserID); err != nil {
+	if err := workspace.RemoveWorkspaceMember(workspaceID, memberUserID); err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func requirePathWorkspaceAccess(w http.ResponseWriter, r *http.Request, role string) (uint, database.WorkspaceAccess, bool) {
+func requirePathWorkspaceAccess(w http.ResponseWriter, r *http.Request, role string) (uint, workspace.WorkspaceAccess, bool) {
 	workspaceID, ok := parsePositivePathUint(w, r, "id")
 	if !ok {
-		return 0, database.WorkspaceAccess{}, false
+		return 0, workspace.WorkspaceAccess{}, false
 	}
 	userID, err := auth.GetUserIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
-		return 0, database.WorkspaceAccess{}, false
+		return 0, workspace.WorkspaceAccess{}, false
 	}
-	access, err := database.ResolveWorkspaceAccess(userID, workspaceID)
+	access, err := workspace.ResolveWorkspaceAccess(userID, workspaceID)
 	if err != nil {
 		writeWorkspaceAccessError(w, err)
-		return 0, database.WorkspaceAccess{}, false
+		return 0, workspace.WorkspaceAccess{}, false
 	}
 	if domain.WorkspaceRoleRank(access.Role) < domain.WorkspaceRoleRank(role) {
 		writeError(w, "Workspace role does not permit this action", http.StatusForbidden)
-		return 0, database.WorkspaceAccess{}, false
+		return 0, workspace.WorkspaceAccess{}, false
 	}
 	return workspaceID, access, true
 }
@@ -224,7 +225,7 @@ func updateWorkspaceAllowances(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	if err := database.UpdateWorkspaceAllowances(r.Context(), uint(workspaceID), payload); err != nil {
+	if err := workspace.UpdateWorkspaceAllowances(r.Context(), uint(workspaceID), payload); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			writeError(w, "Workspace not found", http.StatusNotFound)
 			return

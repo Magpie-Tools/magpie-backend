@@ -19,6 +19,7 @@ import (
 	"magpie/internal/platform/pg"
 	"magpie/internal/rotatingproxy"
 	"magpie/internal/support"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestCreateRotatingProxyFixtureMode(t *testing.T) {
@@ -82,7 +83,7 @@ func TestCreateRotatingProxyFixtureMode(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := httptest.NewRequest(http.MethodPost, "/rotating-proxies", bytes.NewReader(body))
-			request = request.WithContext(context.WithValue(request.Context(), workspaceContextKey{}, database.WorkspaceAccess{WorkspaceID: workspace.ID}))
+			request = request.WithContext(context.WithValue(request.Context(), workspaceContextKey{}, workspaces.WorkspaceAccess{WorkspaceID: workspace.ID}))
 			response := httptest.NewRecorder()
 			createRotatingProxy(response, request)
 			if response.Code != http.StatusCreated {

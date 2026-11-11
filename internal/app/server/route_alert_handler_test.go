@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestAlertAPIRolesIsolationAndWriteOnlyDestinations(t *testing.T) {
@@ -36,7 +36,7 @@ func TestAlertAPIRolesIsolationAndWriteOnlyDestinations(t *testing.T) {
 	}
 	for _, role := range []string{domain.WorkspaceRoleViewer, domain.WorkspaceRoleOperator, domain.WorkspaceRoleAdmin} {
 		user, _ := createWorkspaceMiddlewareTestUser(t, "alert-"+role+"@example.test")
-		if _, err := database.AddWorkspaceMember(workspace.ID, user.Email, role, false); err != nil {
+		if _, err := workspaces.AddWorkspaceMember(workspace.ID, user.Email, role, false); err != nil {
 			t.Fatal(err)
 		}
 		response := request(user.ID, http.MethodGet, "/alerts", "")

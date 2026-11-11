@@ -12,6 +12,7 @@ import (
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	workspaces "magpie/internal/workspace"
 
 	"gorm.io/gorm"
 )
@@ -96,7 +97,7 @@ func TestWorkspaceAllowancesMeterChecksScrapesAndInheritDefaults(t *testing.T) {
 			usage.Checks, usage.ProtocolChecks, usage.CheckAttempts, usage.Scrapes)
 	}
 
-	if err := UpdateWorkspaceAllowances(context.Background(), quiet.ID, dto.WorkspaceAllowanceUpdateRequest{MonthlyChecks: 77, MonthlyScrapes: 0}); err != nil {
+	if err := workspaces.UpdateWorkspaceAllowances(context.Background(), quiet.ID, dto.WorkspaceAllowanceUpdateRequest{MonthlyChecks: 77, MonthlyScrapes: 0}); err != nil {
 		t.Fatalf("set workspace override: %v", err)
 	}
 
@@ -437,7 +438,7 @@ func TestUnlimitedWorkspaceRequiresFixedIntervalAndInheritsInstanceDefault(t *te
 	workspace := createTestWorkspaceForUser(t, db, owner)
 	ctx := context.Background()
 
-	if err := UpdateWorkspaceAllowances(ctx, workspace.ID, dto.WorkspaceAllowanceUpdateRequest{UnlimitedChecks: true}); err != nil {
+	if err := workspaces.UpdateWorkspaceAllowances(ctx, workspace.ID, dto.WorkspaceAllowanceUpdateRequest{UnlimitedChecks: true}); err != nil {
 		t.Fatalf("set unlimited checks: %v", err)
 	}
 	// Automatic spreading needs a limit, so a check interval is required. The
@@ -469,7 +470,7 @@ func TestUnlimitedWorkspaceRequiresFixedIntervalAndInheritsInstanceDefault(t *te
 		t.Fatalf("an unlimited workspace was warned about its allowance: %q", warnings)
 	}
 	stored := domain.Workspace{ID: workspace.ID, CheckIntervalSeconds: 60}
-	if got := workspaceAllowancesDTO(stored, subscription); !got.UnlimitedChecks || got.NeedsCheckInterval || got.InheritsChecks || got.ChecksRunOutAt != nil {
+	if got := workspaces.WorkspaceAllowancesDTO(stored, subscription); !got.UnlimitedChecks || got.NeedsCheckInterval || got.InheritsChecks || got.ChecksRunOutAt != nil {
 		t.Fatalf("allowance view = %+v", got)
 	}
 
@@ -482,11 +483,11 @@ func TestUnlimitedWorkspaceRequiresFixedIntervalAndInheritsInstanceDefault(t *te
 	if err := UpdateWorkspaceCadence(ctx, workspace.ID, request); !errors.Is(err, ErrUnlimitedNeedsInterval) {
 		t.Fatalf("automatic scrapes under an unlimited default: err = %v", err)
 	}
-	if got := workspaceAllowancesDTO(stored, subscription); !got.UnlimitedScrapes || !got.NeedsScrapeInterval {
+	if got := workspaces.WorkspaceAllowancesDTO(stored, subscription); !got.UnlimitedScrapes || !got.NeedsScrapeInterval {
 		t.Fatalf("inherited unlimited scrapes = %+v", got)
 	}
 	// An explicit monthly allowance overrides the unlimited default.
-	if err := UpdateWorkspaceAllowances(ctx, workspace.ID, dto.WorkspaceAllowanceUpdateRequest{UnlimitedChecks: true, MonthlyScrapes: 500}); err != nil {
+	if err := workspaces.UpdateWorkspaceAllowances(ctx, workspace.ID, dto.WorkspaceAllowanceUpdateRequest{UnlimitedChecks: true, MonthlyScrapes: 500}); err != nil {
 		t.Fatal(err)
 	}
 	if err := UpdateWorkspaceCadence(ctx, workspace.ID, request); err != nil {

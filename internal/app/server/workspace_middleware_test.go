@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestResolveRequestWorkspaceAccessUsesDefaultAndExplicitMembership(t *testing.T) {
@@ -19,7 +19,7 @@ func TestResolveRequestWorkspaceAccessUsesDefaultAndExplicitMembership(t *testin
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
 
 	user, personal := createWorkspaceMiddlewareTestUser(t, "member@example.test")
-	shared, err := database.CreateWorkspace(user.ID, "Shared workspace")
+	shared, err := workspaces.CreateWorkspace(user.ID, "Shared workspace")
 	if err != nil {
 		t.Fatalf("create shared workspace: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestResolveRequestWorkspaceAccessUsesDefaultAndExplicitMembership(t *testin
 	}
 
 	request = workspaceMiddlewareTestRequest(t, user.ID, strconv.FormatUint(uint64(outsiderWorkspace.ID), 10))
-	if _, err = resolveRequestWorkspaceAccess(request); !errors.Is(err, database.ErrWorkspaceNotFound) {
+	if _, err = resolveRequestWorkspaceAccess(request); !errors.Is(err, workspaces.ErrWorkspaceNotFound) {
 		t.Fatalf("outsider workspace error = %v, want membership failure", err)
 	}
 
@@ -61,7 +61,7 @@ func TestWorkspaceRoleMiddlewareSeparatesReadAndOperatePermissions(t *testing.T)
 
 	owner, workspace := createWorkspaceMiddlewareTestUser(t, "owner@example.test")
 	viewer, _ := createWorkspaceMiddlewareTestUser(t, "viewer@example.test")
-	if _, err := database.AddWorkspaceMember(workspace.ID, viewer.Email, domain.WorkspaceRoleViewer, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, viewer.Email, domain.WorkspaceRoleViewer, false); err != nil {
 		t.Fatalf("add viewer: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func createWorkspaceMiddlewareTestUser(t *testing.T, email string) (domain.User,
 	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user %s: %v", email, err)
 	}
-	workspace, err := database.CreatePersonalWorkspaceForUser(pg.DB, user)
+	workspace, err := workspaces.CreatePersonalWorkspaceForUser(pg.DB, user)
 	if err != nil {
 		t.Fatalf("create personal workspace for %s: %v", email, err)
 	}

@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestNotificationReadAPIIsolationPersistenceAndAccess(t *testing.T) {
@@ -27,10 +27,10 @@ func TestNotificationReadAPIIsolationPersistenceAndAccess(t *testing.T) {
 	owner, workspace := createWorkspaceMiddlewareTestUser(t, "notification-owner@example.test")
 	reader, _ := createWorkspaceMiddlewareTestUser(t, "notification-reader@example.test")
 	outsider, _ := createWorkspaceMiddlewareTestUser(t, "notification-outsider@example.test")
-	if _, err := database.AddWorkspaceMember(workspace.ID, reader.Email, domain.WorkspaceRoleViewer, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, reader.Email, domain.WorkspaceRoleViewer, false); err != nil {
 		t.Fatal(err)
 	}
-	invitation, err := database.CreateWorkspaceInvitation(workspace.ID, owner.ID, outsider.Email, domain.WorkspaceRoleViewer, false, time.Now().Add(time.Hour))
+	invitation, err := workspaces.CreateWorkspaceInvitation(workspace.ID, owner.ID, outsider.Email, domain.WorkspaceRoleViewer, false, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

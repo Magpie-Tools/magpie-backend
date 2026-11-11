@@ -11,6 +11,7 @@ import (
 	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 	"magpie/internal/support"
+	"magpie/internal/workspace"
 
 	"gorm.io/gorm"
 )
@@ -40,7 +41,7 @@ func setupDevelopmentSeedTest(t *testing.T) (*gorm.DB, DevelopmentSeedOptions, [
 		if err := db.Create(&user).Error; err != nil {
 			t.Fatal(err)
 		}
-		if _, err := database.CreatePersonalWorkspaceForUser(db, user); err != nil {
+		if _, err := workspace.CreatePersonalWorkspaceForUser(db, user); err != nil {
 			t.Fatal(err)
 		}
 		users = append(users, user)
@@ -54,7 +55,7 @@ func TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres(t *testing.T) {
 	if err := db.Create(&outsider).Error; err != nil {
 		t.Fatal(err)
 	}
-	outsideWorkspace, err := database.CreatePersonalWorkspaceForUser(db, outsider)
+	outsideWorkspace, err := workspace.CreatePersonalWorkspaceForUser(db, outsider)
 	if err != nil {
 		t.Fatal(err)
 	}

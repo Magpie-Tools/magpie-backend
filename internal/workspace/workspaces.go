@@ -1,4 +1,4 @@
-package database
+package workspace
 
 import (
 	"context"
@@ -239,7 +239,7 @@ func GetWorkspace(workspaceID, userID uint) (dto.Workspace, error) {
 		}
 		return dto.Workspace{}, err
 	}
-	active, stored, err := workspaceManagedProxyCounts(pg.DB, workspaceID)
+	active, stored, err := WorkspaceManagedProxyCounts(pg.DB, workspaceID)
 	if err != nil {
 		return dto.Workspace{}, err
 	}
@@ -422,22 +422,6 @@ func GetWorkspaceByID(workspaceID uint) domain.Workspace {
 	return workspace
 }
 
-func GetWorkspacesByIDsForChecker(ids []uint) (map[uint]domain.Workspace, error) {
-	ids = normalizeWorkspaceIDs(ids)
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	var workspaces []domain.Workspace
-	if err := pg.DB.Where("id IN ?", ids).Find(&workspaces).Error; err != nil {
-		return nil, err
-	}
-	result := make(map[uint]domain.Workspace, len(workspaces))
-	for _, workspace := range workspaces {
-		result[workspace.ID] = workspace
-	}
-	return result, nil
-}
-
 func GetWorkspaceMemberPreference(workspaceID, userID uint) domain.WorkspaceMemberPreference {
 	var preference domain.WorkspaceMemberPreference
 	if err := pg.DB.Where("workspace_id = ? AND user_id = ?", workspaceID, userID).First(&preference).Error; err != nil {
@@ -447,7 +431,7 @@ func GetWorkspaceMemberPreference(workspaceID, userID uint) domain.WorkspaceMemb
 	return preference
 }
 
-func workspaceManagedProxyCounts(tx *gorm.DB, workspaceID uint) (active, stored uint64, err error) {
+func WorkspaceManagedProxyCounts(tx *gorm.DB, workspaceID uint) (active, stored uint64, err error) {
 	var activeCount, storedCount int64
 	if tx.Migrator().HasTable(&domain.ManagedProxy{}) {
 		if err = tx.Model(&domain.ManagedProxy{}).Where("workspace_id = ?", workspaceID).Count(&storedCount).Error; err != nil {
@@ -497,14 +481,14 @@ func workspaceDTO(workspace domain.Workspace, membership domain.WorkspaceMembers
 			CurrentPeriodEnd:            subscription.CurrentPeriodEnd,
 			CancelAtPeriodEnd:           subscription.CancelAtPeriodEnd,
 		},
-		Allowances: workspaceAllowancesDTO(workspace, subscription),
+		Allowances: WorkspaceAllowancesDTO(workspace, subscription),
 		CreatedAt:  workspace.CreatedAt,
 	}
 }
 
 // workspaceAllowancesDTO reads the published pacing snapshot rather than
 // metering tables, so listing workspaces adds no queries.
-func workspaceAllowancesDTO(workspace domain.Workspace, subscription domain.WorkspaceSubscription) dto.WorkspaceAllowances {
+func WorkspaceAllowancesDTO(workspace domain.Workspace, subscription domain.WorkspaceSubscription) dto.WorkspaceAllowances {
 	workspaceID := workspace.ID
 	cfg := config.GetConfig()
 	now := time.Now()

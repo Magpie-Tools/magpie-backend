@@ -16,6 +16,7 @@ import (
 	"magpie/internal/platform/pg"
 	"magpie/internal/scrapestore"
 	workspacesettings "magpie/internal/settings"
+	workspaces "magpie/internal/workspace"
 )
 
 type viewerData struct {
@@ -578,7 +579,7 @@ func fetchViewer(ctx context.Context) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	workspace := database.GetWorkspaceByID(workspaceID)
+	workspace := workspaces.GetWorkspaceByID(workspaceID)
 	if workspace.ID == 0 {
 		return nil, fmt.Errorf("workspace %d not found", workspaceID)
 	}
@@ -589,7 +590,7 @@ func fetchViewer(ctx context.Context) (interface{}, error) {
 	return &viewerData{
 		user:       user,
 		workspace:  workspace,
-		preference: database.GetWorkspaceMemberPreference(workspaceID, userID),
+		preference: workspaces.GetWorkspaceMemberPreference(workspaceID, userID),
 		role:       role,
 	}, nil
 }
@@ -917,13 +918,13 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	if err := workspacesettings.ValidateCheckerLimits(timeout, retries, failureThreshold); err != nil {
 		return err
 	}
-	workspace := database.GetWorkspaceByID(workspaceID)
+	workspace := workspaces.GetWorkspaceByID(workspaceID)
 	if workspace.ID == 0 {
 		return fmt.Errorf("workspace %d not found", workspaceID)
 	}
 	currentJudges := judgestore.GetWorkspaceJudges(workspaceID)
 	currentSources := scrapestore.GetScrapingSourcesOfUsers(workspaceID)
-	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
+	preference := workspaces.GetWorkspaceMemberPreference(workspaceID, userID)
 	settings := workspace.ToUserSettings(currentJudges, currentSources, preference)
 	settings.CheckerSettings = nil
 	if raw, ok := input["checkerSettings"].(map[string]interface{}); ok {

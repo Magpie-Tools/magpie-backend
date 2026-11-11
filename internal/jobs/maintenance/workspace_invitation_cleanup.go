@@ -5,8 +5,8 @@ import (
 	"errors"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/support"
+	"magpie/internal/workspace"
 
 	"github.com/charmbracelet/log"
 )
@@ -44,7 +44,7 @@ func runWorkspaceInvitationCleanupLoop(ctx context.Context) {
 }
 
 func runWorkspaceInvitationCleanup(ctx context.Context) {
-	removed, err := database.DeleteExpiredWorkspaceInvitations(ctx, time.Now().UTC())
+	removed, err := workspace.DeleteExpiredWorkspaceInvitations(ctx, time.Now().UTC())
 	if err != nil {
 		log.Error("Failed to cleanup expired workspace invitations", "error", err)
 		return

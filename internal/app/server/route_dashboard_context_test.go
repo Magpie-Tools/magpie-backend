@@ -6,13 +6,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"magpie/internal/database"
+	"magpie/internal/workspace"
 )
 
 func TestDashboardHandlerPassesCanceledRequestContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	ctx = context.WithValue(ctx, workspaceContextKey{}, database.WorkspaceAccess{WorkspaceID: 1})
+	ctx = context.WithValue(ctx, workspaceContextKey{}, workspace.WorkspaceAccess{WorkspaceID: 1})
 	request := httptest.NewRequest(http.MethodGet, "/api/getDashboardInfo", nil).WithContext(ctx)
 	response := httptest.NewRecorder()
 	getDashboardInfo(response, request)

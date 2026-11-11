@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/support"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestCreateWorkspaceInvitationSurvivesEmailQueueFailure(t *testing.T) {
@@ -76,7 +76,7 @@ func TestCreateWorkspaceInvitationSurvivesEmailQueueFailure(t *testing.T) {
 	if !response.Invitation.ExpiresAt.Equal(fixedNow.Add(7 * 24 * time.Hour)) {
 		t.Fatalf("expiry = %s", response.Invitation.ExpiresAt)
 	}
-	stored, err := database.ListWorkspaceInvitations(workspace.ID, fixedNow)
+	stored, err := workspaces.ListWorkspaceInvitations(workspace.ID, fixedNow)
 	if err != nil || len(stored) != 1 || stored[0].ID != response.Invitation.ID {
 		t.Fatalf("stored invitations = %#v, error %v", stored, err)
 	}
@@ -214,15 +214,15 @@ func TestCreateWorkspaceInvitationWithoutEmailStillCreatesInboxOffer(t *testing.
 	if response.Warning != "" || response.Invitation.NotificationStatus != domain.WorkspaceInvitationNotificationNotConfigured {
 		t.Fatalf("no-email response = %#v", response)
 	}
-	inbox, err := database.ListUserWorkspaceInvitations(invitee.ID, time.Now().UTC())
+	inbox, err := workspaces.ListUserWorkspaceInvitations(invitee.ID, time.Now().UTC())
 	if err != nil || len(inbox) != 1 || inbox[0].ID != response.Invitation.ID {
 		t.Fatalf("inbox invitations = %#v, error %v", inbox, err)
 	}
 }
 
 func TestWorkspaceInvitationPermissionsKeepAdminsBelowAdmins(t *testing.T) {
-	owner := database.WorkspaceAccess{Role: domain.WorkspaceRoleOwner}
-	admin := database.WorkspaceAccess{Role: domain.WorkspaceRoleAdmin}
+	owner := workspaces.WorkspaceAccess{Role: domain.WorkspaceRoleOwner}
+	admin := workspaces.WorkspaceAccess{Role: domain.WorkspaceRoleAdmin}
 	if err := authorizeWorkspaceInvitationMutation(owner, domain.WorkspaceRoleAdmin, true); err != nil {
 		t.Fatalf("owner invitation permission: %v", err)
 	}

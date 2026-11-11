@@ -21,6 +21,7 @@ import (
 	"magpie/internal/scrapestore"
 	"magpie/internal/settings"
 	"magpie/internal/support"
+	workspaces "magpie/internal/workspace"
 	"net/http"
 	"strings"
 	"sync"
@@ -128,7 +129,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	workspaceAccess, err := database.ResolveWorkspaceAccess(user.ID, 0)
+	workspaceAccess, err := workspaces.ResolveWorkspaceAccess(user.ID, 0)
 	if err != nil {
 		writeError(w, "Failed to resolve personal workspace", http.StatusInternalServerError)
 		return
@@ -412,12 +413,12 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceAccessError(w, workspaceErr)
 		return
 	}
-	workspace := database.GetWorkspaceByID(workspaceID)
+	workspace := workspaces.GetWorkspaceByID(workspaceID)
 	if workspace.ID == 0 {
 		writeError(w, "Workspace not found", http.StatusNotFound)
 		return
 	}
-	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
+	preference := workspaces.GetWorkspaceMemberPreference(workspaceID, userID)
 	workspaceJudges := judgestore.GetWorkspaceJudges(workspaceID)
 	scrapingSources := scrapestore.GetScrapingSourcesOfUsers(workspaceID)
 
@@ -671,7 +672,7 @@ func createUserWithFirstAdminRole(user *domain.User, policy userRegistrationPoli
 			}
 			return err
 		}
-		if _, err := database.CreatePersonalWorkspaceForUser(tx, *user); err != nil {
+		if _, err := workspaces.CreatePersonalWorkspaceForUser(tx, *user); err != nil {
 			return fmt.Errorf("create personal workspace: %w", err)
 		}
 

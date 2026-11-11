@@ -9,10 +9,10 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/mail"
 	"magpie/internal/support"
+	"magpie/internal/workspace"
 
 	"github.com/charmbracelet/log"
 )
@@ -32,7 +32,7 @@ func listWorkspaceInvitations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	invitations, err := database.ListWorkspaceInvitations(workspaceID, nowFn().UTC())
+	invitations, err := workspace.ListWorkspaceInvitations(workspaceID, nowFn().UTC())
 	if err != nil {
 		writeError(w, "Failed to list workspace invitations", http.StatusInternalServerError)
 		return
@@ -66,7 +66,7 @@ func createWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Workspace invitations are not configured correctly", http.StatusInternalServerError)
 		return
 	}
-	invitation, err := database.CreateWorkspaceInvitation(
+	invitation, err := workspace.CreateWorkspaceInvitation(
 		workspaceID,
 		access.UserID,
 		payload.Email,
@@ -92,7 +92,7 @@ func updateWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	current, err := database.GetWorkspaceInvitationForWorkspace(workspaceID, invitationID, nowFn().UTC())
+	current, err := workspace.GetWorkspaceInvitationForWorkspace(workspaceID, invitationID, nowFn().UTC())
 	if err != nil {
 		writeWorkspaceInvitationError(w, err)
 		return
@@ -116,7 +116,7 @@ func updateWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	invitation, err := database.UpdateWorkspaceInvitation(
+	invitation, err := workspace.UpdateWorkspaceInvitation(
 		workspaceID,
 		invitationID,
 		payload.Role,
@@ -147,7 +147,7 @@ func revokeWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	invitation, err := database.GetWorkspaceInvitationForWorkspace(workspaceID, invitationID, nowFn().UTC())
+	invitation, err := workspace.GetWorkspaceInvitationForWorkspace(workspaceID, invitationID, nowFn().UTC())
 	if err != nil {
 		writeWorkspaceInvitationError(w, err)
 		return
@@ -156,7 +156,7 @@ func revokeWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err.Error(), http.StatusForbidden)
 		return
 	}
-	if err := database.RevokeWorkspaceInvitation(workspaceID, invitationID, nowFn().UTC()); err != nil {
+	if err := workspace.RevokeWorkspaceInvitation(workspaceID, invitationID, nowFn().UTC()); err != nil {
 		writeWorkspaceInvitationError(w, err)
 		return
 	}
@@ -169,7 +169,7 @@ func listUserWorkspaceInvitations(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	invitations, err := database.ListUserWorkspaceInvitations(userID, nowFn().UTC())
+	invitations, err := workspace.ListUserWorkspaceInvitations(userID, nowFn().UTC())
 	if err != nil {
 		writeError(w, "Failed to list invitations", http.StatusInternalServerError)
 		return
@@ -187,7 +187,7 @@ func acceptWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	accepted, err := database.AcceptWorkspaceInvitation(invitationID, userID, nowFn().UTC())
+	accepted, err := workspace.AcceptWorkspaceInvitation(invitationID, userID, nowFn().UTC())
 	if err != nil {
 		writeWorkspaceInvitationError(w, err)
 		return
@@ -205,14 +205,14 @@ func declineWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := database.DeclineWorkspaceInvitation(invitationID, userID, nowFn().UTC()); err != nil {
+	if err := workspace.DeclineWorkspaceInvitation(invitationID, userID, nowFn().UTC()); err != nil {
 		writeWorkspaceInvitationError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func authorizeWorkspaceInvitationMutation(access database.WorkspaceAccess, role string, billingAdmin bool) error {
+func authorizeWorkspaceInvitationMutation(access workspace.WorkspaceAccess, role string, billingAdmin bool) error {
 	if role != domain.WorkspaceRoleAdmin && role != domain.WorkspaceRoleOperator && role != domain.WorkspaceRoleViewer {
 		return domain.ErrInvalidWorkspaceRole
 	}
@@ -225,7 +225,7 @@ func authorizeWorkspaceInvitationMutation(access database.WorkspaceAccess, role 
 	return nil
 }
 
-func authorizeExistingWorkspaceInvitationMutation(access database.WorkspaceAccess, invitation dto.WorkspaceInvitation) error {
+func authorizeExistingWorkspaceInvitationMutation(access workspace.WorkspaceAccess, invitation dto.WorkspaceInvitation) error {
 	if access.IsOwner() {
 		return nil
 	}
@@ -275,7 +275,7 @@ func queueWorkspaceInvitationNotification(
 
 func setWorkspaceInvitationNotificationStatus(invitation dto.WorkspaceInvitation, status string) dto.WorkspaceInvitation {
 	invitation.NotificationStatus = status
-	if err := database.SetWorkspaceInvitationNotificationStatus(invitation.WorkspaceID, invitation.ID, status); err != nil {
+	if err := workspace.SetWorkspaceInvitationNotificationStatus(invitation.WorkspaceID, invitation.ID, status); err != nil {
 		log.Error("failed to update workspace invitation notification status", "invitation_id", invitation.ID, "status", status, "error", err)
 	}
 	return invitation
@@ -327,15 +327,15 @@ func renderWorkspaceInvitationEmail(
 
 func writeWorkspaceInvitationError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, database.ErrWorkspaceInviteeNotFound):
+	case errors.Is(err, workspace.ErrWorkspaceInviteeNotFound):
 		writeError(w, "No Magpie account exists for that email address", http.StatusNotFound)
-	case errors.Is(err, database.ErrWorkspaceInvitationNotFound):
+	case errors.Is(err, workspace.ErrWorkspaceInvitationNotFound):
 		writeError(w, "Workspace invitation not found", http.StatusNotFound)
-	case errors.Is(err, database.ErrWorkspaceInvitationExpired):
+	case errors.Is(err, workspace.ErrWorkspaceInvitationExpired):
 		writeError(w, "Workspace invitation has expired", http.StatusGone)
-	case errors.Is(err, database.ErrWorkspaceInvitationExists):
+	case errors.Is(err, workspace.ErrWorkspaceInvitationExists):
 		writeError(w, "A pending invitation already exists for that account", http.StatusConflict)
-	case errors.Is(err, database.ErrWorkspaceMemberExists):
+	case errors.Is(err, workspace.ErrWorkspaceMemberExists):
 		writeError(w, "That account is already a workspace member", http.StatusConflict)
 	case errors.Is(err, domain.ErrInvalidWorkspaceRole):
 		writeError(w, "Invitation role must be admin, operator, or viewer", http.StatusBadRequest)

@@ -20,6 +20,7 @@ import (
 	"magpie/internal/evidence"
 	"magpie/internal/platform/pg"
 	"magpie/internal/support"
+	"magpie/internal/workspace"
 )
 
 type dashboardInfoCacheEntry struct {
@@ -336,7 +337,7 @@ func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings
 // UpdateUserSettings preserves the old Go API by updating the user's default
 // workspace. HTTP handlers use UpdateWorkspaceSettings directly.
 func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
-	access, err := ResolveWorkspaceAccess(userID, 0)
+	access, err := workspace.ResolveWorkspaceAccess(userID, 0)
 	if err != nil {
 		return err
 	}

@@ -15,6 +15,7 @@ import (
 	"magpie/internal/auth"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/workspace"
 )
 
 func TestRequeueScrapeSource_ReturnsQueuedSource(t *testing.T) {
@@ -108,7 +109,7 @@ func newAdminRequest(t *testing.T, method, path string, userID uint) *http.Reque
 
 	req := httptest.NewRequest(method, path, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	return req.WithContext(context.WithValue(req.Context(), workspaceContextKey{}, database.WorkspaceAccess{
+	return req.WithContext(context.WithValue(req.Context(), workspaceContextKey{}, workspace.WorkspaceAccess{
 		WorkspaceID: userID,
 		UserID:      userID,
 		Role:        domain.WorkspaceRoleOwner,

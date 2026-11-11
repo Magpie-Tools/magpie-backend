@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"testing"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestWorkspaceAdminCannotManageAdministratorsOrPromoteToAdministrator(t *testing.T) {
@@ -20,13 +20,13 @@ func TestWorkspaceAdminCannotManageAdministratorsOrPromoteToAdministrator(t *tes
 	admin, _ := createWorkspaceMiddlewareTestUser(t, "member-permission-admin@example.test")
 	otherAdmin, _ := createWorkspaceMiddlewareTestUser(t, "member-permission-other-admin@example.test")
 	operator, _ := createWorkspaceMiddlewareTestUser(t, "member-permission-operator@example.test")
-	if _, err := database.AddWorkspaceMember(workspace.ID, admin.Email, domain.WorkspaceRoleAdmin, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, admin.Email, domain.WorkspaceRoleAdmin, false); err != nil {
 		t.Fatalf("add acting admin: %v", err)
 	}
-	if _, err := database.AddWorkspaceMember(workspace.ID, otherAdmin.Email, domain.WorkspaceRoleAdmin, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, otherAdmin.Email, domain.WorkspaceRoleAdmin, false); err != nil {
 		t.Fatalf("add other admin: %v", err)
 	}
-	if _, err := database.AddWorkspaceMember(workspace.ID, operator.Email, domain.WorkspaceRoleOperator, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, operator.Email, domain.WorkspaceRoleOperator, false); err != nil {
 		t.Fatalf("add operator: %v", err)
 	}
 

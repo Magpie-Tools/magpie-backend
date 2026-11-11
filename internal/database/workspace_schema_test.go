@@ -9,6 +9,7 @@ import (
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 	"magpie/internal/security"
+	workspaces "magpie/internal/workspace"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -158,7 +159,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		t.Fatalf("migrated lifecycle state = %q, want active", managed.State)
 	}
 
-	shared, err := CreateWorkspace(legacyUser.ID, "Shared production")
+	shared, err := workspaces.CreateWorkspace(legacyUser.ID, "Shared production")
 	if err != nil {
 		t.Fatalf("create shared workspace after migration: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 	if err := migratedDB.Create(&newUser).Error; err != nil {
 		t.Fatalf("create post-migration user: %v", err)
 	}
-	newPersonal, err := CreatePersonalWorkspaceForUser(migratedDB, newUser)
+	newPersonal, err := workspaces.CreatePersonalWorkspaceForUser(migratedDB, newUser)
 	if err != nil {
 		t.Fatalf("create post-migration personal workspace: %v", err)
 	}
