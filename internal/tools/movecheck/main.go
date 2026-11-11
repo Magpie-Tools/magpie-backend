@@ -10,7 +10,8 @@
 // formatting, after two normalizations:
 //
 //   - a qualifier that names a package of this module is dropped, so pg.Open
-//     and Open compare equal;
+//     and Open compare equal (a local variable with a package's name is not a
+//     qualifier and is kept);
 //   - the first letter of every identifier is compared case-insensitively, so
 //     isPostgresDialect and IsPostgresDialect compare equal.
 //
@@ -177,7 +178,7 @@ func parseFile(path, relative string) ([]*declaration, error) {
 		return nil, err
 	}
 	fset := token.NewFileSet()
-	parsed, err := parser.ParseFile(fset, path, source, parser.ParseComments|parser.SkipObjectResolution)
+	parsed, err := parser.ParseFile(fset, path, source, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
@@ -193,13 +194,21 @@ func parseFile(path, relative string) ([]*declaration, error) {
 		}
 		qualifiers[local] = true
 	}
+	// Only an identifier the file does not declare can name an imported
+	// package. A local variable called like a package is not a qualifier.
+	packageUses := map[int]bool{}
+	for _, ident := range parsed.Unresolved {
+		if qualifiers[ident.Name] {
+			packageUses[fset.Position(ident.Pos()).Offset] = true
+		}
+	}
 	isTest := strings.HasSuffix(relative, "_test.go")
 	var declarations []*declaration
 	add := func(name string, node ast.Node) {
 		start, end := fset.Position(node.Pos()).Offset, fset.Position(node.End()).Offset
 		declarations = append(declarations, &declaration{
 			name: foldFirst(name), file: relative, test: isTest,
-			text: normalize(source[start:end], qualifiers),
+			text: normalize(source[start:end], start, packageUses),
 		})
 	}
 	for _, decl := range parsed.Decls {
@@ -246,30 +255,31 @@ func receiverName(expr ast.Expr) string {
 
 // normalize returns the declaration's tokens, one per line, without comments,
 // with module qualifiers dropped and identifier first letters folded.
-func normalize(source []byte, qualifiers map[string]bool) string {
+func normalize(source []byte, base int, packageUses map[int]bool) string {
 	fset := token.NewFileSet()
 	file := fset.AddFile("", fset.Base(), len(source))
 	var scan scanner.Scanner
 	scan.Init(file, source, nil, 0)
 	type item struct {
-		tok token.Token
-		lit string
+		tok    token.Token
+		lit    string
+		offset int
 	}
 	var items []item
 	for {
-		_, tok, lit := scan.Scan()
+		pos, tok, lit := scan.Scan()
 		if tok == token.EOF {
 			break
 		}
 		if tok == token.SEMICOLON && lit == "\n" {
 			continue // an automatically inserted semicolon is formatting
 		}
-		items = append(items, item{tok, lit})
+		items = append(items, item{tok, lit, base + file.Offset(pos)})
 	}
 	var out strings.Builder
 	for index := 0; index < len(items); index++ {
 		current := items[index]
-		if current.tok == token.IDENT && qualifiers[current.lit] &&
+		if current.tok == token.IDENT && packageUses[current.offset] &&
 			index+2 < len(items) && items[index+1].tok == token.PERIOD && items[index+2].tok == token.IDENT {
 			index++ // drop the qualifier and its period
 			continue
