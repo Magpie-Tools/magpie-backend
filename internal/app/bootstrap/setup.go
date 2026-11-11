@@ -264,8 +264,13 @@ func startCheckPacing(ctx context.Context, running *Runtime) {
 		log.Warn("initial workspace check allowance load failed; using fallback cadence", "error", err)
 	}
 	config.OnConfigApplied(checkpace.RequestRefresh)
-	running.producers.start(checkpace.Run)
+	running.startCheckUsageMeter()
 }
+
+// startCheckUsageMeter runs the pacer with the consumers. Checker workers
+// charge requests until the producers have stopped, and the pacer's last usage
+// flush must follow the last charge.
+func (r *Runtime) startCheckUsageMeter() { r.consumers.start(checkpace.Run) }
 
 // envCheckUsagePauseAfter sets how long check usage may stay unwritten before
 // this instance pauses checking. Zero never pauses.

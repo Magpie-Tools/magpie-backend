@@ -143,12 +143,13 @@ func scheduleReputationRecalculation(proxyIDs []uint64) {
 	}
 
 	ids := append([]uint64(nil), proxyIDs...)
+	db := DB
 
 	go func(values []uint64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := RecalculateProxyReputations(ctx, values); err != nil {
+		if err := recalculateProxyReputations(db, ctx, values); err != nil {
 			log.Error("failed to backfill proxy reputations", "error", err, "proxy_ids", values)
 		}
 	}(ids)

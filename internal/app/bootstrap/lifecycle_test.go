@@ -3,8 +3,11 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"magpie/internal/checkpace"
 )
 
 func TestShutdownWaitsForLastProducerBeforeFinalConsumerFlush(t *testing.T) {
@@ -114,4 +117,38 @@ func TestShutdownReportsDeadlineWhenProducerCannotStop(t *testing.T) {
 	}
 	close(release)
 	running.producers.wg.Wait()
+}
+
+// Checker workers charge requests until the producers have stopped. The usage
+// meter's last flush must come after that, or those requests are never written.
+func TestShutdownWritesCheckUsageChargedUntilProducersStopped(t *testing.T) {
+	const workspaceID = 9_000_001 // the meter lives for the process
+	var written atomic.Uint64
+	checkpace.Configure(checkpace.Store{FlushUsage: func(_ context.Context, batch checkpace.UsageBatch) error {
+		for _, usage := range batch.Usage {
+			if usage.WorkspaceID == workspaceID {
+				written.Add(usage.Attempts)
+			}
+		}
+		return nil
+	}})
+	t.Cleanup(func() { checkpace.Configure(checkpace.Store{}) })
+
+	running := newRuntime(context.Background())
+	running.startCheckUsageMeter()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Shutdown's first stage has finished: the last request has just been charged.
+	if err := running.producers.stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !checkpace.Current().ChargeRequest(workspaceID, true, time.Now()) {
+		t.Fatal("the request was refused")
+	}
+	if err := running.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := written.Load(); got != 1 {
+		t.Fatalf("shutdown wrote %d of the 1 request charged before the producers stopped", got)
+	}
 }

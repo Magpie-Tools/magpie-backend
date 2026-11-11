@@ -206,6 +206,7 @@ func TestSharedRequestDropsOnlyTheExhaustedWorkspace(t *testing.T) {
 	useMeteredPace(t,
 		checkpace.Allowance{WorkspaceID: 202, MonthlyChecks: 10, UsedChecks: 9, ChecksPerCycle: 1},
 		checkpace.Allowance{WorkspaceID: 203, MonthlyChecks: 1_000, ChecksPerCycle: 1},
+		checkpace.Allowance{WorkspaceID: 206, MonthlyChecks: 1_000, ChecksPerCycle: 1},
 	)
 	sent := 0
 	failingJudge(t, func() { sent++ })
@@ -214,17 +215,17 @@ func TestSharedRequestDropsOnlyTheExhaustedWorkspace(t *testing.T) {
 	t.Cleanup(func() { enqueueProxyStatistic = originalEnqueue })
 	// The statistics pipeline drops the result: charging does not depend on it.
 	enqueueProxyStatistic = func(_ domain.ProxyStatistic, workspaceIDs []uint) { reported = workspaceIDs }
-	shared := []workspaceCheck{{workspaceID: 202, regex: "a"}, {workspaceID: 203, regex: "a"}, {workspaceID: 203, regex: "b"}}
+	shared := []workspaceCheck{{workspaceID: 202, regex: "a"}, {workspaceID: 203, regex: "a"}, {workspaceID: 206, regex: "b"}}
 	assignments := map[string]*requestAssignment{"http": failingAssignment("http", 2, shared...)}
-	hasChecks := map[uint]bool{202: true, 203: true}
+	hasChecks := map[uint]bool{202: true, 203: true, 206: true}
 	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, hasChecks, 1000, 2, false); err != nil {
 		t.Fatal(err)
 	}
-	if sent != 3 || usedChecks(t, 202) != 10 || usedChecks(t, 203) != 3 {
-		t.Fatalf("sent %d, charged %d and %d; want 3 requests, 10 and 3 checks", sent, usedChecks(t, 202), usedChecks(t, 203))
+	if sent != 3 || usedChecks(t, 202) != 10 || usedChecks(t, 203) != 3 || usedChecks(t, 206) != 3 {
+		t.Fatalf("sent %d, charged %d, %d and %d; want 3 requests, 10, 3 and 3 checks", sent, usedChecks(t, 202), usedChecks(t, 203), usedChecks(t, 206))
 	}
-	if len(reported) != 1 || reported[0] != 203 || hasChecks[202] || !hasChecks[203] {
-		t.Fatalf("reported to %v with eligibility %v; only workspace 203 finished the test", reported, hasChecks)
+	if len(reported) != 2 || reported[0] != 203 || reported[1] != 206 || hasChecks[202] || !hasChecks[203] || !hasChecks[206] {
+		t.Fatalf("reported to %v with eligibility %v; only workspaces 203 and 206 finished the test", reported, hasChecks)
 	}
 	if len(shared) != 3 || shared[0].workspaceID != 202 {
 		t.Fatal("dropping a workspace changed the assignment's own checks")
@@ -236,7 +237,7 @@ func TestRequestMeterDoesNotAllocateWhileAllowanceLasts(t *testing.T) {
 		checkpace.Allowance{WorkspaceID: 204, MonthlyChecks: 1 << 40, ChecksPerCycle: 1},
 		checkpace.Allowance{WorkspaceID: 205, MonthlyChecks: 1 << 40, ChecksPerCycle: 1},
 	)
-	checks := []workspaceCheck{{workspaceID: 204}, {workspaceID: 205}, {workspaceID: 204}}
+	checks := []workspaceCheck{{workspaceID: 204}, {workspaceID: 205}}
 	meter := &requestMeter{}
 	if allocations := testing.AllocsPerRun(100, func() {
 		meter.reset(checks)
@@ -248,10 +249,70 @@ func TestRequestMeterDoesNotAllocateWhileAllowanceLasts(t *testing.T) {
 	}
 }
 
+// One request costs one charge per workspace, and workspaces that run out are
+// removed in the same pass, whichever of them it is and however many.
+func TestRequestMeterChargesEachWorkspaceOncePerRequest(t *testing.T) {
+	const owners = 9
+	exhausted := map[uint]bool{}
+	charges := map[uint]int{}
+	original := chargeRequest
+	t.Cleanup(func() { chargeRequest = original })
+	chargeRequest = func(_ *checkpace.Snapshot, workspaceID uint, _ bool, _ time.Time) bool {
+		charges[workspaceID]++
+		return !exhausted[workspaceID]
+	}
+	assignment := make([]workspaceCheck, 0, owners)
+	for id := uint(1); id <= owners; id++ {
+		assignment = append(assignment, workspaceCheck{workspaceID: id})
+	}
+	meter := &requestMeter{}
+	meter.reset(assignment)
+	served := func() []uint {
+		ids := make([]uint, 0, len(meter.checks))
+		for _, check := range meter.checks {
+			ids = append(ids, check.workspaceID)
+		}
+		return ids
+	}
+	for _, step := range []struct {
+		runOut []uint
+		want   []uint
+		admit  bool
+	}{
+		{nil, []uint{1, 2, 3, 4, 5, 6, 7, 8, 9}, true},
+		{[]uint{1, 4, 5, 9}, []uint{2, 3, 6, 7, 8}, true}, // first, adjacent and last; copies
+		{[]uint{3, 8}, []uint{2, 6, 7}, true},             // in place
+		{[]uint{2, 6, 7}, nil, false},
+	} {
+		for _, id := range step.runOut {
+			exhausted[id] = true
+		}
+		asked := len(meter.checks)
+		clear(charges)
+		if meter.admit() != step.admit || fmt.Sprint(served()) != fmt.Sprint(step.want) {
+			t.Fatalf("after %v ran out the request serves %v, want %v", step.runOut, served(), step.want)
+		}
+		if len(charges) != asked {
+			t.Fatalf("%d workspaces were charged for a request serving %d", len(charges), asked)
+		}
+		for id, count := range charges {
+			if count != 1 {
+				t.Fatalf("workspace %d was charged %d times for one request", id, count)
+			}
+		}
+	}
+	for index, check := range assignment {
+		if check.workspaceID != uint(index+1) {
+			t.Fatalf("dropping workspaces changed the assignment's own checks: %v", assignment)
+		}
+	}
+}
+
 // BenchmarkRequestMeterAdmit measures the work added before each outbound
 // request: per owner, a snapshot map read, an atomic load and two atomic adds.
+// It must grow in proportion to the owners sharing the request.
 func BenchmarkRequestMeterAdmit(b *testing.B) {
-	for _, owners := range []int{1, 8} {
+	for _, owners := range []int{1, 8, 64, 512} {
 		b.Run(fmt.Sprintf("owners=%d", owners), func(b *testing.B) {
 			allowances := make([]checkpace.Allowance, 0, owners)
 			checks := make([]workspaceCheck, 0, owners)

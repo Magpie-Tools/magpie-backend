@@ -1,10 +1,50 @@
 package database
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"magpie/internal/domain"
+
+	"gorm.io/gorm"
 )
+
+func TestRecalculateProxyReputationsKeepsOriginalDatabase(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	if err := db.AutoMigrate(&domain.AbuseIPDBCheck{}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, proxy, judge := seedCheckerEvidenceTest(t, db)
+	stat := domain.ProxyStatistic{ProxyID: proxy.ID, JudgeID: judge.ID, ProtocolID: 1,
+		Alive: true, ResponseTime: 100, CreatedAt: time.Now().UTC()}
+	if err := db.Create(&stat).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Reproduce teardown replacing the global after the job's first query.
+	// Every later read and the final upsert must still use the original DB.
+	const callback = "test:replace_reputation_database"
+	if err := db.Callback().Row().After("gorm:row").Register(callback, func(_ *gorm.DB) {
+		DB = nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Row().Remove(callback) })
+	if err := RecalculateProxyReputations(context.Background(), []uint64{proxy.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if DB != nil {
+		t.Fatal("test did not replace the global database handle")
+	}
+	var rows []domain.ProxyReputation
+	if err := db.Where("proxy_id = ?", proxy.ID).Order("kind").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Kind != "http" || rows[1].Kind != domain.ProxyReputationKindOverall {
+		t.Fatalf("reputations were not written to the original database: %+v", rows)
+	}
+}
 
 func TestDedupeProxyReputationsForUpsert_KeepsLastEntryPerProxyKind(t *testing.T) {
 	in := []domain.ProxyReputation{
