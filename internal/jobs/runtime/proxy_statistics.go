@@ -136,14 +136,6 @@ func AddProxyStatisticForWorkspaces(proxyStatistic domain.ProxyStatistic, worksp
 	recordProxyStatisticDrop(dropped, policy)
 }
 
-// AddProxyStatisticForUsers is the compatibility name for workspace attribution.
-// Its IDs identify workspaces, not user accounts.
-//
-// Deprecated: Use AddProxyStatisticForWorkspaces.
-func AddProxyStatisticForUsers(proxyStatistic domain.ProxyStatistic, workspaceIDs []uint) {
-	AddProxyStatisticForWorkspaces(proxyStatistic, workspaceIDs)
-}
-
 // enqueueProxyStatisticToStream returns (enqueued, handled). An intentional
 // drop_new rejection is handled but not enqueued, preventing memory fallback
 // from bypassing the policy. An unavailable or failing stream leaves fallback

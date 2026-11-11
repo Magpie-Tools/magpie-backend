@@ -18,11 +18,6 @@ type WorkspaceJudgeAssignment struct {
 	CreatedAt  time.Time
 }
 
-// UserJudgeAssignment is the compatibility name for a workspace's judge assignment.
-//
-// Deprecated: Use WorkspaceJudgeAssignment.
-type UserJudgeAssignment = WorkspaceJudgeAssignment
-
 type WebsiteBlacklistCleanupResult struct {
 	JudgeRelationsRemoved  int64
 	ScrapeRelationsRemoved int64
@@ -95,13 +90,6 @@ func RemoveBlockedWebsitesFromWorkspaces(ctx context.Context, blockedWebsites []
 	}
 
 	return result, nil
-}
-
-// RemoveBlockedWebsitesFromUsers is the compatibility name for workspace cleanup.
-//
-// Deprecated: Use RemoveBlockedWebsitesFromWorkspaces.
-func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []string) (*WebsiteBlacklistCleanupResult, error) {
-	return RemoveBlockedWebsitesFromWorkspaces(ctx, blockedWebsites)
 }
 
 func findBlockedJudgeIDs(tx *gorm.DB, blockedSet map[string]struct{}) ([]uint, map[uint]struct{}, error) {

@@ -429,14 +429,6 @@ func GetWorkspaceJudges(workspaceID uint) []dto.SimpleWorkspaceJudge {
 	return results
 }
 
-// GetUserJudges is the compatibility name for a workspace's judge settings.
-// The ID identifies a workspace, not a user account.
-//
-// Deprecated: Use GetWorkspaceJudges.
-func GetUserJudges(workspaceID uint) []dto.SimpleWorkspaceJudge {
-	return GetWorkspaceJudges(workspaceID)
-}
-
 func GetWorkspaceJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
 	var rows []struct {
 		ID         uint      `gorm:"column:id"`
@@ -469,14 +461,6 @@ func GetWorkspaceJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, err
 	}
 
 	return result, nil
-}
-
-// GetUserJudgesWithRegex is the compatibility name for a workspace's judge assignments.
-// The ID identifies a workspace, not a user account.
-//
-// Deprecated: Use GetWorkspaceJudgesWithRegex.
-func GetUserJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
-	return GetWorkspaceJudgesWithRegex(workspaceID)
 }
 
 func GetDashboardInfo(userid uint) dto.DashboardInfo {

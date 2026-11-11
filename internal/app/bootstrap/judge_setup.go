@@ -85,13 +85,6 @@ func AddDefaultJudgesToWorkspaces() {
 	}
 }
 
-// AddDefaultJudgesToUsers is the compatibility name for workspace judge setup.
-//
-// Deprecated: Use AddDefaultJudgesToWorkspaces.
-func AddDefaultJudgesToUsers() {
-	AddDefaultJudgesToWorkspaces()
-}
-
 func addJudgeRelationsToCache() {
 	workspaceJudges, jwr := database.GetAllWorkspaceJudgeRelations()
 

@@ -8,7 +8,7 @@ checker settings, tags, failure streak and health assessment.
 
 The [domain glossary](../CONTEXT.md) defines these terms. User accounts gain
 access through workspace memberships. Checker and proxy database symbols use
-workspace terminology; deprecated wrappers and aliases retain historical names.
+workspace terminology; a few deprecated type aliases retain historical names.
 Persisted table names such as `user_proxies` and the
 `PROXY_STATISTICS_TENANT_OVERLOAD_POLICIES` environment name remain compatible
 with existing deployments. Their ownership and policy IDs identify workspaces.
@@ -66,7 +66,6 @@ responsibility in these files:
 | Failure/capacity cleanup and orphan route deletion | [database_proxy_cleanup.go](../internal/database/database_proxy_cleanup.go) |
 | Export snapshots, batches and export filters | [database_proxy_export.go](../internal/database/database_proxy_export.go) |
 | Reputation response mapping and shared reputation filters | [database_proxy_reputation_helpers.go](../internal/database/database_proxy_reputation_helpers.go) |
-| Historical exported names | [database_proxy_compat.go](../internal/database/database_proxy_compat.go) |
 
 ## State and execution boundaries
 
