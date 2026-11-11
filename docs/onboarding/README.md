@@ -70,3 +70,24 @@ What this metric can and cannot show, decided before any move was made:
 | Change workspace invitation acceptance | 4 | 10 | 16210 | 1913 | 131 | 237278 |
 | Change the email outbox retry policy | 4 | 3 | 9660 | 2064 | 121 | 212000 |
 | **Task set** | 27 | 25 | 89070 | 7805 | 528 | 902720 |
+
+### After step 0
+
+Measured on the commit that adds this section.
+
+| Task | Files in full | Files in part | Must-read tokens | of which listings | Search-space files | Search-space tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Add a field to alert rules | 11 | 6 | 18132 | 2099 | 164 | 245762 |
+| Change how failed proxies are requeued | 11 | 2 | 30375 | 192 | 6 | 20869 |
+| Add a column to the proxy filter projection | 8 | 4 | 20061 | 1547 | 104 | 185437 |
+| Change workspace invitation acceptance | 8 | 10 | 18012 | 1913 | 130 | 236592 |
+| Change the email outbox retry policy | 8 | 3 | 11477 | 2066 | 120 | 211228 |
+| **Task set** | 46 | 25 | 98057 | 7817 | 524 | 899888 |
+
+The task set rose from 89,070 to 98,057 must-read tokens. Step 0 moved no code:
+the rise is the root `AGENTS.md`, read once per task, and the new `doc.go` of
+each anchor package. Deleting the deprecated wrappers removed one file from
+`internal/database`, which four tasks count in their search space. This
+checkpoint is the reference for the extraction steps
+that follow; the stop rule compares each later checkpoint with the one before
+it.

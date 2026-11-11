@@ -1,0 +1,32 @@
+# Dependency directions. Names are packages relative to internal/, groups
+# defined here, or (with a dot) the import-path prefix of an external module.
+#
+# group NAME: members
+# forbid FROM: targets   FROM may not import any target
+# only PACKAGE: imports  PACKAGE may import nothing else from this module
+# violation FROM: target an existing breach of a forbid rule; these only shrink
+
+group transport: app/server graphql
+group bootstrap: app app/bootstrap
+group core: database
+group checker-execution: jobs/checker jobs/checker/judges jobs/queue/proxy
+group listeners: rotatingproxy
+group persistence: database gorm.io github.com/jackc/pgx
+# Feature packages. Add each new feature package here in the change that creates it.
+group features: abuseipdb blacklist geolite ipgeolocation settings
+
+# Feature packages never import transport, authentication middleware or bootstrap.
+forbid features: transport bootstrap auth
+# The core never imports transport, bootstrap, checker execution or listeners.
+forbid core: transport bootstrap auth checker-execution listeners
+# Compiled checker settings, judge selection and cadence never import
+# persistence; loaders are injected by app/bootstrap.
+forbid checkerconfig: persistence
+forbid jobs/checker/judges: persistence
+forbid checkpace: persistence
+# checkpace receives persistence through Configure. The core and the hot path
+# may import it.
+only checkpace: domain
+
+violation database: auth                 # auth.NormalizeEmail; moves to a base package with the workspace extraction
+violation database: jobs/checker/judges  # judge cache updates from persistence; leaves with the judge persistence extraction

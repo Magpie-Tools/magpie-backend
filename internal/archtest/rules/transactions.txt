@@ -1,0 +1,5 @@
+# Functions outside internal/database that receive a *gorm.DB and still begin,
+# commit, roll back or nest a transaction. A pure-move change may add the
+# function it carries; a follow-up logic change reshapes it and removes the line.
+#
+# allow: package.Function
