@@ -60,7 +60,7 @@ func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings
 			for _, rule := range settings.CheckerSettings.Rules {
 				ids = append(ids, rule.TagID)
 			}
-			if err := requireProxyTags(tx, workspaceID, ids); err != nil {
+			if err := RequireProxyTags(tx, workspaceID, ids); err != nil {
 				return err
 			}
 		}

@@ -287,7 +287,7 @@ func loadOrphanedScrapeSites(tx *gorm.DB, scrapeSiteIDs []int) ([]domain.ScrapeS
 		return nil, nil
 	}
 
-	chunkSize := deleteChunkSize
+	chunkSize := DeleteChunkSize
 	if chunkSize <= 0 || chunkSize > len(scrapeSiteIDs) {
 		chunkSize = len(scrapeSiteIDs)
 	}

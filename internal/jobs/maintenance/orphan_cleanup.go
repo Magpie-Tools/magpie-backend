@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/database"
+	"magpie/internal/scrapestore"
 	"magpie/internal/support"
 )
 
@@ -118,7 +119,7 @@ func runOrphanCleanup(ctx context.Context) error {
 		}
 	}
 
-	if removed, err := database.DeleteOrphanScrapeSites(ctx); err != nil {
+	if removed, err := scrapestore.DeleteOrphanScrapeSites(ctx); err != nil {
 		log.Error("Failed to cleanup orphan scrape sites", "error", err)
 		failures = append(failures, err)
 	} else {

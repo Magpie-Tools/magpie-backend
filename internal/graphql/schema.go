@@ -14,6 +14,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/judgestore"
 	"magpie/internal/platform/pg"
+	"magpie/internal/scrapestore"
 	workspacesettings "magpie/internal/settings"
 )
 
@@ -310,7 +311,7 @@ func NewSchema() (gql.Schema, error) {
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
 						judges := judgestore.GetWorkspaceJudges(data.workspace.ID)
-						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
+						sources := scrapestore.GetScrapingSourcesOfUsers(data.workspace.ID)
 						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
 					return nil, nil
@@ -320,7 +321,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String))),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						return database.GetScrapingSourcesOfUsers(data.workspace.ID), nil
+						return scrapestore.GetScrapingSourcesOfUsers(data.workspace.ID), nil
 					}
 					return []string{}, nil
 				},
@@ -380,7 +381,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(gql.Int),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						return int(database.GetAllScrapeSiteCountOfUser(data.workspace.ID)), nil
+						return int(scrapestore.GetAllScrapeSiteCountOfUser(data.workspace.ID)), nil
 					}
 					return 0, nil
 				},
@@ -547,7 +548,7 @@ func NewSchema() (gql.Schema, error) {
 					}
 					if data, ok := viewer.(*viewerData); ok {
 						judges := judgestore.GetWorkspaceJudges(data.workspace.ID)
-						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
+						sources := scrapestore.GetScrapingSourcesOfUsers(data.workspace.ID)
 						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
 					return nil, nil
@@ -826,7 +827,7 @@ func graphQLReputationEntry(rep dto.ProxyReputation) map[string]interface{} {
 }
 
 func buildScrapeSitePage(workspaceID uint, page int) map[string]interface{} {
-	sites := database.GetScrapeSiteInfoPage(workspaceID, page)
+	sites := scrapestore.GetScrapeSiteInfoPage(workspaceID, page)
 	items := make([]map[string]interface{}, 0, len(sites))
 	for _, site := range sites {
 		items = append(items, map[string]interface{}{
@@ -840,7 +841,7 @@ func buildScrapeSitePage(workspaceID uint, page int) map[string]interface{} {
 	return map[string]interface{}{
 		"page":       page,
 		"pageSize":   len(items),
-		"totalCount": int(database.GetAllScrapeSiteCountOfUser(workspaceID)),
+		"totalCount": int(scrapestore.GetAllScrapeSiteCountOfUser(workspaceID)),
 		"items":      items,
 	}
 }
@@ -921,7 +922,7 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 		return fmt.Errorf("workspace %d not found", workspaceID)
 	}
 	currentJudges := judgestore.GetWorkspaceJudges(workspaceID)
-	currentSources := database.GetScrapingSourcesOfUsers(workspaceID)
+	currentSources := scrapestore.GetScrapingSourcesOfUsers(workspaceID)
 	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
 	settings := workspace.ToUserSettings(currentJudges, currentSources, preference)
 	settings.CheckerSettings = nil

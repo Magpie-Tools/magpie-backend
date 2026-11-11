@@ -454,7 +454,7 @@ func DeleteOrphanProxyCheckCounters(ctx context.Context, limit int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	limit = min(deleteChunkSize, max(1, limit))
+	limit = min(DeleteChunkSize, max(1, limit))
 	type counterTable struct {
 		name  string
 		after uint64

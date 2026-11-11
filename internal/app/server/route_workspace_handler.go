@@ -16,6 +16,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/scrapestore"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -52,7 +53,7 @@ func createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go bootstrap.AddDefaultJudgesToWorkspaces()
-	defaultSites, sitesErr := database.SaveScrapingSourcesOfUsers(workspace.ID, config.GetConfig().Scraper.ScrapeSites)
+	defaultSites, sitesErr := scrapestore.SaveScrapingSourcesOfUsers(workspace.ID, config.GetConfig().Scraper.ScrapeSites)
 	if sitesErr != nil {
 		log.Warn("Could not add default scraping sources to workspace", "workspace_id", workspace.ID, "error", sitesErr)
 	} else if queueErr := enqueueScrapeSitesOrRollback(workspace.ID, defaultSites); queueErr != nil {

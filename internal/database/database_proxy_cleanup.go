@@ -285,8 +285,8 @@ func GetExistingProxyIDSet(ctx context.Context, proxyIDs []uint64) (map[uint64]s
 	}
 
 	result := make(map[uint64]struct{})
-	for start := 0; start < len(proxyIDs); start += maxParamsPerBatch {
-		end := start + maxParamsPerBatch
+	for start := 0; start < len(proxyIDs); start += MaxParamsPerBatch {
+		end := start + MaxParamsPerBatch
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
@@ -324,7 +324,7 @@ func DeleteOrphanProxies(ctx context.Context) (int64, error) {
 	if result.Error != nil {
 		return 0, result.Error
 	}
-	if err := DeleteOrphanProxyCheckCounters(ctx, deleteChunkSize); err != nil {
+	if err := DeleteOrphanProxyCheckCounters(ctx, DeleteChunkSize); err != nil {
 		return result.RowsAffected, err
 	}
 	return result.RowsAffected, nil

@@ -94,7 +94,7 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 		detail.State = managed.State
 		detail.PauseReason = managed.PauseReason
 	}
-	detail.Tags, err = getProxyTagsForProxy(workspaceID, proxyId)
+	detail.Tags, err = GetProxyTagsForProxy(workspaceID, proxyId)
 	if err != nil {
 		return nil, err
 	}

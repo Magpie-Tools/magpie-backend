@@ -28,7 +28,7 @@ func CalculateProxyStatisticBatchSize(statCount int) int {
 		return minBatchSize
 	}
 
-	maxPossibleBatchSize := maxParamsPerBatch / numFields
+	maxPossibleBatchSize := MaxParamsPerBatch / numFields
 	if maxPossibleBatchSize < 1 {
 		maxPossibleBatchSize = 1
 	}

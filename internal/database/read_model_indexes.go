@@ -541,8 +541,8 @@ func refreshWorkspaceProxyFilterIndexesForProxyIDs(tx *gorm.DB, proxyIDs []uint6
 	if tx == nil || len(proxyIDs) == 0 {
 		return nil
 	}
-	for start := 0; start < len(proxyIDs); start += deleteChunkSize {
-		end := min(start+deleteChunkSize, len(proxyIDs))
+	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
+		end := min(start+DeleteChunkSize, len(proxyIDs))
 		pairs, err := loadReadModelProjectionPairs(tx, proxyIDs[start:end])
 		if err != nil {
 			return err
@@ -563,8 +563,8 @@ func refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx *gorm.DB, workspa
 	if tx == nil {
 		return nil
 	}
-	for start := 0; start < len(proxyIDs); start += deleteChunkSize {
-		end := start + deleteChunkSize
+	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
+		end := start + DeleteChunkSize
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
@@ -799,8 +799,8 @@ func refreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) er
 	if tx == nil || len(siteIDs) == 0 {
 		return nil
 	}
-	for start := 0; start < len(siteIDs); start += deleteChunkSize {
-		end := start + deleteChunkSize
+	for start := 0; start < len(siteIDs); start += DeleteChunkSize {
+		end := start + DeleteChunkSize
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
@@ -811,12 +811,12 @@ func refreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) er
 	return nil
 }
 
-func refreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx *gorm.DB, workspaceID uint, siteIDs []uint64) error {
+func RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx *gorm.DB, workspaceID uint, siteIDs []uint64) error {
 	if tx == nil || workspaceID == 0 || len(siteIDs) == 0 {
 		return nil
 	}
-	for start := 0; start < len(siteIDs); start += deleteChunkSize {
-		end := start + deleteChunkSize
+	for start := 0; start < len(siteIDs); start += DeleteChunkSize {
+		end := start + DeleteChunkSize
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
@@ -832,8 +832,8 @@ func refreshWorkspaceScrapeSourceStatsForProxyIDs(tx *gorm.DB, proxyIDs []uint64
 		return nil
 	}
 
-	for start := 0; start < len(proxyIDs); start += deleteChunkSize {
-		end := start + deleteChunkSize
+	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
+		end := start + DeleteChunkSize
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
@@ -924,8 +924,8 @@ func refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspac
 
 	affectedSiteIDs := make([]uint64, 0)
 	seenSites := make(map[uint64]struct{})
-	for start := 0; start < len(proxyIDs); start += deleteChunkSize {
-		end := start + deleteChunkSize
+	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
+		end := start + DeleteChunkSize
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
@@ -945,7 +945,7 @@ func refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspac
 			}
 		}
 	}
-	return refreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, workspaceID, affectedSiteIDs)
+	return RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, workspaceID, affectedSiteIDs)
 }
 
 func refreshWorkspaceScrapeSourceStats(tx *gorm.DB, where string, args ...interface{}) error {

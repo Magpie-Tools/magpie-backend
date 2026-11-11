@@ -1,4 +1,4 @@
-package database
+package scrapestore
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
@@ -56,7 +57,7 @@ func seedScrapeSourceTags(t *testing.T, db *gorm.DB) (*gorm.DB, domain.ScrapeSit
 	}
 	var tagIDs []uint64
 	for i, workspaceID := range []uint{1, 1, 1, 2, 3} {
-		tag, err := CreateProxyTag(workspaceID, fmt.Sprintf("Tag %d", i+1), "")
+		tag, err := database.CreateProxyTag(workspaceID, fmt.Sprintf("Tag %d", i+1), "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,7 +76,7 @@ func setSourceTags(t *testing.T, workspaceID uint, siteID uint64, ids ...uint64)
 
 func assertProxyTags(t *testing.T, workspaceID uint, proxyID uint64, ids ...uint64) {
 	t.Helper()
-	tags, err := getProxyTagsForProxy(workspaceID, proxyID)
+	tags, err := database.GetProxyTagsForProxy(workspaceID, proxyID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func assertProxyTags(t *testing.T, workspaceID uint, proxyID uint64, ids ...uint
 func TestSourceTagsAreFutureOnlyAdditiveAndWorkspaceScoped(t *testing.T) {
 	db, site, proxies, tags := setupScrapeSourceTags(t)
 	ctx := context.Background()
-	if err := AddProxyTagsToProxies(1, []uint64{proxies[0].ID}, []uint64{tags[0]}); err != nil {
+	if err := database.AddProxyTagsToProxies(1, []uint64{proxies[0].ID}, []uint64{tags[0]}); err != nil {
 		t.Fatal(err)
 	}
 	setSourceTags(t, 1, site.ID, tags[1], tags[2], tags[1])
@@ -117,7 +118,7 @@ func TestSourceTagsAreFutureOnlyAdditiveAndWorkspaceScoped(t *testing.T) {
 	if err := db.Where("workspace_id = ? AND proxy_id = ?", 1, proxies[0].ID).First(&managed).Error; err != nil || managed.State != domain.ManagedProxyStatePaused {
 		t.Fatalf("tagging changed lifecycle: %+v %v", managed, err)
 	}
-	if _, err := ReplaceProxyTags(1, proxies[0].ID, []uint64{tags[0]}); err != nil {
+	if _, err := database.ReplaceProxyTags(1, proxies[0].ID, []uint64{tags[0]}); err != nil {
 		t.Fatal(err)
 	}
 	if err := ApplyScrapeSourceTags(ctx, site.ID, domain.ScrapeFetchHTTP, []uint{1}, proxies[:1]); err != nil {
@@ -153,10 +154,10 @@ func TestSourceTagSettingsAreAtomicAndDoNotChangeScrapeStatus(t *testing.T) {
 	}
 	mode := domain.ScrapeFetchBrowser
 	foreignTags := []uint64{tags[3]}
-	if _, err := UpdateScrapeSourceSettings(ctx, 1, site.ID, dto.ScrapeSourceSettings{FetchMode: &mode, AutoTagIDs: &foreignTags}); !errors.Is(err, ErrProxyTagNotFound) {
+	if _, err := UpdateScrapeSourceSettings(ctx, 1, site.ID, dto.ScrapeSourceSettings{FetchMode: &mode, AutoTagIDs: &foreignTags}); !errors.Is(err, database.ErrProxyTagNotFound) {
 		t.Fatalf("foreign tag accepted: %v", err)
 	}
-	configured, err := GetScrapeSourceTags(1, site.ID)
+	configured, err := database.GetScrapeSourceTags(1, site.ID)
 	if err != nil || len(configured) != 1 || configured[0].ID != tags[1] {
 		t.Fatalf("failed update changed rules: %v %v", configured, err)
 	}
@@ -193,7 +194,7 @@ func TestSourceTagsUseLiveRulesAndCascadeWithoutRemovingAssignments(t *testing.T
 		t.Fatal(err)
 	}
 	assertProxyTags(t, 1, proxies[1].ID)
-	if err := DeleteProxyTag(1, tags[1]); err != nil {
+	if err := database.DeleteProxyTag(1, tags[1]); err != nil {
 		t.Fatal(err)
 	}
 	var count int64
@@ -226,16 +227,16 @@ func TestSourceImportsShareTagsOnlyWithNewSubscriptions(t *testing.T) {
 		t.Fatalf("import: %v %v", sites, err)
 	}
 	for _, added := range sites {
-		configured, err := GetScrapeSourceTags(1, added.ID)
+		configured, err := database.GetScrapeSourceTags(1, added.ID)
 		if err != nil || len(configured) != 2 {
 			t.Fatalf("new source rules: %v %v", configured, err)
 		}
 	}
-	existing, err := GetScrapeSourceTags(1, site.ID)
+	existing, err := database.GetScrapeSourceTags(1, site.ID)
 	if err != nil || len(existing) != 1 || existing[0].ID != tags[0] {
 		t.Fatalf("reimport changed existing source: %v %v", existing, err)
 	}
-	if _, err := SaveScrapingSourcesWithSettings(1, []string{"https://invalid.test/proxies"}, domain.ScrapeFetchHTTP, []uint64{tags[3]}); !errors.Is(err, ErrProxyTagNotFound) {
+	if _, err := SaveScrapingSourcesWithSettings(1, []string{"https://invalid.test/proxies"}, domain.ScrapeFetchHTTP, []uint64{tags[3]}); !errors.Is(err, database.ErrProxyTagNotFound) {
 		t.Fatalf("foreign import tag accepted: %v", err)
 	}
 }
@@ -288,7 +289,7 @@ func TestSourceTagAssignmentsUseBoundedBatches(t *testing.T) {
 }
 
 func TestSourceTagsPostgresMigrationAndLifecycle(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupScrapeStorePostgres(t)
 	_, site, proxies, tags := seedScrapeSourceTags(t, db)
 	setSourceTags(t, 1, site.ID, tags[0], tags[1])
 	setSourceTags(t, 2, site.ID, tags[3])
@@ -297,15 +298,15 @@ func TestSourceTagsPostgresMigrationAndLifecycle(t *testing.T) {
 	}
 	assertProxyTags(t, 1, proxies[0].ID, tags[0], tags[1])
 	assertProxyTags(t, 2, proxies[0].ID)
-	detail, err := GetScrapeSiteDetail(1, site.ID)
+	detail, err := database.GetScrapeSiteDetail(1, site.ID)
 	if err != nil || detail == nil || len(detail.AutoTags) != 2 {
 		t.Fatalf("detail rules=%+v err=%v", detail, err)
 	}
-	if err := DeleteProxyTag(1, tags[1]); err != nil {
+	if err := database.DeleteProxyTag(1, tags[1]); err != nil {
 		t.Fatal(err)
 	}
 	assertProxyTags(t, 1, proxies[0].ID, tags[0])
-	configured, err := GetScrapeSourceTags(1, site.ID)
+	configured, err := database.GetScrapeSourceTags(1, site.ID)
 	if err != nil || len(configured) != 1 || configured[0].ID != tags[0] {
 		t.Fatalf("tag cascade rules=%v err=%v", configured, err)
 	}
@@ -313,11 +314,11 @@ func TestSourceTagsPostgresMigrationAndLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProxyTags(t, 1, proxies[0].ID, tags[0])
-	configured, err = GetScrapeSourceTags(1, site.ID)
+	configured, err = database.GetScrapeSourceTags(1, site.ID)
 	if err != nil || len(configured) != 0 {
 		t.Fatalf("source cascade rules=%v err=%v", configured, err)
 	}
-	other, err := GetScrapeSourceTags(2, site.ID)
+	other, err := database.GetScrapeSourceTags(2, site.ID)
 	if err != nil || len(other) != 1 || other[0].ID != tags[3] {
 		t.Fatalf("source deletion changed other workspace rules=%v err=%v", other, err)
 	}

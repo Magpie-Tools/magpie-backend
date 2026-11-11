@@ -14,7 +14,7 @@
 # Read-model refresh and rebuild.
 ./internal/database ^(TestReadModelBackgroundOperationCountsPostgres|TestReadModelNoopFilterRepairsEveryContentFieldPostgres|TestReadModelSubprefixOrdinaryPassLimitAndOperationCountsPostgres|TestReadModelExplicitRebuildRemovesCommittedOrphansPostgres)$
 # Scrape-source settings and source tag assignments.
-./internal/database ^(TestSourceTagsPostgresMigrationAndLifecycle)$
+./internal/scrapestore ^(TestSourceTagsPostgresMigrationAndLifecycle)$
 # Development seed.
 ./internal/database ^(TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres|TestDevelopmentSeedRollsBackAfterFixtureInsertFailurePostgres)$
 # Checker failure streak writes.

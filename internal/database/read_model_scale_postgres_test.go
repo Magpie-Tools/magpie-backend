@@ -30,7 +30,7 @@ func TestReadModelProjectionScopesPopulatedEvidencePostgres(t *testing.T) {
 	batch := 32
 	if value := os.Getenv("MAGPIE_TEST_READ_MODEL_BATCH"); value != "" {
 		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 || n > min(routes-100, deleteChunkSize-1) {
+		if err != nil || n < 1 || n > min(routes-100, DeleteChunkSize-1) {
 			t.Fatal("invalid read-model batch size", value)
 		}
 		batch = n

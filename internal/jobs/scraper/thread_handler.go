@@ -12,6 +12,7 @@ import (
 	"magpie/internal/geolite"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
+	"magpie/internal/scrapestore"
 	"magpie/internal/support"
 	"math"
 	"strings"
@@ -208,7 +209,7 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 		return true
 	}
 	lookupCtx, cancelLookup := context.WithTimeout(ctx, 5*time.Second)
-	subscriptions, err := database.GetScrapeSiteSubscriptions(lookupCtx, site.ID)
+	subscriptions, err := scrapestore.GetScrapeSiteSubscriptions(lookupCtx, site.ID)
 	cancelLookup()
 	if err != nil {
 		log.Error("load scrape subscriptions", "site_id", site.ID, "err", err)
@@ -358,7 +359,7 @@ func recordScrapeUsage(site domain.ScrapeSite, fetchedAt time.Time) {
 func recordScrapeResult(site domain.ScrapeSite, mode, status string, count int, scrapeErr error, attemptedAt time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := database.RecordScrapeResult(ctx, site.ID, support.GetWorkspaceIDsFromList(site.Workspaces), mode, status, count, scrapeErr, attemptedAt); err != nil {
+	if err := scrapestore.RecordScrapeResult(ctx, site.ID, support.GetWorkspaceIDsFromList(site.Workspaces), mode, status, count, scrapeErr, attemptedAt); err != nil {
 		log.Error("record scrape result", "site_id", site.ID, "err", err)
 	}
 }
@@ -472,7 +473,7 @@ func processScrapedHTMLJob(job scrapedHTMLJob) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	subscriptions, err := database.GetScrapeSiteSubscriptions(ctx, job.site.ID)
+	subscriptions, err := scrapestore.GetScrapeSiteSubscriptions(ctx, job.site.ID)
 	if err != nil {
 		resultErr = err
 		return
@@ -562,7 +563,7 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML, mode string) (int, error
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := database.ApplyScrapeSourceTags(ctx, site.ID, mode, support.GetWorkspaceIDsFromList(site.Workspaces), proxies); err != nil {
+	if err := scrapestore.ApplyScrapeSourceTags(ctx, site.ID, mode, support.GetWorkspaceIDsFromList(site.Workspaces), proxies); err != nil {
 		return 0, fmt.Errorf("assign source tags: %w", err)
 	}
 

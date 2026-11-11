@@ -1,9 +1,10 @@
-package database
+package scrapestore
 
 import (
 	"context"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
@@ -146,7 +147,7 @@ func TestNewSourceModesAndStatusAreReturnedPerWorkspace(t *testing.T) {
 		if len(page) != 1 || page[0].FetchMode != mode {
 			t.Fatalf("list for workspace %d: %+v", workspaceID, page)
 		}
-		detail, err := GetScrapeSiteDetail(workspaceID, first[0].ID)
+		detail, err := database.GetScrapeSiteDetail(workspaceID, first[0].ID)
 		if err != nil || detail == nil || detail.FetchMode != mode {
 			t.Fatalf("detail for workspace %d: %+v %v", workspaceID, detail, err)
 		}

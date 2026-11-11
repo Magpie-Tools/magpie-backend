@@ -29,6 +29,7 @@ import (
 	"magpie/internal/jobs/scraper"
 	"magpie/internal/mail"
 	"magpie/internal/rotatingproxy"
+	"magpie/internal/scrapestore"
 	"magpie/internal/support"
 )
 
@@ -448,7 +449,7 @@ func queueStartupScrapeSites(ctx context.Context) error {
 			return err
 		}
 	}
-	scrapeSites, err := database.GetAllScrapeSites()
+	scrapeSites, err := scrapestore.GetAllScrapeSites()
 	if err != nil {
 		return fmt.Errorf("load startup scrape sites: %w", err)
 	}

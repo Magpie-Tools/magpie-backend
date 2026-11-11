@@ -18,6 +18,7 @@ import (
 	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/judgestore"
 	"magpie/internal/platform/pg"
+	"magpie/internal/scrapestore"
 	"magpie/internal/settings"
 	"magpie/internal/support"
 	"net/http"
@@ -135,7 +136,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 
 	go bootstrap.AddDefaultJudgesToWorkspaces()
 	registrationWarning := ""
-	sites, err := database.SaveScrapingSourcesOfUsers(workspaceAccess.WorkspaceID, cfg.Scraper.ScrapeSites)
+	sites, err := scrapestore.SaveScrapingSourcesOfUsers(workspaceAccess.WorkspaceID, cfg.Scraper.ScrapeSites)
 	if err != nil {
 		log.Warn("Could not add default Scraping Sources to user", "err", err)
 	} else {
@@ -321,7 +322,7 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if cleanupResult.ScrapeRelationsRemoved > 0 {
-				if removed, err := database.DeleteOrphanScrapeSites(context.Background()); err != nil {
+				if removed, err := scrapestore.DeleteOrphanScrapeSites(context.Background()); err != nil {
 					log.Warn("Failed to delete orphan scrape sites after blacklist update", "error", err)
 				} else if removed > 0 {
 					log.Info("Deleted orphan scrape sites after blacklist update", "count", removed)
@@ -418,7 +419,7 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
 	workspaceJudges := judgestore.GetWorkspaceJudges(workspaceID)
-	scrapingSources := database.GetScrapingSourcesOfUsers(workspaceID)
+	scrapingSources := scrapestore.GetScrapingSourcesOfUsers(workspaceID)
 
 	writeJSON(w, http.StatusOK, workspace.ToUserSettings(workspaceJudges, scrapingSources, preference))
 }

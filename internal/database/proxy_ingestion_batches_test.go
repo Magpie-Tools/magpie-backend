@@ -45,8 +45,8 @@ func TestProxyIngestionInsertParameterBudget(t *testing.T) {
 				if err := db.Callback().Create().After("gorm:create").Register("test:parameter_budget", func(tx *gorm.DB) {
 					statements++
 					inserted += tx.Statement.ReflectValue.Len()
-					if got := len(tx.Statement.Vars); got > maxParamsPerBatch {
-						t.Errorf("insert binds %d parameters, maximum %d", got, maxParamsPerBatch)
+					if got := len(tx.Statement.Vars); got > MaxParamsPerBatch {
+						t.Errorf("insert binds %d parameters, maximum %d", got, MaxParamsPerBatch)
 					}
 				}); err != nil {
 					t.Fatal(err)

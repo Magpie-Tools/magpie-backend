@@ -1,4 +1,4 @@
-package database
+package scrapestore
 
 import (
 	"path/filepath"
