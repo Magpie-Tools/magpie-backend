@@ -90,3 +90,32 @@ each anchor package. Deleting the deprecated wrappers removed one file from
 `internal/database`, which four tasks count in their search space. This
 checkpoint is the reference for the extraction steps that follow; the stop rule
 compares each later checkpoint with the one before it.
+
+### After `alerts`
+
+Measured on the commit that adds this section, after `platform/pg`,
+`platform/schema`, `evidence`, the test kit, `mail` and both `alerts` moves.
+
+| Task | Files in full | Files in part | Must-read tokens | of which listings | Search-space files | Search-space tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Add a field to alert rules | 11 | 6 | 15873 | 871 | 100 | 93605 |
+| Change how failed proxies are requeued | 11 | 2 | 30642 | 192 | 6 | 20868 |
+| Add a column to the proxy filter projection | 8 | 5 | 20270 | 1435 | 93 | 152144 |
+| Change workspace invitation acceptance | 8 | 11 | 18200 | 1801 | 119 | 203318 |
+| Change the email outbox retry policy | 7 | 4 | 10145 | 631 | 37 | 21606 |
+| **Task set** | 45 | 28 | 95130 | 4930 | 355 | 491541 |
+
+The task set fell from 98,397 to 95,130 must-read tokens (-3.3%), so the stop
+rule does not fire. The drop comes from the two moved features:
+
+- **Alert rules** fell from 18,200 to 15,873: the anchors now sit in a package
+  of 15 files, so the directory listing shrank from 2,099 to 871 tokens and
+  the alerts `doc.go` replaced the core's.
+- **Email outbox** fell from 11,545 to 10,145 for the same reason.
+- The other three tasks rose by 120 to 199 tokens each. Their anchors did not
+  move; they pay for the longer `AGENTS.md` package map.
+
+The search space a package boundary cannot rule out fell from 899,888 to
+491,541 tokens, mostly for the two moved features (alerts 245,762 to 93,605,
+mail 211,228 to 21,606).
+
