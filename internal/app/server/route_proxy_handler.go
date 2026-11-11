@@ -12,6 +12,7 @@ import (
 	"magpie/internal/blacklist"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/geolite"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	"magpie/internal/support"
 	"net/http"
@@ -154,7 +155,7 @@ func ingestProxyUploadMultipartWithTags(w http.ResponseWriter, r *http.Request, 
 				return err
 			}
 			insertedCount += len(inserted)
-			database.AsyncEnrichProxyMetadata(inserted)
+			geolite.AsyncEnrichProxyMetadata(inserted)
 			if err := proxyqueue.PublicProxyQueue.AddToQueue(inserted); err != nil {
 				log.Error("Could not add proxies to queue", "error", err)
 			}

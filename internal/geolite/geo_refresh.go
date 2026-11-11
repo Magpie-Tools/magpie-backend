@@ -1,10 +1,11 @@
-package database
+package geolite
 
 import (
 	"context"
 	"errors"
 	"sync"
 
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
@@ -23,7 +24,10 @@ var (
 	ErrProxyGeoRefreshGeoLiteUnavailable     = errors.New("proxy geo refresh skipped: GeoLite databases unavailable")
 )
 
-func RunProxyGeoRefresh(ctx context.Context, batchSize int) (int64, int64, error) {
+// RunProxyGeoRefreshPass makes one pass over the stored routes and updates
+// their GeoLite country and type. It was database.RunProxyGeoRefresh; the
+// routine's leader-locked trigger keeps the name RunProxyGeoRefresh.
+func RunProxyGeoRefreshPass(ctx context.Context, batchSize int) (int64, int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -89,16 +93,16 @@ func refreshProxyGeoData(ctx context.Context, batchSize int) (int64, int64, erro
 	return scanned, updated, nil
 }
 
-func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyMetadataUpdate, error) {
+func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]database.ProxyMetadataUpdate, error) {
 	if len(proxies) == 0 {
 		return nil, nil
 	}
-	cached, err := loadIPGeolocationOverrides(ctx, proxies)
+	cached, err := database.LoadIPGeolocationOverrides(ctx, proxies)
 	if err != nil {
 		return nil, err
 	}
 
-	updates := make([]proxyMetadataUpdate, 0, len(proxies))
+	updates := make([]database.ProxyMetadataUpdate, 0, len(proxies))
 	var mu sync.Mutex
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -139,7 +143,7 @@ func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyM
 			}
 
 			mu.Lock()
-			updates = append(updates, proxyMetadataUpdate{
+			updates = append(updates, database.ProxyMetadataUpdate{
 				ID:            proxy.ID,
 				Country:       country,
 				EstimatedType: proxyType,
@@ -156,7 +160,7 @@ func buildProxyGeoUpdates(ctx context.Context, proxies []domain.Proxy) ([]proxyM
 	return updates, nil
 }
 
-func applyProxyGeoUpdates(ctx context.Context, updates []proxyMetadataUpdate) error {
+func applyProxyGeoUpdates(ctx context.Context, updates []database.ProxyMetadataUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
@@ -171,14 +175,14 @@ func applyProxyGeoUpdates(ctx context.Context, updates []proxyMetadataUpdate) er
 		}
 
 		batch := updates[start:end]
-		if err := updateProxyMetadataBatch(pg.DB.WithContext(ctx), batch, localProxyMetadata); err != nil {
+		if err := database.UpdateProxyMetadataBatch(pg.DB.WithContext(ctx), batch, database.LocalProxyMetadata); err != nil {
 			return err
 		}
 		proxyIDs := make([]uint64, 0, len(batch))
 		for _, update := range batch {
 			proxyIDs = append(proxyIDs, update.ID)
 		}
-		QueueReadModelRefreshForProxyIDs(proxyIDs)
+		database.QueueReadModelRefreshForProxyIDs(proxyIDs)
 	}
 
 	return nil

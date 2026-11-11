@@ -1,4 +1,4 @@
-package runtime
+package geolite
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"magpie/internal/config"
-	"magpie/internal/database"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -127,12 +126,12 @@ func drainTicker(ticker *time.Ticker) {
 func refreshOnce(ctx context.Context, reason string) {
 	start := time.Now()
 
-	scanned, updated, err := database.RunProxyGeoRefresh(ctx, 0)
+	scanned, updated, err := RunProxyGeoRefreshPass(ctx, 0)
 	if err != nil {
 		switch {
-		case errors.Is(err, database.ErrProxyGeoRefreshDatabaseNotInitialized):
+		case errors.Is(err, ErrProxyGeoRefreshDatabaseNotInitialized):
 			log.Warn("Proxy geo refresh skipped: database not initialized", "reason", reason)
-		case errors.Is(err, database.ErrProxyGeoRefreshGeoLiteUnavailable):
+		case errors.Is(err, ErrProxyGeoRefreshGeoLiteUnavailable):
 			log.Warn("Proxy geo refresh skipped: GeoLite databases unavailable", "reason", reason)
 		case errors.Is(err, context.Canceled):
 			log.Info("Proxy geo refresh canceled", "reason", reason, "duration", time.Since(start))

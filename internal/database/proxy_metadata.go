@@ -7,22 +7,22 @@ import (
 	"gorm.io/gorm"
 )
 
-type proxyMetadataUpdate struct {
+type ProxyMetadataUpdate struct {
 	ID            uint64
 	Country       string
 	EstimatedType string
 }
 
-type proxyMetadataProvider uint8
+type ProxyMetadataProvider uint8
 
 const (
-	localProxyMetadata proxyMetadataProvider = iota
+	LocalProxyMetadata ProxyMetadataProvider = iota
 	ipGeolocationProxyMetadata
 )
 
 // Local enrichment must preserve fresh provider results. Provider projections
 // use the same writer inside their cursor transaction and take precedence.
-func updateProxyMetadataBatch(tx *gorm.DB, batch []proxyMetadataUpdate, provider proxyMetadataProvider) error {
+func UpdateProxyMetadataBatch(tx *gorm.DB, batch []ProxyMetadataUpdate, provider ProxyMetadataProvider) error {
 	if len(batch) == 0 {
 		return nil
 	}
@@ -41,7 +41,7 @@ FROM (VALUES %s) AS tmp(id, country, estimated_type)
 WHERE p.id = tmp.id
   AND (p.country, p.estimated_type) IS DISTINCT FROM (tmp.country, tmp.estimated_type)`, strings.Join(values, ","))
 	switch provider {
-	case localProxyMetadata:
+	case LocalProxyMetadata:
 		guard, guardArgs := ipGeolocationMetadataGuard("tmp")
 		query += guard
 		args = append(args, guardArgs...)

@@ -22,13 +22,13 @@ that first. Paths are relative to `internal/`.
 | Transport | `app/server`, `graphql`, `api/dto` | The central REST route table, GraphQL schema, request and response shapes. |
 | Hot path | `jobs/checker`, `jobs/queue/proxy`, `rotatingproxy`, `checkpace` | Checker workers, the Redis proxy queue, rotating listeners, allowance cadence and the check usage meter. Imports are pinned. |
 | Background jobs | `jobs/runtime`, `jobs/scraper`, `jobs/queue/sites`, `jobs/maintenance`, `jobs/checker/judges` | Statistics admission and ingestion, rollups, scraping, cleanup, the judge cache. |
-| Features | `account`, `alerts`, `mail`, `abuseipdb` | User account lookup, passwords, reset tokens and notification receipts; alert rules, evaluation, incidents and delivery, below the core, which calls it inside its transactions; the email outbox with its delivery and maintenance routines; the AbuseIPDB client and its stored checks. |
+| Features | `account`, `alerts`, `mail`, `abuseipdb`, `geolite` | User account lookup, passwords, reset tokens and notification receipts; alert rules, evaluation, incidents and delivery, below the core, which calls it inside its transactions; the email outbox with its delivery and maintenance routines; the AbuseIPDB client and its stored checks; GeoLite databases, local country and type enrichment and the geo refresh, above the core. |
 | Core persistence | `database` | Routes and managed proxies, statistics and latest evidence, read models, dashboards, rotators, checker settings, usage accounting. |
 | Platform | `platform/pg`, `platform/schema` | Generic PostgreSQL helpers and every database connection (the GORM pool, the rebuild command's connection, the native COPY connection); the ordered schema steps, migrations and seed rows. |
 | Evidence | `evidence` | SQL builders for a workspace's current checker evidence, alive counts, and a rotator's pool-eligibility query and cache key. Runs on the caller's handle. |
 | Runtime configuration | `config`, `settings`, `checkerconfig` | Instance settings, workspace settings application, compiled checker snapshots. |
 | Shared models | `domain` | GORM models and their hooks. No queries. |
-| Clients and helpers | `ipgeolocation`, `geolite`, `blacklist`, `auth`, `security`, `support`, `support/reputation`, `instanceid`, `app/releases`, `app/version` | External API clients, JWTs, credential encryption, Redis client and leader locks. |
+| Clients and helpers | `ipgeolocation`, `blacklist`, `auth`, `security`, `support`, `support/reputation`, `instanceid`, `app/releases`, `app/version` | External API clients, JWTs, credential encryption, Redis client and leader locks. |
 | Test kit | `testkit/db` | `OpenSQLite` and `OpenPostgres` test databases migrated through `platform/schema`, and generic row builders. Imported only by `_test.go` files. |
 | Guardrails and tools | `archtest`, `tools/movecheck`, `tools/onboarding`, `tools/sqllog` | Architecture tests and their data, run under `go test ./...`; the rename-only move check; the onboarding measurement; the SQL-log digest. |
 

@@ -1,4 +1,4 @@
-package runtime
+package geolite
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/config"
-	"magpie/internal/geolite"
 	"magpie/internal/support"
 )
 
@@ -20,7 +19,7 @@ const (
 )
 
 var (
-	updateGeoLiteDatabases = geolite.UpdateDatabases
+	updateGeoLiteDatabases = UpdateDatabases
 	runProxyGeoRefreshNow  = RunProxyGeoRefresh
 )
 
@@ -126,7 +125,7 @@ func triggerGeoLiteUpdate(ctx context.Context, reason string, force bool) {
 
 	updated, err := updateGeoLiteDatabases(ctx)
 	switch {
-	case errors.Is(err, geolite.ErrNoAPIKey):
+	case errors.Is(err, ErrNoAPIKey):
 		log.Debug("GeoLite update skipped: API key missing", "reason", reason)
 	case err != nil:
 		log.Error("GeoLite update failed", "reason", reason, "error", err)

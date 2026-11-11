@@ -1,9 +1,8 @@
-package runtime
+package geolite
 
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -145,22 +144,4 @@ func TestRunProxyGeoRefresh_IgnoresFollowerInstance(t *testing.T) {
 	if !called {
 		t.Fatal("expected leader task runner to be invoked")
 	}
-}
-
-func withTempRuntimeWorkingDir(t *testing.T) {
-	t.Helper()
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-
-	tempDir := t.TempDir()
-	if err := os.Chdir(tempDir); err != nil {
-		t.Fatalf("chdir temp dir: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = os.Chdir(cwd)
-	})
 }

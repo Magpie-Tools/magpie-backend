@@ -12,10 +12,10 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/geolite"
 	"magpie/internal/jobs/checker/judges"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
-	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/platform/pg"
 	"magpie/internal/settings"
 	"magpie/internal/support"
@@ -52,7 +52,7 @@ var (
 	rollbackPasswordIfCurrentInStore = account.ChangePasswordIfCurrent
 	revokeUserSessions               = auth.RevokeAllUserJWTs
 	validateOutboundConfigURL        = support.ValidateOutboundHTTPURLContext
-	runGeoLiteUpdateOnSave           = jobruntime.RunGeoLiteUpdate
+	runGeoLiteUpdateOnSave           = geolite.RunGeoLiteUpdate
 	requeueAllQueuedProxies          = func() (int64, error) {
 		return proxyqueue.PublicProxyQueue.RequeueAll()
 	}

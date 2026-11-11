@@ -226,11 +226,11 @@ func (running *Runtime) setup(ctx context.Context) error {
 		jobruntime.StartProxyTimelineRetentionRoutine,
 		jobruntime.StartProxyHistoryRoutine,
 		jobruntime.StartProxySnapshotRoutine,
-		jobruntime.StartProxyGeoRefreshRoutine,
+		geolite.StartProxyGeoRefreshRoutine,
 		maintenance.StartOrphanCleanupRoutine,
 		maintenance.StartPasswordResetCleanupRoutine,
 		maintenance.StartWorkspaceInvitationCleanupRoutine,
-		jobruntime.StartGeoLiteUpdateRoutine,
+		geolite.StartGeoLiteUpdateRoutine,
 		jobruntime.StartAbuseIPDBRoutine,
 		jobruntime.StartIPGeolocationRoutine,
 		mail.StartEmailDeliveryRoutine,
@@ -422,9 +422,9 @@ func queueStartupProxies(ctx context.Context) error {
 				return err
 			}
 		}
-		missingGeo := database.FilterProxiesMissingGeo(proxies)
+		missingGeo := geolite.FilterProxiesMissingGeo(proxies)
 		if len(missingGeo) > 0 {
-			database.AsyncEnrichProxyMetadata(missingGeo)
+			geolite.AsyncEnrichProxyMetadata(missingGeo)
 		}
 
 		if err := proxyqueue.PublicProxyQueue.AddToQueue(proxies); err != nil {
@@ -511,7 +511,7 @@ func maintainRuntimeCaches(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
-		database.PruneDNSCache(time.Now())
+		geolite.PruneDNSCache(time.Now())
 		scraper.PruneRobotsCache(time.Now())
 		select {
 		case <-ctx.Done():

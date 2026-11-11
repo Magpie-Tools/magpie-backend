@@ -9,6 +9,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/geolite"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/support"
@@ -548,9 +549,9 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML, mode string) (int, error
 	if err != nil {
 		return 0, fmt.Errorf("save %d scraped proxies: %w", len(parsedProxies), err)
 	} else {
-		proxiesToEnrich := database.FilterProxiesMissingGeo(proxies)
+		proxiesToEnrich := geolite.FilterProxiesMissingGeo(proxies)
 		if len(proxiesToEnrich) > 0 {
-			database.AsyncEnrichProxyMetadata(proxiesToEnrich)
+			geolite.AsyncEnrichProxyMetadata(proxiesToEnrich)
 		}
 	}
 

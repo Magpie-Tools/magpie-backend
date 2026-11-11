@@ -1,4 +1,4 @@
-package database
+package geolite
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"github.com/oschwald/geoip2-golang"
 
 	"magpie/internal/config"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/support"
@@ -214,7 +215,7 @@ func EnrichProxiesWithCountryAndType(proxies *[]domain.Proxy) []residentialOverr
 		return nil
 	}
 	localAvailable := GeoLiteAvailable()
-	cached, err := loadIPGeolocationOverrides(context.Background(), *proxies)
+	cached, err := database.LoadIPGeolocationOverrides(context.Background(), *proxies)
 	if err != nil {
 		log.Warn("Could not load IPGeolocation.io cache for enrichment", "error", err)
 		return nil
@@ -412,11 +413,11 @@ func persistProxyMetadata(proxies []domain.Proxy) error {
 		if end > len(proxies) {
 			end = len(proxies)
 		}
-		batch := make([]proxyMetadataUpdate, 0, end-i)
+		batch := make([]database.ProxyMetadataUpdate, 0, end-i)
 		for _, proxy := range proxies[i:end] {
-			batch = append(batch, proxyMetadataUpdate{ID: proxy.ID, Country: proxy.Country, EstimatedType: proxy.EstimatedType})
+			batch = append(batch, database.ProxyMetadataUpdate{ID: proxy.ID, Country: proxy.Country, EstimatedType: proxy.EstimatedType})
 		}
-		if err := updateProxyMetadataBatch(pg.DB, batch, localProxyMetadata); err != nil {
+		if err := database.UpdateProxyMetadataBatch(pg.DB, batch, database.LocalProxyMetadata); err != nil {
 			return err
 		}
 	}

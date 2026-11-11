@@ -35,9 +35,10 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 			t.Fatal(err)
 		}
 	}
-	batch := make([]proxyMetadataUpdate, enrichmentUpdateBatchSize)
+	// 512 is the batch size of GeoLite enrichment, the main local writer.
+	batch := make([]ProxyMetadataUpdate, 512)
 	for i := range batch {
-		batch[i] = proxyMetadataUpdate{ID: uint64(1 + 9999*i/(len(batch)-1)), Country: "N/A", EstimatedType: "N/A"}
+		batch[i] = ProxyMetadataUpdate{ID: uint64(1 + 9999*i/(len(batch)-1)), Country: "N/A", EstimatedType: "N/A"}
 	}
 	batch[1].Country = "DE"
 	batch[2].EstimatedType = "Residential"
@@ -53,7 +54,7 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	pg.DB = db.WithContext(ctx).Session(&gorm.Session{Logger: queries})
-	if err := updateProxyMetadataBatch(pg.DB, batch, localProxyMetadata); err != nil {
+	if err := UpdateProxyMetadataBatch(pg.DB, batch, LocalProxyMetadata); err != nil {
 		t.Fatal("unchanged metadata waited for a locked route", err)
 	}
 	_ = locked.Rollback().Error
@@ -62,7 +63,7 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 	}
 	guardedSQL := queries.queries[0]
 	pg.DB = db
-	if err := updateProxyMetadataBatch(pg.DB, batch, localProxyMetadata); err != nil {
+	if err := UpdateProxyMetadataBatch(pg.DB, batch, LocalProxyMetadata); err != nil {
 		t.Fatal(err)
 	}
 	var observed []uint64
