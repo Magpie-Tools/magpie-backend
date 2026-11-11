@@ -18,9 +18,9 @@ var connectionConstructors = map[string]map[string]bool{
 	"github.com/redis/go-redis/v9":    {"NewClient": true, "NewFailoverClient": true, "NewClusterClient": true, "NewUniversalClient": true, "NewRing": true, "NewFailoverClusterClient": true, "NewSentinelClient": true},
 }
 
-// TestConnectionCreation allows connections to be created only under
-// internal/platform. rules/connections.txt lists the existing sites elsewhere;
-// that list only shrinks.
+// TestConnectionCreation allows production connections to be created only
+// under internal/platform. rules/connections.txt lists the existing sites
+// elsewhere; that list only shrinks.
 func TestConnectionCreation(t *testing.T) {
 	loaded := repo(t)
 	allowed := map[string]int{}
@@ -32,7 +32,9 @@ func TestConnectionCreation(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, pkg := range loaded.sortedPackages() {
-		if strings.HasPrefix(pkg.name, "platform/") {
+		// The test kit opens test databases. Only _test.go files may import
+		// it (TestTestKitStaysInTests), so it creates no production connection.
+		if strings.HasPrefix(pkg.name, "platform/") || strings.HasPrefix(pkg.name, "testkit/") {
 			continue
 		}
 		for _, file := range pkg.productionFiles() {

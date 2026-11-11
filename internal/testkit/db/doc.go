@@ -1,0 +1,17 @@
+// Package testdb is the shared database test kit. It opens migrated test
+// databases and builds generic rows.
+//
+//   - OpenSQLite opens an in-memory SQLite database that belongs to one test.
+//   - OpenPostgres opens an isolated PostgreSQL schema that belongs to one
+//     test. Outside integration mode (MAGPIE_TEST_POSTGRES_DSN unset) it skips
+//     the test; inside it, an unreachable server fails the test. A PostgreSQL
+//     test never falls back to SQLite.
+//
+// Both migrate through platform/schema and set a proxy encryption key with a
+// fresh cipher, so encrypted model hooks work.
+//
+// Only _test.go files may import this package; internal/archtest enforces
+// that. A package-level handle such as database.DB is swapped by a helper
+// beside its owner, not here. Scenario fixtures stay with their tests until a
+// second package needs them.
+package testdb

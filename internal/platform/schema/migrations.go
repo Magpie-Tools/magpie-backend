@@ -428,3 +428,17 @@ func RemoveMigrationModel(migrations []any, model any) []any {
 	}
 	return filtered
 }
+
+// MigrateModels prepares an empty database with the tables of every model:
+// it configures the workspace join tables and auto-migrates the model list. It
+// runs none of the preparation, post-migration or seed steps, which is the
+// starting point tests expect.
+func MigrateModels(db *gorm.DB) error {
+	if err := ConfigureWorkspaceJoinTables(db); err != nil {
+		return fmt.Errorf("configure workspace join tables: %w", err)
+	}
+	if err := db.AutoMigrate(DefaultMigrations()...); err != nil {
+		return fmt.Errorf("auto migrate: %w", err)
+	}
+	return nil
+}

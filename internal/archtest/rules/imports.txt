@@ -44,6 +44,7 @@ security: config
 settings: api/dto checkerconfig config database domain jobs/checker/judges
 support: api/dto config domain instanceid
 support/reputation:
+testkit/db: domain platform/schema security
 tools/movecheck:
 tools/onboarding:
 tools/sqllog:

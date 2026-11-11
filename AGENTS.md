@@ -28,6 +28,7 @@ that first. Paths are relative to `internal/`.
 | Runtime configuration | `config`, `settings`, `checkerconfig` | Instance settings, workspace settings application, compiled checker snapshots. |
 | Shared models | `domain` | GORM models and their hooks. No queries. |
 | Clients and helpers | `abuseipdb`, `ipgeolocation`, `geolite`, `blacklist`, `auth`, `security`, `support`, `support/reputation`, `instanceid`, `app/releases`, `app/version` | External API clients, JWTs, credential encryption, Redis client and leader locks. |
+| Test kit | `testkit/db` | `OpenSQLite` and `OpenPostgres` test databases migrated through `platform/schema`, and generic row builders. Imported only by `_test.go` files. |
 | Guardrails and tools | `archtest`, `tools/movecheck`, `tools/onboarding`, `tools/sqllog` | Architecture tests and their data, run under `go test ./...`; the rename-only move check; the onboarding measurement; the SQL-log digest. |
 
 ## Where new code goes
