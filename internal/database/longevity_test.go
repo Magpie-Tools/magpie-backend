@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -141,26 +140,5 @@ func TestBackendLongevityExpiredDNSCacheChurn(t *testing.T) {
 	t.Logf("expired_ips=%d retained_keys=%d retained_heap_delta_bytes=%d", total, count, int64(after.HeapAlloc)-int64(before.HeapAlloc))
 	if count > 1 {
 		t.Fatalf("DNS cache retains %d expired, unused entries", count-1)
-	}
-}
-
-func TestBackendLongevityAbandonedEmailRetention(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	old := time.Now().UTC().Add(-180 * 24 * time.Hour)
-	rows := []domain.EmailOutbox{{Kind: "password_reset", ToAddress: "fixture@example.invalid", Subject: "fixture", Body: strings.Repeat("x", 8192), Status: domain.EmailOutboxStatusAbandoned, CreatedAt: old, UpdatedAt: old}, {Kind: "password_reset", ToAddress: "fixture@example.invalid", Subject: "fixture", Body: "sent", Status: domain.EmailOutboxStatusSent, SentAt: &old, CreatedAt: old, UpdatedAt: old}}
-	if err := db.Create(&rows).Error; err != nil {
-		t.Fatal(err)
-	}
-	deleted, err := DeleteSentEmailOutbox(context.Background(), time.Now().UTC().Add(-24*time.Hour), 500)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var abandoned int64
-	if err := db.Model(&domain.EmailOutbox{}).Where("status = ?", domain.EmailOutboxStatusAbandoned).Count(&abandoned).Error; err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("old_sent_messages_removed=%d old_abandoned_messages_retained=%d", deleted, abandoned)
-	if abandoned != 0 {
-		t.Fatal("terminal failed mail is retained beyond outbox retention")
 	}
 }

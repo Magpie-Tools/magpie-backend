@@ -26,6 +26,7 @@ import (
 	sitequeue "magpie/internal/jobs/queue/sites"
 	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/jobs/scraper"
+	"magpie/internal/mail"
 	"magpie/internal/rotatingproxy"
 	"magpie/internal/support"
 )
@@ -231,10 +232,10 @@ func (running *Runtime) setup(ctx context.Context) error {
 		jobruntime.StartGeoLiteUpdateRoutine,
 		jobruntime.StartAbuseIPDBRoutine,
 		jobruntime.StartIPGeolocationRoutine,
-		jobruntime.StartEmailDeliveryRoutine,
+		mail.StartEmailDeliveryRoutine,
 		jobruntime.StartAlertEvaluationRoutine,
 		jobruntime.StartAlertDeliveryRoutine,
-		jobruntime.StartEmailDeliveryMaintenanceRoutine,
+		mail.StartEmailDeliveryMaintenanceRoutine,
 		blacklist.StartRefreshRoutine,
 		checker.ThreadDispatcher,
 		scraper.ThreadDispatcher,

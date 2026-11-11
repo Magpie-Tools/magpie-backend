@@ -1,10 +1,11 @@
-package database
+package mail
 
 import (
 	"context"
 	"strings"
 	"time"
 
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
@@ -17,7 +18,7 @@ func EnqueueEmailOutbox(kind, toAddress, subject, body string, maxAttempts int) 
 		maxAttempts = 4
 	}
 
-	return DB.Create(&domain.EmailOutbox{
+	return database.DB.Create(&domain.EmailOutbox{
 		Kind:          strings.TrimSpace(kind),
 		ToAddress:     strings.TrimSpace(toAddress),
 		Subject:       subject,
@@ -34,7 +35,7 @@ func ClaimPendingEmailOutbox(ctx context.Context, limit int, now time.Time) ([]d
 	}
 
 	var claimed []domain.EmailOutbox
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := database.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		query := tx.
 			Where("status = ? AND next_attempt_at <= ?", domain.EmailOutboxStatusPending, now.UTC()).
 			Order("next_attempt_at ASC, id ASC").
@@ -84,7 +85,7 @@ func ClaimPendingEmailOutbox(ctx context.Context, limit int, now time.Time) ([]d
 }
 
 func MarkEmailOutboxSent(ctx context.Context, id uint, now time.Time) error {
-	return DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
+	return database.DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
 		Where("id = ?", id).
 		Updates(map[string]any{
 			"status":     domain.EmailOutboxStatusSent,
@@ -95,7 +96,7 @@ func MarkEmailOutboxSent(ctx context.Context, id uint, now time.Time) error {
 }
 
 func MarkEmailOutboxForRetry(ctx context.Context, id uint, nextAttemptAt time.Time, lastError string) error {
-	return DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
+	return database.DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
 		Where("id = ?", id).
 		Updates(map[string]any{
 			"status":          domain.EmailOutboxStatusPending,
@@ -106,7 +107,7 @@ func MarkEmailOutboxForRetry(ctx context.Context, id uint, nextAttemptAt time.Ti
 }
 
 func MarkEmailOutboxAbandoned(ctx context.Context, id uint, lastError string) error {
-	return DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
+	return database.DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
 		Where("id = ?", id).
 		Updates(map[string]any{
 			"status":     domain.EmailOutboxStatusAbandoned,
@@ -116,7 +117,7 @@ func MarkEmailOutboxAbandoned(ctx context.Context, id uint, lastError string) er
 }
 
 func RequeueStaleEmailOutboxMessages(ctx context.Context, staleBefore time.Time) (int64, error) {
-	result := DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
+	result := database.DB.WithContext(ctx).Model(&domain.EmailOutbox{}).
 		Where("status = ? AND last_attempt_at IS NOT NULL AND last_attempt_at <= ?", domain.EmailOutboxStatusProcessing, staleBefore.UTC()).
 		Updates(map[string]any{
 			"status":          domain.EmailOutboxStatusPending,
@@ -129,7 +130,7 @@ func RequeueStaleEmailOutboxMessages(ctx context.Context, staleBefore time.Time)
 
 func CountActiveEmailOutboxMessages(ctx context.Context) (int64, error) {
 	var count int64
-	err := DB.WithContext(ctx).
+	err := database.DB.WithContext(ctx).
 		Model(&domain.EmailOutbox{}).
 		Where("status IN ?", []string{domain.EmailOutboxStatusPending, domain.EmailOutboxStatusProcessing}).
 		Count(&count).Error
@@ -148,7 +149,7 @@ func DeleteSentEmailOutbox(ctx context.Context, olderThan time.Time, limit int) 
 	if limit <= 0 {
 		limit = 500
 	}
-	if pg.IsPostgresDialect(DB) {
+	if pg.IsPostgresDialect(database.DB) {
 		query := `
 			DELETE FROM email_outboxes
 			WHERE id IN (
@@ -160,12 +161,12 @@ func DeleteSentEmailOutbox(ctx context.Context, olderThan time.Time, limit int) 
 				LIMIT ?
 			)
 		`
-		result := DB.WithContext(ctx).Exec(query, domain.EmailOutboxStatusSent, olderThan.UTC(), domain.EmailOutboxStatusAbandoned, olderThan.UTC(), limit)
+		result := database.DB.WithContext(ctx).Exec(query, domain.EmailOutboxStatusSent, olderThan.UTC(), domain.EmailOutboxStatusAbandoned, olderThan.UTC(), limit)
 		return result.RowsAffected, result.Error
 	}
 
 	var rows []domain.EmailOutbox
-	if err := DB.WithContext(ctx).
+	if err := database.DB.WithContext(ctx).
 		Select("id").
 		Where("(status = ? AND sent_at IS NOT NULL AND sent_at <= ?) OR (status = ? AND updated_at <= ?)", domain.EmailOutboxStatusSent, olderThan.UTC(), domain.EmailOutboxStatusAbandoned, olderThan.UTC()).
 		Order("updated_at ASC, id ASC").
@@ -181,6 +182,6 @@ func DeleteSentEmailOutbox(ctx context.Context, olderThan time.Time, limit int) 
 	for _, row := range rows {
 		ids = append(ids, row.ID)
 	}
-	result := DB.WithContext(ctx).Where("id IN ?", ids).Delete(&domain.EmailOutbox{})
+	result := database.DB.WithContext(ctx).Where("id IN ?", ids).Delete(&domain.EmailOutbox{})
 	return result.RowsAffected, result.Error
 }

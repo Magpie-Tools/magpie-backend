@@ -16,6 +16,7 @@ import (
 	"magpie/internal/auth"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/mail"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -34,7 +35,7 @@ var (
 	readPasswordResetConfigFn = support.ReadPasswordResetConfig
 	buildPasswordResetURLFn   = support.BuildPasswordResetURL
 	queueEmailFn              = func(kind, toAddress, subject, body string) error {
-		return database.EnqueueEmailOutbox(kind, toAddress, subject, body, resolveEmailOutboxMaxAttempts())
+		return mail.EnqueueEmailOutbox(kind, toAddress, subject, body, resolveEmailOutboxMaxAttempts())
 	}
 	getUserByEmailFn         = database.GetUserByEmail
 	createPasswordResetToken = database.CreatePasswordResetToken

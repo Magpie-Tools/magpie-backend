@@ -11,6 +11,7 @@ import (
 	"magpie/internal/auth"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/mail"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -22,7 +23,7 @@ var (
 	readWorkspaceInvitationConfigFn = support.ReadWorkspaceInvitationConfig
 	buildWorkspaceInvitationsURLFn  = support.BuildWorkspaceInvitationsURL
 	queueWorkspaceInvitationEmailFn = func(kind, toAddress, subject, body string) error {
-		return database.EnqueueEmailOutbox(kind, toAddress, subject, body, resolveEmailOutboxMaxAttempts())
+		return mail.EnqueueEmailOutbox(kind, toAddress, subject, body, resolveEmailOutboxMaxAttempts())
 	}
 )
 

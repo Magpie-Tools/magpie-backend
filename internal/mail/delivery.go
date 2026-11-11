@@ -1,4 +1,4 @@
-package runtime
+package mail
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/support"
 
@@ -86,7 +85,7 @@ func runEmailDeliveryMaintenanceLoop(ctx context.Context) {
 
 func runEmailDeliveryPass(ctx context.Context) {
 	batchSize := resolveEmailOutboxBatchSize()
-	messages, err := database.ClaimPendingEmailOutbox(ctx, batchSize, time.Now().UTC())
+	messages, err := ClaimPendingEmailOutbox(ctx, batchSize, time.Now().UTC())
 	if err != nil {
 		log.Error("Failed to claim email outbox messages", "error", err)
 		return
@@ -115,7 +114,7 @@ func runEmailDeliveryMaintenancePass(ctx context.Context) {
 	defer func() { support.RecordMaintenanceRun("email_outbox", runErr) }()
 	processingTimeout := resolveEmailProcessingTimeout()
 	if processingTimeout > 0 {
-		if recovered, err := database.RequeueStaleEmailOutboxMessages(ctx, time.Now().UTC().Add(-processingTimeout)); err != nil {
+		if recovered, err := RequeueStaleEmailOutboxMessages(ctx, time.Now().UTC().Add(-processingTimeout)); err != nil {
 			runErr = err
 			log.Error("Failed to requeue stale email outbox messages", "error", err)
 		} else if recovered > 0 {
@@ -139,7 +138,7 @@ func deliverEmailOutboxMessage(ctx context.Context, msg domain.EmailOutbox) {
 	}
 
 	support.RecordEmailDeliveryMetric(msg.Kind, "sent")
-	if err := database.MarkEmailOutboxSent(ctx, msg.ID, time.Now().UTC()); err != nil {
+	if err := MarkEmailOutboxSent(ctx, msg.ID, time.Now().UTC()); err != nil {
 		log.Error("Failed to mark email outbox message as sent", "id", msg.ID, "kind", msg.Kind, "error", err)
 	}
 }
@@ -150,7 +149,7 @@ func scheduleEmailRetry(ctx context.Context, msg domain.EmailOutbox, metricResul
 
 	if msg.Attempts >= msg.MaxAttempts {
 		support.RecordEmailDeliveryMetric(msg.Kind, "abandoned")
-		if err := database.MarkEmailOutboxAbandoned(ctx, msg.ID, lastError); err != nil {
+		if err := MarkEmailOutboxAbandoned(ctx, msg.ID, lastError); err != nil {
 			log.Error("Failed to abandon email outbox message", "id", msg.ID, "kind", msg.Kind, "error", err)
 		}
 		return
@@ -158,7 +157,7 @@ func scheduleEmailRetry(ctx context.Context, msg domain.EmailOutbox, metricResul
 
 	nextAttempt := time.Now().UTC().Add(resolveEmailRetryDelay(msg.Attempts + 1))
 	support.RecordEmailDeliveryMetric(msg.Kind, "retry_scheduled")
-	if err := database.MarkEmailOutboxForRetry(ctx, msg.ID, nextAttempt, lastError); err != nil {
+	if err := MarkEmailOutboxForRetry(ctx, msg.ID, nextAttempt, lastError); err != nil {
 		log.Error("Failed to mark email outbox message for retry", "id", msg.ID, "kind", msg.Kind, "error", err)
 	}
 }
@@ -169,7 +168,7 @@ func cleanupSentEmailOutbox(ctx context.Context) error {
 		return nil
 	}
 	olderThan := time.Now().UTC().Add(-retention)
-	_, err := database.DeleteSentEmailOutbox(ctx, olderThan, emailOutboxCleanupBatchSize)
+	_, err := DeleteSentEmailOutbox(ctx, olderThan, emailOutboxCleanupBatchSize)
 	if err != nil {
 		log.Error("Failed to clean up terminal email outbox rows", "error", err)
 	}
@@ -177,7 +176,7 @@ func cleanupSentEmailOutbox(ctx context.Context) error {
 }
 
 func updateEmailQueueDepthMetric(ctx context.Context) {
-	count, err := database.CountActiveEmailOutboxMessages(ctx)
+	count, err := CountActiveEmailOutboxMessages(ctx)
 	if err != nil {
 		log.Error("Failed to count active email outbox rows", "error", err)
 		return
