@@ -10,6 +10,8 @@ import (
 	"magpie/internal/scrapestore"
 	workspacesettings "magpie/internal/settings"
 	workspaces "magpie/internal/workspace"
+
+	gql "github.com/graphql-go/graphql"
 )
 
 func buildUserSettings(workspace domain.Workspace, preference domain.WorkspaceMemberPreference, judges []dto.SimpleWorkspaceJudge, sources []string) map[string]interface{} {
@@ -167,4 +169,133 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	}
 
 	return nil
+}
+
+// settingsTypes holds the GraphQL types of workspace settings, which the
+// settings field of Viewer and the settings mutation share.
+type settingsTypes struct {
+	updateSettingsInput *gql.InputObject
+	userSettingsType    *gql.Object
+}
+
+func newSettingsTypes() settingsTypes {
+	// Retain the historical GraphQL type name for workspace judge settings.
+	simpleJudgeType := gql.NewObject(gql.ObjectConfig{
+		Name: "SimpleUserJudge",
+		Fields: gql.Fields{
+			"url":   &gql.Field{Type: gql.NewNonNull(gql.String)},
+			"regex": &gql.Field{Type: gql.NewNonNull(gql.String)},
+		},
+	})
+
+	checkerSettingsType, checkerSettingsInput := checkerSettingsTypes()
+	userSettingsType := gql.NewObject(gql.ObjectConfig{
+		Name: "UserSettings",
+		Fields: gql.Fields{
+			"checkerSettings":            &gql.Field{Type: checkerSettingsType},
+			"transportProtocol":          &gql.Field{Type: gql.String},
+			"httpProtocol":               &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"httpsProtocol":              &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"socks4Protocol":             &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"socks5Protocol":             &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"timeout":                    &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"retries":                    &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"useHttpsForSocks":           &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"autoRemoveFailingProxies":   &gql.Field{Type: gql.NewNonNull(gql.Boolean)},
+			"autoRemoveFailureThreshold": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"failureAction":              &gql.Field{Type: gql.NewNonNull(gql.String)},
+			"judges":                     &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(simpleJudgeType)))},
+			"scrapingSources":            &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
+			"proxyListColumns":           &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
+			"scrapeSourceProxyColumns":   &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
+			"scrapeSourceListColumns":    &gql.Field{Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(gql.String)))},
+		},
+	})
+
+	judgeInputType := gql.NewInputObject(gql.InputObjectConfig{
+		Name: "SimpleUserJudgeInput",
+		Fields: gql.InputObjectConfigFieldMap{
+			"url":   &gql.InputObjectFieldConfig{Type: gql.NewNonNull(gql.String)},
+			"regex": &gql.InputObjectFieldConfig{Type: gql.NewNonNull(gql.String)},
+		},
+	})
+
+	updateSettingsInput := gql.NewInputObject(gql.InputObjectConfig{
+		Name: "UpdateUserSettingsInput",
+		Fields: gql.InputObjectConfigFieldMap{
+			"checkerSettings":            &gql.InputObjectFieldConfig{Type: checkerSettingsInput},
+			"transportProtocol":          &gql.InputObjectFieldConfig{Type: gql.String},
+			"httpProtocol":               &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"httpsProtocol":              &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"socks4Protocol":             &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"socks5Protocol":             &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"timeout":                    &gql.InputObjectFieldConfig{Type: gql.Int},
+			"retries":                    &gql.InputObjectFieldConfig{Type: gql.Int},
+			"useHttpsForSocks":           &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"autoRemoveFailingProxies":   &gql.InputObjectFieldConfig{Type: gql.Boolean},
+			"autoRemoveFailureThreshold": &gql.InputObjectFieldConfig{Type: gql.Int},
+			"failureAction":              &gql.InputObjectFieldConfig{Type: gql.String},
+			"judges": &gql.InputObjectFieldConfig{
+				Type: gql.NewList(gql.NewNonNull(judgeInputType)),
+			},
+			"proxyListColumns": &gql.InputObjectFieldConfig{
+				Type: gql.NewList(gql.NewNonNull(gql.String)),
+			},
+			"scrapeSourceProxyColumns": &gql.InputObjectFieldConfig{
+				Type: gql.NewList(gql.NewNonNull(gql.String)),
+			},
+			"scrapeSourceListColumns": &gql.InputObjectFieldConfig{
+				Type: gql.NewList(gql.NewNonNull(gql.String)),
+			},
+		},
+	})
+	return settingsTypes{updateSettingsInput: updateSettingsInput, userSettingsType: userSettingsType}
+}
+
+// settingsViewerFields are the fields this feature adds to the Viewer type.
+func settingsViewerFields(types settingsTypes) gql.Fields {
+	userSettingsType := types.userSettingsType
+	return gql.Fields{
+		"settings": &gql.Field{
+			Type: gql.NewNonNull(userSettingsType),
+			Resolve: func(p gql.ResolveParams) (interface{}, error) {
+				if data, ok := p.Source.(*viewerData); ok {
+					judges := judgestore.GetWorkspaceJudges(data.workspace.ID)
+					sources := scrapestore.GetScrapingSourcesOfUsers(data.workspace.ID)
+					return buildUserSettings(data.workspace, data.preference, judges, sources), nil
+				}
+				return nil, nil
+			},
+		},
+	}
+}
+
+// settingsMutationFields are the mutations of workspace settings.
+func settingsMutationFields(types settingsTypes) gql.Fields {
+	updateSettingsInput, userSettingsType := types.updateSettingsInput, types.userSettingsType
+	return gql.Fields{
+
+		"updateUserSettings": &gql.Field{
+			Type: userSettingsType,
+			Args: gql.FieldConfigArgument{
+				"input": &gql.ArgumentConfig{Type: gql.NewNonNull(updateSettingsInput)},
+			},
+			Resolve: func(p gql.ResolveParams) (interface{}, error) {
+				rawInput, _ := p.Args["input"].(map[string]interface{})
+				if err := applyUserSettings(p.Context, rawInput); err != nil {
+					return nil, err
+				}
+				viewer, err := fetchViewer(p.Context)
+				if err != nil {
+					return nil, err
+				}
+				if data, ok := viewer.(*viewerData); ok {
+					judges := judgestore.GetWorkspaceJudges(data.workspace.ID)
+					sources := scrapestore.GetScrapingSourcesOfUsers(data.workspace.ID)
+					return buildUserSettings(data.workspace, data.preference, judges, sources), nil
+				}
+				return nil, nil
+			},
+		},
+	}
 }
