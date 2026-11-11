@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -264,7 +265,7 @@ func seedPersonalWorkspaces(db *gorm.DB) error {
 		}
 	}
 
-	if isPostgresDialect(db) {
+	if pg.IsPostgresDialect(db) {
 		if err := db.Exec(`SELECT setval(pg_get_serial_sequence('workspaces', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM workspaces), 1), 1), true)`).Error; err != nil {
 			return fmt.Errorf("advance workspace id sequence: %w", err)
 		}
@@ -282,7 +283,7 @@ func ensureWorkspaceSchema(db *gorm.DB) error {
 		return err
 	}
 
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		return nil
 	}
 	if err := ensureWorkspaceOwnershipForeignKeys(db); err != nil {

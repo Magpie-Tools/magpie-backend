@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
+
+	"magpie/internal/platform/pg"
 )
 
 // Retain every modern pointer while its workspace projection is pending.
@@ -64,7 +66,7 @@ func PruneObsoleteCheckerEvidencePage(ctx context.Context, cursor *CheckerEviden
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !isPostgresDialect(DB) {
+	if !pg.IsPostgresDialect(DB) {
 		// Keep SQLite's existing retention semantics without PostgreSQL's
 		// physical tuple IDs or data-modifying CTEs. Production uses PostgreSQL.
 		deleted, err := PruneObsoleteCheckerEvidence(ctx, limit)

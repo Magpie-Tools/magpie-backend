@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -55,7 +56,7 @@ func createOldProxyFilterIndexes(t testing.TB, db *gorm.DB) {
 		if !strings.HasPrefix(definition, prefix) {
 			t.Fatal("unexpected canonical definition", definition)
 		}
-		if err := db.Exec("CREATE INDEX " + quoteIdentifier(old) + " ON " + strings.TrimPrefix(definition, prefix)).Error; err != nil {
+		if err := db.Exec("CREATE INDEX " + pg.QuoteIdentifier(old) + " ON " + strings.TrimPrefix(definition, prefix)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -125,9 +126,9 @@ func TestProxyFilterIndexCleanupPreservesDifferentAndCustomIndexesPostgres(t *te
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			statement := "CREATE INDEX " + quoteIdentifier(tc.oldName) + " ON user_proxy_filter_indexes " + tc.definition
+			statement := "CREATE INDEX " + pg.QuoteIdentifier(tc.oldName) + " ON user_proxy_filter_indexes " + tc.definition
 			if strings.HasPrefix(tc.definition, "UNIQUE ") {
-				statement = "CREATE UNIQUE INDEX " + quoteIdentifier(tc.oldName) + " ON user_proxy_filter_indexes " + strings.TrimPrefix(tc.definition, "UNIQUE ")
+				statement = "CREATE UNIQUE INDEX " + pg.QuoteIdentifier(tc.oldName) + " ON user_proxy_filter_indexes " + strings.TrimPrefix(tc.definition, "UNIQUE ")
 			}
 			if err := db.Exec(statement).Error; err != nil {
 				t.Fatal(err)
@@ -139,7 +140,7 @@ func TestProxyFilterIndexCleanupPreservesDifferentAndCustomIndexesPostgres(t *te
 			if got := proxyFilterIndexDefinitions(t, db); !reflect.DeepEqual(got, before) {
 				t.Fatal("cleanup removed an index with different semantics or an unknown custom name", got, before)
 			}
-			if err := db.Exec("DROP INDEX " + quoteIdentifier(tc.oldName)).Error; err != nil {
+			if err := db.Exec("DROP INDEX " + pg.QuoteIdentifier(tc.oldName)).Error; err != nil {
 				t.Fatal(err)
 			}
 		})

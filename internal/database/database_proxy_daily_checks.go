@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -376,7 +377,7 @@ func CompactProxyDailyChecks(ctx context.Context, before time.Time, limit int) (
 	before = startOfUTCDay(before)
 	var count int64
 	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if isPostgresDialector(tx) {
+		if pg.IsPostgresDialector(tx) {
 			var acquired bool
 			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", proxyDailyBackfillAdvisoryLockBase).Scan(&acquired).Error; err != nil {
 				return err

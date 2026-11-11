@@ -4,13 +4,11 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"time"
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
-
-	"sync/atomic"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/driver/postgres"
@@ -33,24 +31,6 @@ type Config struct {
 
 type Option func(*Config)
 
-var currentDSN atomic.Value
-
-func setDSN(dsn string) {
-	if dsn == "" {
-		return
-	}
-	currentDSN.Store(dsn)
-}
-
-func getDSN() string {
-	if raw := currentDSN.Load(); raw != nil {
-		if dsn, ok := raw.(string); ok {
-			return dsn
-		}
-	}
-	return ""
-}
-
 func SetupDB(opts ...Option) (*gorm.DB, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
@@ -61,19 +41,18 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 	case cfg.ExistingDB != nil:
 		DB = cfg.ExistingDB
 	case cfg.Dialector != nil:
-		if dsn := buildDSN(); dsn != "" {
-			setDSN(dsn)
+		if dsn := pg.BuildDSN(); dsn != "" {
+			pg.SetDSN(dsn)
 		}
 		gormCfg := &gorm.Config{}
 		if cfg.Logger != nil {
 			gormCfg.Logger = cfg.Logger
 		}
-		db, err := gorm.Open(cfg.Dialector, gormCfg)
+		db, err := pg.Open(cfg.Dialector, gormCfg)
 		if err != nil {
 			return nil, fmt.Errorf("database: open connection: %w", err)
 		}
 		DB = db
-		configureConnectionPool(db)
 	default:
 		return nil, fmt.Errorf("database: no dialector or existing connection provided")
 	}
@@ -136,58 +115,17 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 }
 
 func defaultConfig() Config {
-	dsn := buildDSN()
+	dsn := pg.BuildDSN()
 
-	setDSN(dsn)
+	pg.SetDSN(dsn)
 
 	return Config{
 		Dialector:    postgres.Open(dsn),
-		Logger:       silentLogger(),
+		Logger:       pg.SilentLogger(),
 		AutoMigrate:  support.GetEnvBool("DB_AUTO_MIGRATE", !config.InProductionMode),
 		Migrations:   defaultMigrations(),
 		SeedDefaults: true,
 	}
-}
-
-func buildDSN() string {
-	dbHost := support.GetEnv("DB_HOST", "localhost")
-	dbPort := support.GetEnv("DB_PORT", "5434")
-	dbName := support.GetEnv("DB_NAME", "magpie")
-	dbUser := support.GetEnv("DB_USERNAME", "magpie_user")
-	// Default to empty instead of a shared hardcoded secret.
-	dbPassword := support.GetEnv("DB_PASSWORD", "")
-	dbSSLMode := resolveDBSSLMode()
-
-	dsn := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		dbHost,
-		dbPort,
-		dbUser,
-		dbPassword,
-		dbName,
-		dbSSLMode,
-	)
-
-	return dsn
-}
-
-func resolveDBSSLMode() string {
-	raw := strings.ToLower(strings.TrimSpace(support.GetEnv("DB_SSLMODE", "require")))
-
-	switch raw {
-	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
-		return raw
-	default:
-		log.Warn("invalid DB_SSLMODE value, defaulting to secure mode", "value", raw, "default", "require")
-		return "require"
-	}
-}
-
-func silentLogger() logger.Interface {
-	return logger.New(
-		log.Default(),
-		logger.Config{LogLevel: logger.Silent},
-	)
 }
 
 func defaultMigrations() []any {
@@ -243,40 +181,6 @@ func defaultMigrations() []any {
 		domain.ScrapeSourceTag{},
 		domain.ProxyScrapeSite{},
 		domain.Protocol{},
-	}
-}
-
-func configureConnectionPool(db *gorm.DB) {
-	if db == nil {
-		return
-	}
-
-	sqlDB, err := db.DB()
-	if err != nil {
-		log.Error("database: get sql.DB", "error", err)
-		return
-	}
-
-	maxOpen := support.GetEnvInt("DB_MAX_OPEN_CONNS", 32)
-	maxIdle := support.GetEnvInt("DB_MAX_IDLE_CONNS", maxOpen)
-	if maxIdle > maxOpen {
-		maxIdle = maxOpen
-	}
-
-	connLifetimeSeconds := support.GetEnvInt("DB_CONN_MAX_LIFETIME", 300)
-	connIdleSeconds := support.GetEnvInt("DB_CONN_MAX_IDLE_TIME", 60)
-
-	if maxOpen > 0 {
-		sqlDB.SetMaxOpenConns(maxOpen)
-	}
-	if maxIdle >= 0 {
-		sqlDB.SetMaxIdleConns(maxIdle)
-	}
-	if connLifetimeSeconds > 0 {
-		sqlDB.SetConnMaxLifetime(time.Duration(connLifetimeSeconds) * time.Second)
-	}
-	if connIdleSeconds > 0 {
-		sqlDB.SetConnMaxIdleTime(time.Duration(connIdleSeconds) * time.Second)
 	}
 }
 
@@ -416,7 +320,7 @@ func ensureBlacklistSchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		return nil
 	}
 
@@ -467,7 +371,7 @@ func ensureRotatingProxySchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		return nil
 	}
 	if !db.Migrator().HasTable(&domain.RotatingProxy{}) {
@@ -572,7 +476,7 @@ func ensureProxyQueryIndexSchema(db *gorm.DB) error {
 	if db.Migrator().HasTable(&domain.ProxyStatistic{}) {
 		stmts = append(stmts, `CREATE INDEX IF NOT EXISTS idx_proxy_statistics_proxy_created_id ON proxy_statistics (proxy_id, created_at DESC, id DESC)`)
 	}
-	if isPostgresDialect(db) {
+	if pg.IsPostgresDialect(db) {
 		if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS pg_trgm`).Error; err != nil {
 			log.Warn("proxy query index schema: pg_trgm extension unavailable; search will use fallback indexes", "error", err)
 		} else {
@@ -607,7 +511,7 @@ func ensureProxyQueryIndexSchema(db *gorm.DB) error {
 }
 
 func shouldSkipProxyStatisticsAutoMigrate(db *gorm.DB) bool {
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		return false
 	}
 
@@ -638,12 +542,4 @@ func removeMigrationModel(migrations []any, model any) []any {
 		filtered = append(filtered, migration)
 	}
 	return filtered
-}
-
-func isPostgresDialect(db *gorm.DB) bool {
-	if db == nil {
-		return false
-	}
-	name := strings.ToLower(strings.TrimSpace(db.Dialector.Name()))
-	return strings.Contains(name, "postgres")
 }

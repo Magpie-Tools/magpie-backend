@@ -9,6 +9,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -133,7 +134,7 @@ func UpdateWorkspaceInvitation(workspaceID, invitationID uint, role string, bill
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var invitation domain.WorkspaceInvitation
 		query := tx.Where("id = ? AND workspace_id = ?", invitationID, workspaceID)
-		if isPostgresDialect(tx) {
+		if pg.IsPostgresDialect(tx) {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		if err := query.First(&invitation).Error; err != nil {
@@ -196,7 +197,7 @@ func AcceptWorkspaceInvitation(invitationID, userID uint, now time.Time) (dto.Wo
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var invitation domain.WorkspaceInvitation
 		query := tx.Where("id = ? AND invitee_user_id = ?", invitationID, userID)
-		if isPostgresDialect(tx) {
+		if pg.IsPostgresDialect(tx) {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		if err := query.First(&invitation).Error; err != nil {

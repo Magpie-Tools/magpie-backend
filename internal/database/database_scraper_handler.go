@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 const (
@@ -705,7 +706,7 @@ func DeleteOrphanProxyScrapeSiteRelations(ctx context.Context) (int64, error) {
 		db = db.WithContext(ctx)
 	}
 
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		result := db.
 			Where(
 				"NOT EXISTS (SELECT 1 FROM proxies p WHERE p.id = proxy_scrape_site.proxy_id) OR " +

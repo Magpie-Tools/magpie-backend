@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -102,7 +103,7 @@ func ReplaceBlacklistData(ctx context.Context, ips []domain.BlacklistedIP, range
 	}
 
 	if len(cleanRanges) == 0 {
-		if dsn := getDSN(); dsn != "" {
+		if dsn := pg.GetDSN(); dsn != "" {
 			if ipCount, rangeCount, err := replaceBlacklistWithCopy(ctx, dsn, cleanIPs, cleanRanges); err == nil {
 				return ipCount, rangeCount, nil
 			}
@@ -118,7 +119,7 @@ func replaceBlacklistWithCopy(ctx context.Context, dsn string, ips []domain.Blac
 		ctx = context.Background()
 	}
 
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := pg.ConnectNative(ctx, dsn)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -490,7 +491,7 @@ func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange
 }
 
 func findProxiesInIPRanges(db *gorm.DB, prefixes []netip.Prefix) ([]domain.Proxy, error) {
-	if isPostgresDialect(db) {
+	if pg.IsPostgresDialect(db) {
 		proxyByID := make(map[uint64]domain.Proxy)
 		for start := 0; start < len(prefixes); start += blacklistRangeQueryBatchSize {
 			end := start + blacklistRangeQueryBatchSize

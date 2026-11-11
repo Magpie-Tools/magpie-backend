@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -39,7 +40,7 @@ func ClaimPendingEmailOutbox(ctx context.Context, limit int, now time.Time) ([]d
 			Order("next_attempt_at ASC, id ASC").
 			Limit(limit)
 
-		if isPostgresDialect(tx) {
+		if pg.IsPostgresDialect(tx) {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
 		}
 
@@ -147,7 +148,7 @@ func DeleteSentEmailOutbox(ctx context.Context, olderThan time.Time, limit int) 
 	if limit <= 0 {
 		limit = 500
 	}
-	if isPostgresDialect(DB) {
+	if pg.IsPostgresDialect(DB) {
 		query := `
 			DELETE FROM email_outboxes
 			WHERE id IN (

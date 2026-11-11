@@ -1,9 +1,7 @@
 # Sites outside internal/platform that create a database or Redis connection.
-# The list only shrinks: each site moves into internal/platform.
+# The list only shrinks: each site moves into internal/platform. Every database
+# connection is created in internal/platform/pg.
 #
 # path/file.go: Function
 
-internal/app/read_model_rebuild.go: rebuildReadModels          # read-model rebuild command; moves to platform/pg
-internal/database/database_handler.go: SetupDB                 # the GORM pool; moves to platform/pg
-internal/database/blacklist_handler.go: replaceBlacklistWithCopy  # native pgx COPY connection; moves to platform/pg
 internal/support/redis_client.go: buildRedisClientFromEnv      # the Redis client and Sentinel failover client

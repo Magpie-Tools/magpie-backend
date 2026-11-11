@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 const AlertMaximumDeliveryAttempts = 4
@@ -33,7 +34,7 @@ func ClaimAlertDeliveries(ctx context.Context, limit int, now time.Time) ([]doma
 		}
 		query := tx.Where("status = ? AND next_attempt_at <= ?", "pending", now).
 			Where("NOT EXISTS (SELECT 1 FROM alert_deliveries older WHERE older.incident_id = alert_deliveries.incident_id AND older.destination_id = alert_deliveries.destination_id AND older.id < alert_deliveries.id AND older.status IN ('pending','processing'))").Order("id").Limit(limit)
-		if isPostgresDialect(tx) {
+		if pg.IsPostgresDialect(tx) {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"})
 		}
 		if err := query.Find(&messages).Error; err != nil {

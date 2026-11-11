@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/security"
 
 	"gorm.io/gorm"
@@ -28,7 +29,7 @@ func ensureProxyAccessStorageSchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
-	if !isPostgresDialect(db) || !db.Migrator().HasTable(&domain.Proxy{}) {
+	if !pg.IsPostgresDialect(db) || !db.Migrator().HasTable(&domain.Proxy{}) {
 		return nil
 	}
 

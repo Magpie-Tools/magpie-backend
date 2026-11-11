@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -105,7 +106,7 @@ func buildProxyIPSearchIDQuery(workspaceID uint, filterQuery *gorm.DB, network, 
 		Select("ufi.proxy_id AS id").
 		Where("ufi.workspace_id = ?", workspaceID)
 	tagPattern := "%" + strings.ToLower(strings.TrimSpace(lowerSearch)) + "%"
-	if isPostgresDialect(DB) {
+	if pg.IsPostgresDialect(DB) {
 		query = query.Where("(ufi.ip_address <<= ?::cidr OR "+proxyTagSearchExistsSQL+")", network, tagPattern)
 	} else if exact {
 		query = query.Where("(ufi.ip_address = ? OR "+proxyTagSearchExistsSQL+")", fallbackPrefix, tagPattern)

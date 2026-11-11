@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -45,7 +46,7 @@ type sourceStatsKey struct {
 }
 
 func ensureReadModelBackfill(db *gorm.DB) error {
-	if db == nil || !isPostgresDialect(db) {
+	if db == nil || !pg.IsPostgresDialect(db) {
 		return nil
 	}
 
@@ -91,7 +92,7 @@ func ensureReadModelBackfill(db *gorm.DB) error {
 }
 
 func finalizeReadModelHostSchema(db *gorm.DB) error {
-	if db == nil || !isPostgresDialect(db) || !db.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
+	if db == nil || !pg.IsPostgresDialect(db) || !db.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
 		return nil
 	}
 
@@ -120,7 +121,7 @@ func finalizeReadModelHostSchema(db *gorm.DB) error {
 }
 
 func ensureReadModelSchema(db *gorm.DB) error {
-	if db == nil || !isPostgresDialect(db) {
+	if db == nil || !pg.IsPostgresDialect(db) {
 		return nil
 	}
 
@@ -255,7 +256,7 @@ ORDER BY old_class.relname`).Scan(&indexes).Error; err != nil {
 		return fmt.Errorf("read model schema: compare duplicate indexes: %w", err)
 	}
 	for _, index := range indexes {
-		if err := db.Exec("DROP INDEX IF EXISTS " + quoteIdentifier(index.SchemaName) + "." + quoteIdentifier(index.IndexName)).Error; err != nil {
+		if err := db.Exec("DROP INDEX IF EXISTS " + pg.QuoteIdentifier(index.SchemaName) + "." + pg.QuoteIdentifier(index.IndexName)).Error; err != nil {
 			return fmt.Errorf("read model schema: drop duplicate index %s: %w", index.IndexName, err)
 		}
 	}

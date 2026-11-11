@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -31,7 +32,7 @@ func ensureProxyStatisticsPartitionSchema(db *gorm.DB) error {
 	if !db.Migrator().HasTable(&domain.ProxyStatistic{}) {
 		return nil
 	}
-	if !isPostgresDialector(db) {
+	if !pg.IsPostgresDialector(db) {
 		return nil
 	}
 
@@ -90,7 +91,7 @@ func ensureProxyStatisticsMonthlyPartitions(db *gorm.DB, now time.Time) error {
 // MaintainProxyStatisticsPartitions runs for an already partitioned schema,
 // including installations that disable application schema migrations.
 func MaintainProxyStatisticsPartitions(ctx context.Context, now time.Time) error {
-	if DB == nil || !isPostgresDialector(DB) {
+	if DB == nil || !pg.IsPostgresDialector(DB) {
 		return nil
 	}
 	db := DB.WithContext(ctx)
@@ -134,7 +135,7 @@ func migrateProxyStatisticsToPartitioned(db *gorm.DB, now time.Time) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
-	if !isPostgresDialector(db) {
+	if !pg.IsPostgresDialector(db) {
 		return nil
 	}
 
@@ -165,12 +166,12 @@ func migrateProxyStatisticsToPartitioned(db *gorm.DB, now time.Time) error {
 	}
 
 	const stagingTable = "proxy_statistics_partitioned_new"
-	if err := tx.Exec(`DROP TABLE IF EXISTS ` + quoteIdentifier(stagingTable)).Error; err != nil {
+	if err := tx.Exec(`DROP TABLE IF EXISTS ` + pg.QuoteIdentifier(stagingTable)).Error; err != nil {
 		return err
 	}
 
 	createStmt := `
-CREATE TABLE ` + quoteIdentifier(stagingTable) + ` (
+CREATE TABLE ` + pg.QuoteIdentifier(stagingTable) + ` (
 	LIKE proxy_statistics INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING STORAGE INCLUDING COMMENTS,
 	PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at)
@@ -203,14 +204,14 @@ CREATE TABLE ` + quoteIdentifier(stagingTable) + ` (
 		}
 	}
 
-	if err := tx.Exec(`INSERT INTO ` + quoteIdentifier(stagingTable) + ` SELECT * FROM proxy_statistics ORDER BY id`).Error; err != nil {
+	if err := tx.Exec(`INSERT INTO ` + pg.QuoteIdentifier(stagingTable) + ` SELECT * FROM proxy_statistics ORDER BY id`).Error; err != nil {
 		return err
 	}
 
 	if err := tx.Exec(`DROP TABLE proxy_statistics`).Error; err != nil {
 		return err
 	}
-	if err := tx.Exec(`ALTER TABLE ` + quoteIdentifier(stagingTable) + ` RENAME TO proxy_statistics`).Error; err != nil {
+	if err := tx.Exec(`ALTER TABLE ` + pg.QuoteIdentifier(stagingTable) + ` RENAME TO proxy_statistics`).Error; err != nil {
 		return err
 	}
 	if err := reseedProxyStatisticsIDSequence(tx, "proxy_statistics"); err != nil {
@@ -230,7 +231,7 @@ func rebindProxyStatisticsIdentity(db *gorm.DB, table string) error {
 		return fmt.Errorf("nil database connection")
 	}
 
-	qualified := quoteIdentifier(table)
+	qualified := pg.QuoteIdentifier(table)
 	if err := db.Exec(`ALTER TABLE ` + qualified + ` ALTER COLUMN id DROP DEFAULT`).Error; err != nil {
 		return err
 	}
@@ -247,10 +248,10 @@ func addProxyStatisticsFKConstraints(db *gorm.DB, table string) error {
 	}
 
 	stmts := []string{
-		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (protocol_id) REFERENCES protocols(id) ON UPDATE CASCADE ON DELETE SET NULL`, quoteIdentifier(table), quoteIdentifier(table+"_protocol_fk")),
-		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (level_id) REFERENCES anonymity_levels(id) ON UPDATE CASCADE ON DELETE SET NULL`, quoteIdentifier(table), quoteIdentifier(table+"_level_fk")),
-		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (proxy_id) REFERENCES proxies(id) ON UPDATE CASCADE ON DELETE CASCADE`, quoteIdentifier(table), quoteIdentifier(table+"_proxy_fk")),
-		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (judge_id) REFERENCES judges(id) ON UPDATE CASCADE ON DELETE CASCADE`, quoteIdentifier(table), quoteIdentifier(table+"_judge_fk")),
+		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (protocol_id) REFERENCES protocols(id) ON UPDATE CASCADE ON DELETE SET NULL`, pg.QuoteIdentifier(table), pg.QuoteIdentifier(table+"_protocol_fk")),
+		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (level_id) REFERENCES anonymity_levels(id) ON UPDATE CASCADE ON DELETE SET NULL`, pg.QuoteIdentifier(table), pg.QuoteIdentifier(table+"_level_fk")),
+		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (proxy_id) REFERENCES proxies(id) ON UPDATE CASCADE ON DELETE CASCADE`, pg.QuoteIdentifier(table), pg.QuoteIdentifier(table+"_proxy_fk")),
+		fmt.Sprintf(`ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (judge_id) REFERENCES judges(id) ON UPDATE CASCADE ON DELETE CASCADE`, pg.QuoteIdentifier(table), pg.QuoteIdentifier(table+"_judge_fk")),
 	}
 
 	for _, stmt := range stmts {
@@ -303,7 +304,7 @@ func ensureDefaultPartitionForTable(db *gorm.DB, parent string, name string) err
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
-	stmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s DEFAULT`, quoteIdentifier(name), quoteIdentifier(parent))
+	stmt := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s DEFAULT`, pg.QuoteIdentifier(name), pg.QuoteIdentifier(parent))
 	return db.Exec(stmt).Error
 }
 
@@ -326,8 +327,8 @@ func ensureMonthlyPartitionForTable(db *gorm.DB, parent string, partitionPrefix 
 	name := partitionPrefix + "_" + strconv.Itoa(start.Year()) + "_" + fmt.Sprintf("%02d", int(start.Month()))
 	stmt := fmt.Sprintf(
 		`CREATE TABLE IF NOT EXISTS %s PARTITION OF %s FOR VALUES FROM ('%s') TO ('%s')`,
-		quoteIdentifier(name),
-		quoteIdentifier(parent),
+		pg.QuoteIdentifier(name),
+		pg.QuoteIdentifier(parent),
 		start.Format("2006-01-02 15:04:05-07"),
 		end.Format("2006-01-02 15:04:05-07"),
 	)
@@ -337,7 +338,7 @@ func ensureMonthlyPartitionForTable(db *gorm.DB, parent string, partitionPrefix 
 		if err := tx.Exec(`SET LOCAL lock_timeout = '2s'`).Error; err != nil {
 			return err
 		}
-		if err := tx.Exec(`LOCK TABLE ` + quoteIdentifier(parent) + ` IN ACCESS EXCLUSIVE MODE`).Error; err != nil {
+		if err := tx.Exec(`LOCK TABLE ` + pg.QuoteIdentifier(parent) + ` IN ACCESS EXCLUSIVE MODE`).Error; err != nil {
 			return err
 		}
 		exists, err := hasPartitionForRange(tx, parent, start, end)
@@ -356,15 +357,15 @@ func ensureMonthlyPartitionForTable(db *gorm.DB, parent string, partitionPrefix 
 		if defaultName == "" {
 			return tx.Exec(stmt).Error
 		}
-		if err := tx.Exec(`CREATE TABLE ` + quoteIdentifier(name) + ` (LIKE ` + quoteIdentifier(parent) + ` INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING INDEXES)`).Error; err != nil {
+		if err := tx.Exec(`CREATE TABLE ` + pg.QuoteIdentifier(name) + ` (LIKE ` + pg.QuoteIdentifier(parent) + ` INCLUDING DEFAULTS INCLUDING GENERATED INCLUDING CONSTRAINTS INCLUDING STORAGE INCLUDING INDEXES)`).Error; err != nil {
 			return err
 		}
-		move := `WITH moved AS (DELETE FROM ` + quoteIdentifier(defaultName) + ` WHERE created_at >= ? AND created_at < ? RETURNING *)
-			INSERT INTO ` + quoteIdentifier(name) + ` OVERRIDING SYSTEM VALUE SELECT * FROM moved`
+		move := `WITH moved AS (DELETE FROM ` + pg.QuoteIdentifier(defaultName) + ` WHERE created_at >= ? AND created_at < ? RETURNING *)
+			INSERT INTO ` + pg.QuoteIdentifier(name) + ` OVERRIDING SYSTEM VALUE SELECT * FROM moved`
 		if err := tx.Exec(move, start, end).Error; err != nil {
 			return err
 		}
-		attach := fmt.Sprintf(`ALTER TABLE %s ATTACH PARTITION %s FOR VALUES FROM ('%s') TO ('%s')`, quoteIdentifier(parent), quoteIdentifier(name), start.Format("2006-01-02 15:04:05-07"), end.Format("2006-01-02 15:04:05-07"))
+		attach := fmt.Sprintf(`ALTER TABLE %s ATTACH PARTITION %s FOR VALUES FROM ('%s') TO ('%s')`, pg.QuoteIdentifier(parent), pg.QuoteIdentifier(name), start.Format("2006-01-02 15:04:05-07"), end.Format("2006-01-02 15:04:05-07"))
 		return tx.Exec(attach).Error
 	})
 }
@@ -404,7 +405,7 @@ func reseedProxyStatisticsIDSequence(db *gorm.DB, table string) error {
 	}
 
 	var maxID sql.NullInt64
-	if err := db.Raw(`SELECT MAX(id) FROM ` + quoteIdentifier(table)).Scan(&maxID).Error; err != nil {
+	if err := db.Raw(`SELECT MAX(id) FROM ` + pg.QuoteIdentifier(table)).Scan(&maxID).Error; err != nil {
 		return err
 	}
 	if maxID.Valid && maxID.Int64 > 0 {
@@ -464,7 +465,7 @@ func DropProxyStatisticsPartitionsOlderThan(ctx context.Context, olderThan time.
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
-	if !isPostgresDialector(db) {
+	if !pg.IsPostgresDialector(db) {
 		return 0, nil
 	}
 
@@ -495,7 +496,7 @@ func DropProxyStatisticsPartitionsOlderThan(ctx context.Context, olderThan time.
 			continue
 		}
 
-		if err := db.Exec(`DROP TABLE IF EXISTS ` + quoteIdentifier(partition.Name)).Error; err != nil {
+		if err := db.Exec(`DROP TABLE IF EXISTS ` + pg.QuoteIdentifier(partition.Name)).Error; err != nil {
 			return dropped, err
 		}
 		dropped++
@@ -555,7 +556,7 @@ SELECT EXISTS (
 	FROM proxy_latest_statistics pls
 	JOIN %s part ON part.id = pls.statistic_id
 	LIMIT 1
-)`, quoteIdentifier(partition))
+)`, pg.QuoteIdentifier(partition))
 
 	var exists bool
 	if err := db.Raw(query).Scan(&exists).Error; err != nil {
@@ -566,16 +567,4 @@ SELECT EXISTS (
 
 func monthStartUTC(ts time.Time) time.Time {
 	return time.Date(ts.UTC().Year(), ts.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
-}
-
-func isPostgresDialector(db *gorm.DB) bool {
-	if db == nil || db.Dialector == nil {
-		return false
-	}
-	name := strings.ToLower(strings.TrimSpace(db.Dialector.Name()))
-	return strings.Contains(name, "postgres")
-}
-
-func quoteIdentifier(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }

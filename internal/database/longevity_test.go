@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 )
 
@@ -19,15 +20,15 @@ func TestBackendLongevityMonthlyPartitionHorizon(t *testing.T) {
 	// A DEFAULT partition for a same-named table elsewhere must not suppress
 	// this table's own DEFAULT partition during startup or maintenance.
 	otherSchema := fmt.Sprintf("longevity_other_partition_%d", time.Now().UnixNano())
-	if err := db.Exec("CREATE SCHEMA " + quoteIdentifier(otherSchema)).Error; err != nil {
+	if err := db.Exec("CREATE SCHEMA " + pg.QuoteIdentifier(otherSchema)).Error; err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Exec("DROP SCHEMA " + quoteIdentifier(otherSchema) + " CASCADE").Error })
-	otherParent := quoteIdentifier(otherSchema) + ".proxy_statistics"
+	t.Cleanup(func() { _ = db.Exec("DROP SCHEMA " + pg.QuoteIdentifier(otherSchema) + " CASCADE").Error })
+	otherParent := pg.QuoteIdentifier(otherSchema) + ".proxy_statistics"
 	if err := db.Exec("CREATE TABLE " + otherParent + " (created_at timestamptz NOT NULL) PARTITION BY RANGE(created_at)").Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec("CREATE TABLE " + quoteIdentifier(otherSchema) + ".other_default PARTITION OF " + otherParent + " DEFAULT").Error; err != nil {
+	if err := db.Exec("CREATE TABLE " + pg.QuoteIdentifier(otherSchema) + ".other_default PARTITION OF " + otherParent + " DEFAULT").Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec("DROP TABLE proxy_statistics CASCADE").Error; err != nil {

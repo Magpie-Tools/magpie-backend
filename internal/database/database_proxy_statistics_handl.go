@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -169,14 +170,14 @@ func acceptProxyStatisticEvents(tx *gorm.DB, statistics []domain.ProxyStatistic)
 		args := make([]any, 0, len(chunk)*4+1)
 		for i, event := range chunk {
 			values[i] = "(?, ?, ?, ?)"
-			if isPostgresDialector(tx) {
+			if pg.IsPostgresDialector(tx) {
 				values[i] = "(?, ?, ?, ?::timestamptz)"
 			}
 			args = append(args, event.Stream, event.EventID, event.SortID, time.Now().UTC())
 		}
 		var inserted []domain.ProxyStatisticEvent
 		lock := ""
-		if isPostgresDialector(tx) {
+		if pg.IsPostgresDialector(tx) {
 			lock = " FOR SHARE"
 		}
 		// Lock floors inside the existing ledger insert. Retirement cannot

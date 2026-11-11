@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -50,7 +51,7 @@ func ClaimProxyReputationRefreshes(ctx context.Context, limit int, lease time.Du
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	until := now.Add(lease)
 	var jobs []domain.ProxyReputationRefresh
-	if isPostgresDialect(db) {
+	if pg.IsPostgresDialect(db) {
 		err := db.Raw(`UPDATE proxy_reputation_refreshes SET lease_until = ?
 			WHERE proxy_id IN (SELECT proxy_id FROM proxy_reputation_refreshes
 				WHERE lease_until <= ? ORDER BY requested_at, proxy_id

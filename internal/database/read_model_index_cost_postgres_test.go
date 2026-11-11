@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -42,7 +43,7 @@ func TestProxyFilterIndexUpdateCostPopulatedPostgres(t *testing.T) {
 		}
 		// Fixture only: start with the original physical set so the final leg
 		// also measures the cost of the new page and option indexes.
-		if err := db.Exec("DROP INDEX " + quoteIdentifier(name)).Error; err != nil {
+		if err := db.Exec("DROP INDEX " + pg.QuoteIdentifier(name)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -78,7 +79,7 @@ WHERE c.conrelid IN ('user_proxies'::regclass,'proxy_latest_statistics'::regclas
 		t.Fatal(err)
 	}
 	for _, key := range foreignKeys {
-		if err := db.Exec("ALTER TABLE " + key.TableName + " DROP CONSTRAINT " + quoteIdentifier(key.ConstraintName)).Error; err != nil {
+		if err := db.Exec("ALTER TABLE " + key.TableName + " DROP CONSTRAINT " + pg.QuoteIdentifier(key.ConstraintName)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -108,10 +109,10 @@ FROM workspaces w CROSS JOIN generate_series(1,?::bigint) n`, []any{routes}},
 		}
 	}
 	for _, key := range foreignKeys {
-		if err := db.Exec("ALTER TABLE " + key.TableName + " ADD CONSTRAINT " + quoteIdentifier(key.ConstraintName) + " " + key.Definition + " NOT VALID").Error; err != nil {
+		if err := db.Exec("ALTER TABLE " + key.TableName + " ADD CONSTRAINT " + pg.QuoteIdentifier(key.ConstraintName) + " " + key.Definition + " NOT VALID").Error; err != nil {
 			t.Fatal(err)
 		}
-		if err := db.Exec("ALTER TABLE " + key.TableName + " VALIDATE CONSTRAINT " + quoteIdentifier(key.ConstraintName)).Error; err != nil {
+		if err := db.Exec("ALTER TABLE " + key.TableName + " VALIDATE CONSTRAINT " + pg.QuoteIdentifier(key.ConstraintName)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}

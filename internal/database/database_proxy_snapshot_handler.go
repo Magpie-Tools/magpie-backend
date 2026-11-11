@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -134,7 +135,7 @@ func aliveProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]int6
 
 	activeOwnership := `SELECT workspace_id, proxy_id FROM user_proxies
 WHERE workspace_id IN ? AND state = ?`
-	if isPostgresDialect(tx) {
+	if pg.IsPostgresDialect(tx) {
 		// Keep the requested ownership scope as one input to the join. Dense
 		// current evidence can otherwise cause an underestimated nested loop
 		// to probe the ownership primary key once for every alive route.

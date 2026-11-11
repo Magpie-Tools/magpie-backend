@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -13,7 +14,7 @@ func ensureProxyListPerformanceSchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		return nil
 	}
 
@@ -35,7 +36,7 @@ func ensureProxyListPerformanceSchema(db *gorm.DB) error {
 			return fmt.Errorf("inspect interrupted proxy list index creation: %w", err)
 		}
 		for _, index := range interrupted {
-			if err := db.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + quoteIdentifier(index.SchemaName) + "." + quoteIdentifier(index.IndexName)).Error; err != nil {
+			if err := db.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + pg.QuoteIdentifier(index.SchemaName) + "." + pg.QuoteIdentifier(index.IndexName)).Error; err != nil {
 				return fmt.Errorf("remove interrupted proxy list index %s: %w", index.IndexName, err)
 			}
 		}
@@ -220,7 +221,7 @@ func ValidateProxyScrapeSiteCascadeConstraints(ctx context.Context) error {
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		return nil
 	}
 

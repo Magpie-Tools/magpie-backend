@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -41,7 +42,7 @@ WHERE c.conrelid IN ('user_proxies'::regclass,'proxy_latest_statistics'::regclas
 		t.Fatal(err)
 	}
 	for _, key := range foreignKeys {
-		if err := db.Exec("ALTER TABLE " + key.TableName + " DROP CONSTRAINT " + quoteIdentifier(key.ConstraintName)).Error; err != nil {
+		if err := db.Exec("ALTER TABLE " + key.TableName + " DROP CONSTRAINT " + pg.QuoteIdentifier(key.ConstraintName)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -59,10 +60,10 @@ SELECT w.id,'current','tcp',n,1,TRUE,n,CURRENT_TIMESTAMP FROM workspaces w CROSS
 		}
 	}
 	for _, key := range foreignKeys {
-		if err := db.Exec("ALTER TABLE " + key.TableName + " ADD CONSTRAINT " + quoteIdentifier(key.ConstraintName) + " " + key.Definition + " NOT VALID").Error; err != nil {
+		if err := db.Exec("ALTER TABLE " + key.TableName + " ADD CONSTRAINT " + pg.QuoteIdentifier(key.ConstraintName) + " " + key.Definition + " NOT VALID").Error; err != nil {
 			t.Fatal(err)
 		}
-		if err := db.Exec("ALTER TABLE " + key.TableName + " VALIDATE CONSTRAINT " + quoteIdentifier(key.ConstraintName)).Error; err != nil {
+		if err := db.Exec("ALTER TABLE " + key.TableName + " VALIDATE CONSTRAINT " + pg.QuoteIdentifier(key.ConstraintName)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}

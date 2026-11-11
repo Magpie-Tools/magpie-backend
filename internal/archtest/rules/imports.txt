@@ -11,7 +11,7 @@ cmd/magpie: app
 cmd/seed-dev-data: config database jobs/queue/proxy jobs/queue/sites jobs/runtime security support
 abuseipdb:
 api/dto: ipgeolocation
-app: app/bootstrap app/server auth config database jobs/queue/proxy jobs/queue/sites jobs/runtime security support
+app: app/bootstrap app/server auth config database jobs/queue/proxy jobs/queue/sites jobs/runtime platform/pg security support
 app/bootstrap: blacklist checkerconfig checkpace config database domain geolite jobs/checker jobs/checker/judges jobs/maintenance jobs/queue/proxy jobs/queue/sites jobs/runtime jobs/scraper rotatingproxy support
 app/releases:
 app/server: api/dto app/bootstrap app/releases app/version auth blacklist checkpace config database domain graphql jobs/checker/judges jobs/queue/proxy jobs/queue/sites jobs/runtime jobs/scraper rotatingproxy settings support
@@ -22,7 +22,7 @@ blacklist: config database domain jobs/queue/proxy support
 checkerconfig: api/dto domain
 checkpace: domain
 config:
-database: abuseipdb api/dto auth checkerconfig checkpace config domain ipgeolocation jobs/checker/judges security support support/reputation
+database: abuseipdb api/dto auth checkerconfig checkpace config domain ipgeolocation jobs/checker/judges platform/pg security support support/reputation
 domain: api/dto instanceid security
 geolite: config database support
 graphql: api/dto database domain settings
@@ -36,6 +36,7 @@ jobs/queue/proxy: checkpace domain jobs/queue jobs/runtime security support
 jobs/queue/sites: checkpace config domain jobs/queue jobs/runtime support
 jobs/runtime: abuseipdb api/dto config database domain geolite instanceid ipgeolocation security support
 jobs/scraper: blacklist checkpace config database domain jobs/queue/proxy jobs/queue/sites support
+platform/pg: support
 rotatingproxy: api/dto config database domain jobs/runtime support
 security: config
 settings: api/dto checkerconfig config database domain jobs/checker/judges

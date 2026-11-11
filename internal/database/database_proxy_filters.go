@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -209,7 +210,7 @@ func proxyFilterOptionValuesQuery(db *gorm.DB, workspaceID uint) (string, []any)
 	args := make([]any, 0, len(sources)*2)
 	for _, source := range sources {
 		value := "COALESCE(NULLIF(ufi." + source.column + ", ''), 'N/A')"
-		if !isPostgresDialect(db) {
+		if !pg.IsPostgresDialect(db) {
 			branches = append(branches, fmt.Sprintf("SELECT DISTINCT '%s' AS kind, %s AS value FROM user_proxy_filter_indexes ufi WHERE ufi.workspace_id = ?", source.kind, value))
 			args = append(args, workspaceID)
 			continue
