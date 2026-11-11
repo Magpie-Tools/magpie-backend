@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
@@ -294,7 +295,7 @@ func DeleteRotatingProxy(workspaceID uint, rotatingProxyID uint64) error {
 			return err
 		}
 		for _, rule := range rules {
-			if err := closeAlertForConfiguration(tx, &rule, time.Now().UTC()); err != nil {
+			if err := alerts.CloseAlertForConfiguration(tx, &rule, time.Now().UTC()); err != nil {
 				return err
 			}
 			if err := tx.Model(&rule).Updates(map[string]any{"enabled": false, "status": "disabled", "unknown_reason": "Rotator deleted", "active_incident_id": nil, "breach_since": nil, "recovery_since": nil, "revision": gorm.Expr("revision + 1")}).Error; err != nil {

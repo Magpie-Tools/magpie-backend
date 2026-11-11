@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"context"
@@ -20,7 +20,7 @@ import (
 
 var ErrAlertValidation = errors.New("invalid alert configuration")
 
-func alertInvalid(message string) error { return fmt.Errorf("%w: %s", ErrAlertValidation, message) }
+func AlertInvalid(message string) error { return fmt.Errorf("%w: %s", ErrAlertValidation, message) }
 
 type AlertsPage struct {
 	Rules        []domain.AlertRule     `json:"rules"`
@@ -49,7 +49,7 @@ func GetAlerts(ctx context.Context, workspaceID uint, before uint64) (AlertsPage
 		return page, err
 	}
 	for _, d := range destinations {
-		page.Destinations = append(page.Destinations, alertDestinationDTO(d))
+		page.Destinations = append(page.Destinations, AlertDestinationDTO(d))
 	}
 	query := tx.Where("workspace_id = ?", workspaceID)
 	if before > 0 {
@@ -73,7 +73,7 @@ func GetAlerts(ctx context.Context, workspaceID uint, before uint64) (AlertsPage
 	return page, nil
 }
 
-func alertDestinationDTO(d domain.AlertDestination) dto.AlertDestination {
+func AlertDestinationDTO(d domain.AlertDestination) dto.AlertDestination {
 	mode := d.MentionMode
 	if mode == "" {
 		mode = "none"
@@ -85,30 +85,30 @@ func SaveAlertRule(ctx context.Context, workspaceID uint, id uint64, input dto.A
 	var rule domain.AlertRule
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len(name) > 120 || strings.ContainsAny(name, "\r\n") {
-		return rule, alertInvalid("name is required and must be at most 120 bytes")
+		return rule, AlertInvalid("name is required and must be at most 120 bytes")
 	}
 	if input.Threshold == nil || math.IsNaN(*input.Threshold) || math.IsInf(*input.Threshold, 0) {
-		return rule, alertInvalid("a finite threshold is required")
+		return rule, AlertInvalid("a finite threshold is required")
 	}
 	threshold := *input.Threshold
 	switch input.Metric {
 	case domain.AlertMetricUsableRoutes:
 		if threshold < 1 || threshold > 1e9 || math.Trunc(threshold) != threshold {
-			return rule, alertInvalid("usable-route threshold must be an integer between 1 and 1000000000")
+			return rule, AlertInvalid("usable-route threshold must be an integer between 1 and 1000000000")
 		}
 	case domain.AlertMetricSuccessRate:
 		if threshold < 0 || threshold > 100 {
-			return rule, alertInvalid("success-rate threshold must be between 0 and 100")
+			return rule, AlertInvalid("success-rate threshold must be between 0 and 100")
 		}
 	case domain.AlertMetricLatency:
 		if threshold <= 0 || threshold > 65535 {
-			return rule, alertInvalid("latency threshold must be between 0 and 65535 milliseconds")
+			return rule, AlertInvalid("latency threshold must be between 0 and 65535 milliseconds")
 		}
 	default:
-		return rule, alertInvalid("unknown metric")
+		return rule, AlertInvalid("unknown metric")
 	}
 	if len(input.DestinationIDs) > 10 {
-		return rule, alertInvalid("at most ten destinations may be attached")
+		return rule, AlertInvalid("at most ten destinations may be attached")
 	}
 	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Serialize configuration and count limits with workspace/rotator deletion.
@@ -122,7 +122,7 @@ func SaveAlertRule(ctx context.Context, workspaceID uint, id uint64, input dto.A
 				return err
 			}
 			if count != 1 {
-				return alertInvalid("rotator must belong to this workspace")
+				return AlertInvalid("rotator must belong to this workspace")
 			}
 		}
 		ids := make([]uint64, 0, len(input.DestinationIDs))
@@ -137,7 +137,7 @@ func SaveAlertRule(ctx context.Context, workspaceID uint, id uint64, input dto.A
 				return err
 			}
 			if count != 1 {
-				return alertInvalid("destination must belong to this workspace")
+				return AlertInvalid("destination must belong to this workspace")
 			}
 			ids = append(ids, destinationID)
 		}
@@ -145,7 +145,7 @@ func SaveAlertRule(ctx context.Context, workspaceID uint, id uint64, input dto.A
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("workspace_id = ? AND id = ?", workspaceID, id).First(&rule).Error; err != nil {
 				return err
 			}
-			if err := closeAlertForConfiguration(tx, &rule, time.Now().UTC()); err != nil {
+			if err := CloseAlertForConfiguration(tx, &rule, time.Now().UTC()); err != nil {
 				return err
 			}
 			rule.Revision++
@@ -155,7 +155,7 @@ func SaveAlertRule(ctx context.Context, workspaceID uint, id uint64, input dto.A
 				return err
 			}
 			if count >= 100 {
-				return alertInvalid("workspace has reached its limit of 100 alert rules")
+				return AlertInvalid("workspace has reached its limit of 100 alert rules")
 			}
 			rule.WorkspaceID = workspaceID
 			rule.Revision = 1
@@ -173,7 +173,7 @@ func SaveAlertRule(ctx context.Context, workspaceID uint, id uint64, input dto.A
 	return rule, err
 }
 
-func closeAlertForConfiguration(tx *gorm.DB, rule *domain.AlertRule, now time.Time) error {
+func CloseAlertForConfiguration(tx *gorm.DB, rule *domain.AlertRule, now time.Time) error {
 	if rule.ActiveIncidentID != nil {
 		if err := tx.Model(&domain.AlertIncident{}).Where("workspace_id = ? AND id = ? AND closed_at IS NULL", rule.WorkspaceID, *rule.ActiveIncidentID).Updates(map[string]any{"closed_at": now, "close_reason": "configuration_changed"}).Error; err != nil {
 			return err
@@ -192,7 +192,7 @@ func DeleteAlertRule(ctx context.Context, workspaceID uint, id uint64) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("workspace_id = ? AND id = ?", workspaceID, id).First(&rule).Error; err != nil {
 			return err
 		}
-		if err := closeAlertForConfiguration(tx, &rule, time.Now().UTC()); err != nil {
+		if err := CloseAlertForConfiguration(tx, &rule, time.Now().UTC()); err != nil {
 			return err
 		}
 		return tx.Delete(&rule).Error
@@ -203,13 +203,13 @@ func SaveAlertDestination(ctx context.Context, workspaceID uint, id uint64, inpu
 	var destination domain.AlertDestination
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len(name) > 120 || strings.ContainsAny(name, "\r\n") {
-		return dto.AlertDestination{}, alertInvalid("name is required and must be at most 120 bytes")
+		return dto.AlertDestination{}, AlertInvalid("name is required and must be at most 120 bytes")
 	}
 	if input.Kind != "email" && input.Kind != "slack" && input.Kind != "discord" && input.Kind != "webhook" {
-		return dto.AlertDestination{}, alertInvalid("unknown destination kind")
+		return dto.AlertDestination{}, AlertInvalid("unknown destination kind")
 	}
 	if input.SigningSecret != nil && (input.Kind != "webhook" || len(*input.SigningSecret) > 4096) {
-		return dto.AlertDestination{}, alertInvalid("signing secrets apply only to generic webhooks and must be at most 4096 bytes")
+		return dto.AlertDestination{}, AlertInvalid("signing secrets apply only to generic webhooks and must be at most 4096 bytes")
 	}
 	var encryptedTarget, encryptedSecret string
 	if input.Target != nil {
@@ -240,21 +240,21 @@ func SaveAlertDestination(ctx context.Context, workspaceID uint, id uint64, inpu
 				return err
 			}
 			if destination.Kind != input.Kind {
-				return alertInvalid("destination kind cannot change")
+				return AlertInvalid("destination kind cannot change")
 			}
 			if err := cancelAlertDestinationDeliveries(tx, workspaceID, id); err != nil {
 				return err
 			}
 		} else {
 			if input.Target == nil {
-				return alertInvalid("target is required")
+				return AlertInvalid("target is required")
 			}
 			var count int64
 			if err := tx.Model(&domain.AlertDestination{}).Where("workspace_id = ?", workspaceID).Count(&count).Error; err != nil {
 				return err
 			}
 			if count >= 20 {
-				return alertInvalid("workspace has reached its limit of 20 alert destinations")
+				return AlertInvalid("workspace has reached its limit of 20 alert destinations")
 			}
 			destination.WorkspaceID = workspaceID
 		}
@@ -272,7 +272,7 @@ func SaveAlertDestination(ctx context.Context, workspaceID uint, id uint64, inpu
 			destination.MentionID = ""
 		}
 		if err := support.ValidateAlertMention(destination.Kind, support.AlertMention{Mode: destination.MentionMode, ID: destination.MentionID}); err != nil {
-			return alertInvalid(err.Error())
+			return AlertInvalid(err.Error())
 		}
 		if input.Target != nil {
 			destination.TargetEncrypted = encryptedTarget
@@ -282,36 +282,36 @@ func SaveAlertDestination(ctx context.Context, workspaceID uint, id uint64, inpu
 		}
 		return tx.Save(&destination).Error
 	})
-	return alertDestinationDTO(destination), err
+	return AlertDestinationDTO(destination), err
 }
 
 func ValidateAlertTarget(kind, target string) error {
 	if len(target) == 0 || len(target) > 4096 || strings.ContainsAny(target, "\r\n") {
-		return alertInvalid("target is required and must be at most 4096 bytes")
+		return AlertInvalid("target is required and must be at most 4096 bytes")
 	}
 	if kind == "email" {
 		address, err := mail.ParseAddress(target)
 		if err != nil || address.Address != target || len(target) > 254 {
-			return alertInvalid("enter one email address without a display name")
+			return AlertInvalid("enter one email address without a display name")
 		}
 		return nil
 	}
 	parsed, err := support.ValidateOutboundHTTPLiteral(target)
 	if err != nil {
-		return alertInvalid("webhook URL is invalid or blocked by outbound network policy")
+		return AlertInvalid("webhook URL is invalid or blocked by outbound network policy")
 	}
 	if parsed.Scheme != "https" && !(kind == "webhook" && support.PrivateNetworkEgressAllowed()) {
-		return alertInvalid("webhook URL must use HTTPS")
+		return AlertInvalid("webhook URL must use HTTPS")
 	}
 	if parsed.Fragment != "" {
-		return alertInvalid("webhook URL cannot contain a fragment")
+		return AlertInvalid("webhook URL cannot contain a fragment")
 	}
 	host := strings.ToLower(parsed.Hostname())
 	if kind == "slack" && ((host != "hooks.slack.com" && host != "hooks.slack-gov.com") || !strings.HasPrefix(parsed.Path, "/services/") || parsed.Port() != "") {
-		return alertInvalid("enter a Slack incoming webhook URL")
+		return AlertInvalid("enter a Slack incoming webhook URL")
 	}
 	if kind == "discord" && (host != "discord.com" || !strings.HasPrefix(parsed.Path, "/api/webhooks/") || parsed.Port() != "") {
-		return alertInvalid("enter a Discord webhook URL")
+		return AlertInvalid("enter a Discord webhook URL")
 	}
 	return nil
 }

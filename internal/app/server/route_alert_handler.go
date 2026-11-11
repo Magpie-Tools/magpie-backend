@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"gorm.io/gorm"
+	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
 	"magpie/internal/database"
@@ -33,7 +34,7 @@ func getAlertRotators(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceAccessError(w, err)
 		return
 	}
-	rotators, err := database.GetAlertRotators(r.Context(), workspaceID)
+	rotators, err := alerts.GetAlertRotators(r.Context(), workspaceID)
 	if err != nil {
 		writeAlertError(w, err)
 		return
@@ -55,7 +56,7 @@ func getAlerts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	page, err := database.GetAlerts(r.Context(), workspaceID, before)
+	page, err := alerts.GetAlerts(r.Context(), workspaceID, before)
 	if err != nil {
 		writeAlertError(w, err)
 		return
@@ -89,7 +90,7 @@ func saveAlertRule(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &input, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	rule, err := database.SaveAlertRule(r.Context(), workspaceID, id, input)
+	rule, err := alerts.SaveAlertRule(r.Context(), workspaceID, id, input)
 	if err != nil {
 		writeAlertError(w, err)
 		return
@@ -111,7 +112,7 @@ func deleteAlertRule(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := database.DeleteAlertRule(r.Context(), workspaceID, id); err != nil {
+	if err := alerts.DeleteAlertRule(r.Context(), workspaceID, id); err != nil {
 		writeAlertError(w, err)
 		return
 	}
@@ -132,7 +133,7 @@ func saveAlertDestination(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &input, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	destination, err := database.SaveAlertDestination(r.Context(), workspaceID, id, input)
+	destination, err := alerts.SaveAlertDestination(r.Context(), workspaceID, id, input)
 	if err != nil {
 		writeAlertError(w, err)
 		return
@@ -154,7 +155,7 @@ func deleteAlertDestination(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := database.DeleteAlertDestination(r.Context(), workspaceID, id); err != nil {
+	if err := alerts.DeleteAlertDestination(r.Context(), workspaceID, id); err != nil {
 		writeAlertError(w, err)
 		return
 	}
@@ -180,7 +181,7 @@ func retryAlertDelivery(w http.ResponseWriter, r *http.Request) {
 
 func writeAlertError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, database.ErrAlertValidation):
+	case errors.Is(err, alerts.ErrAlertValidation):
 		writeError(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		writeError(w, "Alert resource not found", http.StatusNotFound)

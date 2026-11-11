@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
+	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -175,7 +176,7 @@ func sendAlertMessage(ctx context.Context, client *http.Client, message domain.A
 	if err != nil {
 		return &support.AlertSendError{Message: "Destination could not be decrypted", Permanent: true}
 	}
-	if err := database.ValidateAlertTarget(destination.Kind, target); err != nil {
+	if err := alerts.ValidateAlertTarget(destination.Kind, target); err != nil {
 		return &support.AlertSendError{Message: "Destination blocked by outbound policy", Permanent: true}
 	}
 	var event dto.AlertEvent

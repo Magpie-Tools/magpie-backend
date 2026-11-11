@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
@@ -145,7 +146,7 @@ func applyAlertObservations(ctx context.Context, workspace domain.Workspace, obs
 				rule.LastEvaluationAttemptAt = &now
 			}
 			if input.missingRotator {
-				if err := closeAlertForConfiguration(tx, rule, now); err != nil {
+				if err := alerts.CloseAlertForConfiguration(tx, rule, now); err != nil {
 					return err
 				}
 				rule.Enabled, rule.Status, rule.UnknownReason = false, "disabled", "Rotator deleted"
