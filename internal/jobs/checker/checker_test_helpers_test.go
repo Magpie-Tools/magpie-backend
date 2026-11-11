@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -62,4 +63,22 @@ func createCheckerWorkspace(t *testing.T, db *gorm.DB, user domain.User) {
 	if err := db.Create(&workspace).Error; err != nil {
 		t.Fatalf("create checker workspace: %v", err)
 	}
+}
+
+// startTestRuntime runs a checker runtime's batchers for one test and stops
+// them when the test ends. Each test gets its own batchers.
+func startTestRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	r := NewRuntime()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunBatchers(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return r
 }

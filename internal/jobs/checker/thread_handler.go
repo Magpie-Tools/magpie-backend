@@ -63,7 +63,9 @@ type requestAssignment struct {
 	checks []workspaceCheck
 }
 
-func ThreadDispatcher(ctx context.Context) {
+// ThreadDispatcher adjusts the number of checker workers until ctx ends, then
+// joins them. Workers submit to this runtime's batchers.
+func (r *Runtime) ThreadDispatcher(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -91,7 +93,7 @@ func ThreadDispatcher(ctx context.Context) {
 
 		activeThreads := currentThreads.Load()
 		for activeThreads < targetThreads {
-			launchCheckerWorker(ctx, &workers)
+			r.launchCheckerWorker(ctx, &workers)
 			activeThreads = currentThreads.Load()
 		}
 
@@ -112,7 +114,7 @@ func ThreadDispatcher(ctx context.Context) {
 	}
 }
 
-func launchCheckerWorker(ctx context.Context, workers *sync.WaitGroup) {
+func (r *Runtime) launchCheckerWorker(ctx context.Context, workers *sync.WaitGroup) {
 	currentThreads.Add(1)
 	workers.Add(1)
 	go func() {
@@ -124,7 +126,7 @@ func launchCheckerWorker(ctx context.Context, workers *sync.WaitGroup) {
 			currentThreads.Add(^uint32(0))
 		}()
 
-		work(ctx)
+		r.work(ctx)
 	}()
 }
 
@@ -196,7 +198,7 @@ func getAutoThreads(cfg config.Config) uint32 {
 // while failure tracking and ownership verification wait for shared batches.
 // If a cycle stops before completing its lease, a later dequeue can reclaim the
 // route after expiry. Each worker owns its assignment and success maps.
-func work(parent context.Context) {
+func (r *Runtime) work(parent context.Context) {
 	ctx, cleanup := createWorkerContext(parent)
 	defer cleanup()
 
@@ -232,7 +234,7 @@ func work(parent context.Context) {
 			continue
 		}
 
-		removedWorkspaces, orphaned := handleFailureTracking(proxy, workspaceSuccess, workspaceHasChecks)
+		removedWorkspaces, orphaned := r.handleFailureTracking(proxy, workspaceSuccess, workspaceHasChecks)
 		payloadChanged = payloadChanged || len(removedWorkspaces) > 0
 		if len(removedWorkspaces) > 0 {
 			proxy = filterRemovedWorkspaces(proxy, removedWorkspaces)
@@ -249,7 +251,7 @@ func work(parent context.Context) {
 			}
 		}
 
-		hasUsers, err := verifyProxyOwnership(ctx, proxy.ID)
+		hasUsers, err := r.verifyProxyOwnership(ctx, proxy.ID)
 		if err != nil {
 			log.Error("failed to verify proxy ownership before requeue", "proxy_id", proxy.ID, "error", err)
 			// Requeue to avoid dropping proxies on transient errors
@@ -720,7 +722,7 @@ func collectCheckWorkspaceIDs(checks []workspaceCheck) []uint {
 	return workspaceIDs
 }
 
-func handleFailureTracking(proxy domain.Proxy, workspaceSuccess, workspaceHasChecks map[uint]bool) (map[uint]struct{}, []domain.Proxy) {
+func (r *Runtime) handleFailureTracking(proxy domain.Proxy, workspaceSuccess, workspaceHasChecks map[uint]bool) (map[uint]struct{}, []domain.Proxy) {
 	if len(proxy.Workspaces) == 0 {
 		return nil, nil
 	}
@@ -746,7 +748,7 @@ func handleFailureTracking(proxy domain.Proxy, workspaceSuccess, workspaceHasChe
 
 	reqCtx, cancel := context.WithTimeout(context.Background(), failureProcessingTimeout)
 	defer cancel()
-	removed, orphaned, err := processFailureEvents(reqCtx, proxy.ID, events)
+	removed, orphaned, err := r.processFailureEvents(reqCtx, proxy.ID, events)
 	if err != nil {
 		log.Error("failed to process proxy failure tracking", "proxy_id", proxy.ID, "error", err)
 	}

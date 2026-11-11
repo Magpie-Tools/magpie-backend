@@ -6,6 +6,9 @@
 # cannot rise. Lower it when a variable goes away. Moving existing state to
 # another package lowers one number and raises the other by the same amount.
 # A package that is not listed may have none.
+#
+# init_goroutine: files whose init() still starts a goroutine. The list is
+# empty: no init() starts a goroutine. Routines start from app/bootstrap.
 
 app/bootstrap: 3
 app/releases: 1
@@ -22,7 +25,7 @@ evidence: 2
 geolite: 18
 instanceid: 2
 ipgeolocation: 1
-jobs/checker: 18
+jobs/checker: 16
 jobs/checker/judges: 5
 jobs/queue/proxy: 1
 jobs/queue/sites: 1
@@ -34,8 +37,3 @@ rotatingproxy: 10
 security: 6
 support: 17
 support/reputation: 1
-
-# init_goroutine: files whose init() still starts a goroutine. These are the two
-# checker batchers; they move to explicit start and stop in their hot-path
-# ownership change.
-init_goroutine: internal/jobs/checker/failure_tracker.go internal/jobs/checker/ownership_verifier.go

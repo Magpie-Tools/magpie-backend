@@ -73,33 +73,58 @@ func batcherWorkers(frame string) int {
 	return workers
 }
 
-// The checker has one failure tracker and one ownership verifier per process,
-// each drained by exactly one goroutine. Every worker shares them, which is what
-// turns K concurrent cycles into shared statements.
-func TestCheckerBatchersAreProcessSingletons(t *testing.T) {
-	if trackerInstance == nil || proxyOwnershipVerifier == nil {
+// waitForBatcherWorkers waits until a batcher loop runs in want goroutines. A
+// goroutine that has not been scheduled yet shows only its entry wrapper.
+func waitForBatcherWorkers(t *testing.T, frame string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	workers := batcherWorkers(frame)
+	for workers != want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		workers = batcherWorkers(frame)
+	}
+	if workers != want {
+		t.Fatalf("%s runs in %d goroutines, want %d", frame, workers, want)
+	}
+}
+
+var batcherLoops = []string{
+	"checker.(*failureTracker).run(",
+	"checker.(*ownershipVerifier).run(",
+}
+
+// A checker runtime owns one failure tracker and one ownership verifier, each
+// drained by exactly one goroutine while its batchers run. Constructing it
+// starts nothing, stopping it ends both loops, and independent runtimes (one
+// per test) do not share batchers. Workers submit to their own runtime's
+// batchers, which is what turns K concurrent cycles into shared statements.
+func TestCheckerRuntimeOwnsOneOfEachBatcher(t *testing.T) {
+	first, second := NewRuntime(), NewRuntime()
+	if first.failures == nil || first.ownership == nil {
 		t.Fatal("checker batchers are not constructed")
 	}
-	for _, loop := range []string{
-		"checker.(*failureTracker).run(",
-		"checker.(*ownershipVerifier).run(",
-	} {
-		// init() starts the loops; a goroutine that has not been scheduled yet
-		// shows only its entry wrapper, so wait for it to reach its loop.
-		deadline := time.Now().Add(5 * time.Second)
-		workers := batcherWorkers(loop)
-		for workers == 0 && time.Now().Before(deadline) {
-			time.Sleep(time.Millisecond)
-			workers = batcherWorkers(loop)
-		}
-		if workers != 1 {
-			t.Fatalf("%s runs in %d goroutines, want 1", loop, workers)
-		}
+	if first.failures == second.failures || first.ownership == second.ownership {
+		t.Fatal("independent runtimes share a batcher")
+	}
+	for _, loop := range batcherLoops {
+		waitForBatcherWorkers(t, loop, 0)
+	}
+
+	start := func(r *Runtime) func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			r.RunBatchers(ctx)
+		}()
+		return func() { cancel(); <-done }
+	}
+	stopFirst := start(first)
+	for _, loop := range batcherLoops {
+		waitForBatcherWorkers(t, loop, 1)
 	}
 
 	db := setupCheckerTestDB(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	user := domain.User{Email: "batchers@example.com", Password: "password123"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
@@ -109,23 +134,85 @@ func TestCheckerBatchersAreProcessSingletons(t *testing.T) {
 	if err := db.Create(&proxy).Error; err != nil {
 		t.Fatal(err)
 	}
-	if owned, err := verifyProxyOwnership(ctx, proxy.ID); err != nil || owned {
-		t.Fatalf("shared ownership verifier: owned=%v err=%v", owned, err)
+
+	// The second runtime's batchers are not running, so a request submitted to
+	// it is not served by the first runtime's loops.
+	waiting, cancelWaiting := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	if _, err := second.verifyProxyOwnership(waiting, proxy.ID); err == nil {
+		t.Fatal("a stopped runtime answered an ownership request")
+	}
+	cancelWaiting()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if owned, err := first.verifyProxyOwnership(ctx, proxy.ID); err != nil || owned {
+		t.Fatalf("ownership verifier: owned=%v err=%v", owned, err)
 	}
 	if err := db.Create(&domain.ManagedProxy{WorkspaceID: user.ID, ProxyID: proxy.ID, ConsecutiveFailures: 2}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if owned, err := verifyProxyOwnership(ctx, proxy.ID); err != nil || !owned {
-		t.Fatalf("shared ownership verifier after import: owned=%v err=%v", owned, err)
+	if owned, err := first.verifyProxyOwnership(ctx, proxy.ID); err != nil || !owned {
+		t.Fatalf("ownership verifier after import: owned=%v err=%v", owned, err)
 	}
 	events := []failureEvent{{WorkspaceID: user.ID, Success: true, HasEligibleChecks: true}}
-	if _, _, err := processFailureEvents(ctx, proxy.ID, events); err != nil {
-		t.Fatalf("shared failure tracker: %v", err)
+	if _, _, err := first.processFailureEvents(ctx, proxy.ID, events); err != nil {
+		t.Fatalf("failure tracker: %v", err)
 	}
 	var streak int
 	if err := db.Model(&domain.ManagedProxy{}).Where("workspace_id = ? AND proxy_id = ?", user.ID, proxy.ID).
 		Pluck("consecutive_failures", &streak).Error; err != nil || streak != 0 {
-		t.Fatalf("shared failure tracker left streak %d: %v", streak, err)
+		t.Fatalf("failure tracker left streak %d: %v", streak, err)
+	}
+
+	stopSecond := start(second)
+	for _, loop := range batcherLoops {
+		waitForBatcherWorkers(t, loop, 2)
+	}
+	stopFirst()
+	stopSecond()
+	for _, loop := range batcherLoops {
+		waitForBatcherWorkers(t, loop, 0)
+	}
+}
+
+// Stopping the batchers processes the requests they already received.
+func TestStoppedBatchersProcessReceivedRequests(t *testing.T) {
+	db := setupCheckerTestDB(t)
+	user := domain.User{Email: "batchers-stop@example.com", Password: "password123"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	createCheckerWorkspace(t, db, user)
+	proxy := domain.Proxy{IP: "10.0.0.57", Port: 9090}
+	if err := db.Create(&proxy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.ManagedProxy{WorkspaceID: user.ID, ProxyID: proxy.ID, ConsecutiveFailures: 2}).Error; err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime()
+	request := &failureRequest{
+		ctx:     context.Background(),
+		proxyID: proxy.ID,
+		events:  []failureEvent{{WorkspaceID: user.ID, Success: true, HasEligibleChecks: true}},
+		resp:    make(chan failureResponse, 1),
+	}
+	r.failures.requests <- request
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r.RunBatchers(ctx)
+	select {
+	case response := <-request.resp:
+		if response.err != nil {
+			t.Fatal(response.err)
+		}
+	default:
+		t.Fatal("a received request was dropped when the batchers stopped")
+	}
+	var streak int
+	if err := db.Model(&domain.ManagedProxy{}).Where("workspace_id = ? AND proxy_id = ?", user.ID, proxy.ID).
+		Pluck("consecutive_failures", &streak).Error; err != nil || streak != 0 {
+		t.Fatalf("stopped failure tracker left streak %d: %v", streak, err)
 	}
 }
 
@@ -153,6 +240,7 @@ func TestOwnershipVerifierBatchIssuesOneStatement(t *testing.T) {
 // statements. A batch also closes when its window elapses, so requests that
 // take longer than a window to arrive may add one statement per window.
 func TestOwnershipVerifierBatchesConcurrentRequests(t *testing.T) {
+	r := startTestRuntime(t)
 	db := setupCheckerTestDB(t)
 	capture := captureBatcherStatements(t, db, "user_proxies")
 
@@ -167,7 +255,7 @@ func TestOwnershipVerifierBatchesConcurrentRequests(t *testing.T) {
 		go func(proxyID uint64) {
 			defer submitted.Done()
 			<-start
-			if owned, err := verifyProxyOwnership(ctx, proxyID); err != nil || owned {
+			if owned, err := r.verifyProxyOwnership(ctx, proxyID); err != nil || owned {
 				errs <- fmt.Errorf("route %d: owned=%v err=%v", proxyID, owned, err)
 			}
 		}(uint64(id))
@@ -191,6 +279,7 @@ func TestOwnershipVerifierBatchesConcurrentRequests(t *testing.T) {
 // ceil(F/failureSQLChunkSize) increments and ceil(S/failureSQLChunkSize) resets
 // per batch. PostgreSQL only; the SQLite fallback writes row by row.
 func TestFailureTrackerBatchesConcurrentRequests(t *testing.T) {
+	r := startTestRuntime(t)
 	dsn := strings.TrimSpace(os.Getenv("MAGPIE_TEST_POSTGRES_DSN"))
 	if dsn == "" {
 		t.Skip("MAGPIE_TEST_POSTGRES_DSN is not set")
@@ -240,7 +329,7 @@ FROM generate_series(1,%d) p`, requests),
 			<-start
 			// Even routes succeed and reset a streak of three; odd routes fail.
 			events := []failureEvent{{WorkspaceID: 1, Success: proxyID%2 == 0, HasEligibleChecks: true}}
-			if _, _, err := processFailureEvents(ctx, proxyID, events); err != nil {
+			if _, _, err := r.processFailureEvents(ctx, proxyID, events); err != nil {
 				errs <- fmt.Errorf("route %d: %w", proxyID, err)
 			}
 		}(uint64(id))

@@ -34,7 +34,8 @@ and the same single `EVALSHA`.
 
 ## Shared database batches
 
-Workers wait for two process-wide batchers. Each collects requests for 50 ms or
+Workers wait for two shared batchers, owned by the process's `checker.Runtime`
+and started and stopped by `app/bootstrap`. Each collects requests for 50 ms or
 until 8,192 are waiting, then issues statements for the whole batch.
 
 | Batcher | Statements per batch of `K` cycles | Where |
@@ -59,7 +60,7 @@ The check usage meter writes one batch about every ten seconds per instance.
 
 ```bash
 go test ./internal/jobs/queue/proxy -run 'TestPlaintextProxyCycleCommandBudgetAndPayload|TestQueuedProxyToDomainProxy_CurrentPlaintextPayloadReusesHashWithoutEncryptionKey|TestRequeueProxy_OnlyPersistsPayloadWhenRequested' -count=1 -v
-go test ./internal/jobs/checker -run 'TestOwnershipVerifierBatchesConcurrentRequests|TestFailureTrackerBatchesConcurrentRequests|TestCheckerBatchersAreProcessSingletons' -count=1 -v
+go test ./internal/jobs/checker -run 'TestOwnershipVerifierBatchesConcurrentRequests|TestFailureTrackerBatchesConcurrentRequests|TestCheckerRuntimeOwnsOneOfEachBatcher|TestStoppedBatchersProcessReceivedRequests' -count=1 -v
 ```
 
 The queue command-budget test needs `MAGPIE_TEST_QUEUE_REDIS_URL`; without it
@@ -73,3 +74,32 @@ the counts above.
 | Change | Cryptographic operations | JSON encodes | Redis commands | Database queries |
 | --- | --- | --- | --- | --- |
 | The shared pool handle moved from `database.DB` to `pg.DB`. The failure tracker and the ownership verifier read the same handle under its new qualifier; `jobs/checker` now imports `platform/pg`. | +0 | +0 | +0 | +0 |
+| The two checker batchers moved from `init()` singletons to a `checker.Runtime` that `app/bootstrap` constructs, starts in its own routine group and stops after the checker workers and before the consumers. Workers reach the batchers through their runtime instead of a package variable; batch size, window and statements are unchanged. | +0 | +0 | +0 | +0 |
+
+### Measurement of the checker batcher ownership change
+
+Six interleaved rounds (base, changed, base, ...) on one Linux amd64 machine
+with 20 logical CPUs, while no other test run was active. Base is `f5baa1f`
+with the same batched-cycle benchmark written against the old package
+functions. `BenchmarkCheckerBatchedCycle` runs 64 concurrent workers that each
+submit a failure-tracking event and an ownership check on SQLite, so it is
+dominated by the 50 ms batch window; it exercises the changed path. The
+others cover the checker loop around it and did not change.
+
+| Benchmark | Base median ns/op | Changed median ns/op | Change | Range base / changed, memory |
+| --- | ---: | ---: | ---: | --- |
+| BenchmarkBuildRequestAssignmentsSharedRoute | 449078.0 | 458207.0 | +2.0% | 420550-471415 / 419697-482377 | 422368 -> 422368 B/op, 4038 -> 4038 allocs/op |
+| BenchmarkCheckerBatchedCycle | 1645849.0 | 1647209.0 | +0.1% | 1640715-1654025 / 1644845-1652618 |
+| BenchmarkProxyCheckRequest/2048 | 5674.5 | 5607.0 | -1.2% | 5546-7769 / 5563-7267 | 15826 -> 15826 B/op, 93 -> 93 allocs/op |
+| BenchmarkProxyCheckRequest/65536 | 41696.0 | 41636.0 | -0.1% | 13232-44180 / 13330-43570 | 92222 -> 92202 B/op, 105 -> 105 allocs/op |
+| BenchmarkRequestMeterAdmit/owners=1 | 64.4 | 60.6 | -5.8% | 59-65 / 58-65 | 0 -> 0 B/op, 0 -> 0 allocs/op |
+| BenchmarkRequestMeterAdmit/owners=512 | 18912.5 | 18885.5 | -0.1% | 15779-19317 / 17681-20963 | 0 -> 0 B/op, 0 -> 0 allocs/op |
+| BenchmarkRequestMeterAdmit/owners=64 | 2058.5 | 2032.5 | -1.3% | 1867-2184 / 1765-2162 | 0 -> 0 B/op, 0 -> 0 allocs/op |
+| BenchmarkRequestMeterAdmit/owners=8 | 228.1 | 234.2 | +2.7% | 219-235 / 224-234 | 0 -> 0 B/op, 0 -> 0 allocs/op |
+| BenchmarkSelectDueWorkspaces/owners=1 | 51.8 | 51.8 | +0.1% | 47-52 / 48-52 | 0 -> 0 B/op, 0 -> 0 allocs/op |
+| BenchmarkSelectDueWorkspaces/owners=8 | 888.1 | 872.2 | -1.8% | 810-916 / 839-929 | 4864 -> 4864 B/op, 1 -> 1 allocs/op |
+
+Every difference is inside the run-to-run range of both sides, and allocations
+are identical. `BenchmarkProxyCheckRequest/65536` varies by a factor of three
+within each side.
+

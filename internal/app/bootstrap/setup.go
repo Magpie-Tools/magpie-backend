@@ -220,6 +220,10 @@ func (running *Runtime) setup(ctx context.Context) error {
 		rotatingproxy.GlobalManager.StopAll()
 	})
 
+	// One checker runtime per process. Its batchers start before the
+	// dispatcher and stop after it has joined its workers.
+	checkers := checker.NewRuntime()
+	running.batchers.start(checkers.RunBatchers)
 	for _, routine := range []func(context.Context){
 		judges.StartJudgeRoutine,
 		jobruntime.StartDashboardCacheRoutine,
@@ -239,7 +243,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		alerts.StartAlertDeliveryRoutine,
 		mail.StartEmailDeliveryMaintenanceRoutine,
 		blacklist.StartRefreshRoutine,
-		checker.ThreadDispatcher,
+		checkers.ThreadDispatcher,
 		scraper.ThreadDispatcher,
 	} {
 		if err := ctx.Err(); err != nil {

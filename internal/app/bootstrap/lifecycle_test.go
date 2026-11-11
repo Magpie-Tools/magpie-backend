@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/checkpace"
+	"magpie/internal/jobs/checker"
 )
 
 func TestShutdownWaitsForLastProducerBeforeFinalConsumerFlush(t *testing.T) {
@@ -150,5 +151,83 @@ func TestShutdownWritesCheckUsageChargedUntilProducersStopped(t *testing.T) {
 	}
 	if got := written.Load(); got != 1 {
 		t.Fatalf("shutdown wrote %d of the 1 request charged before the producers stopped", got)
+	}
+}
+
+// Checker workers are producers. Shutdown stops them first, then the checker
+// batchers they submit to, then the consumers, whose check usage meter makes
+// the final flush, then the read models.
+func TestShutdownStopsCheckerBatchersBetweenWorkersAndFinalFlush(t *testing.T) {
+	running := newRuntime(context.Background())
+	stopped := make(chan string, 4)
+	record := func(name string) func(context.Context) {
+		return func(ctx context.Context) {
+			<-ctx.Done()
+			stopped <- name
+		}
+	}
+	running.producers.start(record("checker workers"))
+	running.batchers.start(record("checker batchers"))
+	running.consumers.start(record("usage meter final flush"))
+	running.readModels.start(record("read models"))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := running.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	close(stopped)
+	var order []string
+	for name := range stopped {
+		order = append(order, name)
+	}
+	want := []string{"checker workers", "checker batchers", "usage meter final flush", "read models"}
+	if len(order) != len(want) {
+		t.Fatalf("stop order %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("stop order %v, want %v", order, want)
+		}
+	}
+}
+
+// The real checker runtime: the dispatcher's workers have returned before the
+// batchers stop, and the batchers process what they received before the
+// consumers' final flush begins.
+func TestCheckerRuntimeStopsAfterItsDispatcher(t *testing.T) {
+	running := newRuntime(context.Background())
+	checkers := checker.NewRuntime()
+	batchersDone := make(chan struct{})
+	running.batchers.start(func(ctx context.Context) {
+		checkers.RunBatchers(ctx)
+		close(batchersDone)
+	})
+	dispatcherDone := make(chan struct{})
+	running.producers.start(func(ctx context.Context) {
+		<-ctx.Done()
+		close(dispatcherDone)
+	})
+	flushSawBatchersStopped := make(chan bool, 1)
+	running.consumers.start(func(ctx context.Context) {
+		<-ctx.Done()
+		select {
+		case <-batchersDone:
+			flushSawBatchersStopped <- true
+		default:
+			flushSawBatchersStopped <- false
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := running.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-dispatcherDone:
+	default:
+		t.Fatal("dispatcher still running after shutdown")
+	}
+	if !<-flushSawBatchersStopped {
+		t.Fatal("the final flush began before the checker batchers stopped")
 	}
 }

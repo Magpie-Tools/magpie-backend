@@ -74,14 +74,8 @@ type failurePair struct {
 	proxyID     uint64
 }
 
-var trackerInstance = newFailureTracker()
-
-func init() {
-	go trackerInstance.run()
-}
-
-func processFailureEvents(ctx context.Context, proxyID uint64, events []failureEvent) (map[uint]struct{}, []domain.Proxy, error) {
-	return trackerInstance.Submit(ctx, proxyID, events)
+func (r *Runtime) processFailureEvents(ctx context.Context, proxyID uint64, events []failureEvent) (map[uint]struct{}, []domain.Proxy, error) {
+	return r.failures.Submit(ctx, proxyID, events)
 }
 
 func newFailureTracker() *failureTracker {
@@ -125,7 +119,10 @@ func (ft *failureTracker) Submit(ctx context.Context, proxyID uint64, events []f
 	}
 }
 
-func (ft *failureTracker) run() {
+// run batches requests until ctx ends. Requests already received are then
+// processed before it returns, so stopping it after the workers that submit
+// to it loses nothing.
+func (ft *failureTracker) run(ctx context.Context) {
 	batch := make([]*failureRequest, 0, failureBatchMaxItems)
 	var timer *time.Timer
 	var timerC <-chan time.Time
@@ -163,6 +160,21 @@ func (ft *failureTracker) run() {
 			flush()
 			timer = nil
 			timerC = nil
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			for {
+				select {
+				case req := <-ft.requests:
+					batch = append(batch, req)
+					continue
+				default:
+				}
+				break
+			}
+			flush()
+			return
 		}
 	}
 }
