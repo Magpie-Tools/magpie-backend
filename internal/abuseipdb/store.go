@@ -1,4 +1,4 @@
-package database
+package abuseipdb
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"magpie/internal/abuseipdb"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
@@ -39,7 +38,7 @@ func GetNextAbuseIPDBProxyToCheck(ctx context.Context, staleBefore time.Time) (*
 	return &proxy, nil
 }
 
-func UpsertAbuseIPDBCheck(ctx context.Context, proxyID uint64, result abuseipdb.CheckResult, checkedAt time.Time) error {
+func UpsertAbuseIPDBCheck(ctx context.Context, proxyID uint64, result CheckResult, checkedAt time.Time) error {
 	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}

@@ -1,4 +1,4 @@
-package database
+package abuseipdb
 
 import (
 	"context"

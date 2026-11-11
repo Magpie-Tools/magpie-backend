@@ -9,7 +9,7 @@
 
 cmd/magpie: app
 cmd/seed-dev-data: config database jobs/queue/proxy jobs/queue/sites jobs/runtime security support
-abuseipdb:
+abuseipdb: domain platform/pg
 account: domain platform/pg
 alerts: api/dto domain evidence platform/pg security support
 api/dto: ipgeolocation
@@ -24,7 +24,7 @@ blacklist: config database domain jobs/queue/proxy support
 checkerconfig: api/dto domain
 checkpace: domain
 config:
-database: abuseipdb alerts api/dto auth checkerconfig checkpace config domain evidence ipgeolocation jobs/checker/judges platform/pg platform/schema security support support/reputation
+database: alerts api/dto auth checkerconfig checkpace config domain evidence ipgeolocation jobs/checker/judges platform/pg platform/schema security support support/reputation
 domain: api/dto instanceid security
 evidence: domain platform/pg
 geolite: config database support
