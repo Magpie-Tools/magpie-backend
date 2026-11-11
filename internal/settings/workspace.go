@@ -13,6 +13,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
+	"magpie/internal/judgestore"
 )
 
 type BlockedJudgesError struct {
@@ -76,7 +77,7 @@ func SaveWorkspace(workspaceID, userID uint, value dto.UserSettings) error {
 	if !value.ChangesWorkspaceSettings() {
 		return nil
 	}
-	loaded, err := database.GetWorkspaceJudgesWithRegex(workspaceID)
+	loaded, err := judgestore.GetWorkspaceJudgesWithRegex(workspaceID)
 	if err != nil {
 		log.Warn("failed to refresh workspace judge cache after settings update", "workspace_id", workspaceID, "error", err)
 	} else {

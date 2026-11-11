@@ -2,9 +2,9 @@ package bootstrap
 
 import (
 	"magpie/internal/config"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
+	"magpie/internal/judgestore"
 	"magpie/internal/support"
 	"sync"
 
@@ -19,7 +19,7 @@ func AddDefaultJudgesToWorkspaces() {
 	defer addDefaultJudgeMutex.Unlock()
 
 	cfg := config.GetConfig()
-	workspaces := database.GetWorkspacesThatDontHaveJudges()
+	workspaces := judgestore.GetWorkspacesThatDontHaveJudges()
 
 	judgesWithRegex := make([]*domain.JudgeWithRegex, 0, len(cfg.Checker.Judges))
 	judgeList := make([]*domain.Judge, 0, len(cfg.Checker.Judges))
@@ -52,11 +52,11 @@ func AddDefaultJudgesToWorkspaces() {
 		return
 	}
 
-	jwr := database.GetJudgesRegexFromString(judgeList) // Get ids
+	jwr := judgestore.GetJudgesRegexFromString(judgeList) // Get ids
 	if len(jwr) == 0 {
-		err := database.AddJudges(judgeList) // Sets id too
+		err := judgestore.AddJudges(judgeList) // Sets id too
 		if err != nil {
-			database.GetJudgesFromString(judgeList) // Sets id if not added judgeList
+			judgestore.GetJudgesFromString(judgeList) // Sets id if not added judgeList
 		}
 
 		for i, judge := range judgeList {
@@ -71,7 +71,7 @@ func AddDefaultJudgesToWorkspaces() {
 		}
 	}
 
-	err := database.AddWorkspaceJudgesRelation(workspaces, judgesWithRegex)
+	err := judgestore.AddWorkspaceJudgesRelation(workspaces, judgesWithRegex)
 	if err != nil {
 		// Keep the historical log message for existing log consumers.
 		log.Error("Error adding user judgeList to database", "error", err)
@@ -86,7 +86,7 @@ func AddDefaultJudgesToWorkspaces() {
 }
 
 func addJudgeRelationsToCache() {
-	workspaceJudges, jwr := database.GetAllWorkspaceJudgeRelations()
+	workspaceJudges, jwr := judgestore.GetAllWorkspaceJudgeRelations()
 
 	for _, workspaceJudge := range workspaceJudges {
 		for _, judge := range jwr {

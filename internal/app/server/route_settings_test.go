@@ -19,6 +19,7 @@ import (
 	"magpie/internal/domain"
 	gqlschema "magpie/internal/graphql"
 	"magpie/internal/jobs/checker/judges"
+	"magpie/internal/judgestore"
 	"magpie/internal/platform/pg"
 )
 
@@ -126,7 +127,7 @@ func TestSettingsAPIsRefreshWorkspaceJudgeCache(t *testing.T) {
 			if err := submitSettings(t, api, userID, workspaceID, input); err != nil {
 				t.Fatal(err)
 			}
-			stored := database.GetWorkspaceJudges(workspaceID)
+			stored := judgestore.GetWorkspaceJudges(workspaceID)
 			cached, regex := judges.GetNextJudge(workspaceID, "https")
 			if len(stored) != 1 || stored[0].Url != "https://new.example.test" || cached == nil || cached.FullString != stored[0].Url || regex != "new" {
 				t.Fatalf("judge update not applied: database=%+v cache=%+v regex=%q", stored, cached, regex)

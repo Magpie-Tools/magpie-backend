@@ -12,6 +12,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/judgestore"
 	"magpie/internal/platform/pg"
 	workspacesettings "magpie/internal/settings"
 )
@@ -308,7 +309,7 @@ func NewSchema() (gql.Schema, error) {
 				Type: gql.NewNonNull(userSettingsType),
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					if data, ok := p.Source.(*viewerData); ok {
-						judges := database.GetWorkspaceJudges(data.workspace.ID)
+						judges := judgestore.GetWorkspaceJudges(data.workspace.ID)
 						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
 						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
@@ -545,7 +546,7 @@ func NewSchema() (gql.Schema, error) {
 						return nil, err
 					}
 					if data, ok := viewer.(*viewerData); ok {
-						judges := database.GetWorkspaceJudges(data.workspace.ID)
+						judges := judgestore.GetWorkspaceJudges(data.workspace.ID)
 						sources := database.GetScrapingSourcesOfUsers(data.workspace.ID)
 						return buildUserSettings(data.workspace, data.preference, judges, sources), nil
 					}
@@ -919,7 +920,7 @@ func applyUserSettings(ctx context.Context, input map[string]interface{}) error 
 	if workspace.ID == 0 {
 		return fmt.Errorf("workspace %d not found", workspaceID)
 	}
-	currentJudges := database.GetWorkspaceJudges(workspaceID)
+	currentJudges := judgestore.GetWorkspaceJudges(workspaceID)
 	currentSources := database.GetScrapingSourcesOfUsers(workspaceID)
 	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
 	settings := workspace.ToUserSettings(currentJudges, currentSources, preference)

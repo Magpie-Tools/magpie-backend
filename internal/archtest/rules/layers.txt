@@ -15,7 +15,7 @@ group persistence: database platform/pg platform/schema gorm.io github.com/jackc
 # Base packages extracted from the core. They sit below it.
 group base: platform/pg platform/schema evidence
 # Feature packages. Add each new feature package here in the change that creates it.
-group features: abuseipdb account alerts blacklist geolite ipgeolocation mail settings
+group features: abuseipdb account alerts blacklist geolite ipgeolocation judgestore mail settings
 
 # Base packages never import the core, a feature, transport or bootstrap.
 forbid base: core features transport bootstrap auth
@@ -38,4 +38,4 @@ forbid checkpace: persistence
 only checkpace: domain
 
 violation database: auth                 # auth.NormalizeEmail; moves to a base package with the workspace extraction
-violation database: jobs/checker/judges  # judge cache updates from persistence; leaves with the judge persistence extraction
+violation database: jobs/checker/judges  # checker settings read the judge cache (checker_settings.go); checker-settings SQL stays in the core

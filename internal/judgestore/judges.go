@@ -1,4 +1,4 @@
-package database
+package judgestore
 
 import (
 	"magpie/internal/domain"

@@ -16,6 +16,7 @@ import (
 	"magpie/internal/jobs/checker/judges"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
+	"magpie/internal/judgestore"
 	"magpie/internal/platform/pg"
 	"magpie/internal/settings"
 	"magpie/internal/support"
@@ -416,7 +417,7 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
-	workspaceJudges := database.GetWorkspaceJudges(workspaceID)
+	workspaceJudges := judgestore.GetWorkspaceJudges(workspaceID)
 	scrapingSources := database.GetScrapingSourcesOfUsers(workspaceID)
 
 	writeJSON(w, http.StatusOK, workspace.ToUserSettings(workspaceJudges, scrapingSources, preference))
