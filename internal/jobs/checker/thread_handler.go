@@ -58,7 +58,9 @@ type requestAssignment struct {
 	timeout           uint16
 	retries           uint8
 	budgetSet         bool
-	checks            []workspaceCheck
+	// checks lists each workspace at most once. The request meter charges a
+	// request once per entry, so a repeated workspace would be charged twice.
+	checks []workspaceCheck
 }
 
 func ThreadDispatcher(ctx context.Context) {
@@ -444,6 +446,8 @@ type judgePick struct {
 // Owners whose plans list the same judges for a protocol use the same judge in
 // a cycle; only the first such plan advances its round-robin position, so
 // independent counters cannot split one route into one request per judge.
+// A workspace the route lists twice is served once, so an assignment never
+// holds two checks of one workspace.
 // The returned success and eligibility maps use workspace IDs; no eligible judge
 // means no failure-streak update. Maximum budgets support fallback assignments.
 func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
@@ -456,6 +460,13 @@ func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment,
 	var maxTimeout uint16
 	var maxRetries uint8
 	for workspaceIndex, workspace := range proxy.Workspaces {
+		if _, listed := success[workspace.ID]; listed {
+			// A route lists a workspace twice only when the workspace refresh
+			// could not reach the database. Serving it once leaves every
+			// assignment with one check per workspace, because one owner's
+			// protocols already have separate request keys.
+			continue
+		}
 		success[workspace.ID] = false
 		var plan *checkerconfig.Plan
 		if snapshot, ready := lookupCheckerWorkspace(workspace.ID); ready {
@@ -632,7 +643,8 @@ var errAllowanceExhausted = errors.New("workspace check allowance exhausted")
 
 // requestMeter admits and charges one assignment's requests. checks starts as
 // the assignment's own slice and is copied only when a workspace drops out, so
-// the common path does not allocate.
+// the common path does not allocate. It relies on the assignment listing each
+// workspace once.
 type requestMeter struct {
 	checks  []workspaceCheck
 	owned   bool
@@ -644,61 +656,44 @@ func (m *requestMeter) reset(checks []workspaceCheck) {
 }
 
 // admit is called after the lease is renewed and before each request. It
-// charges the request once to each workspace still served and drops those
-// whose allowance is used up. It returns false when none is left. A nil meter
-// admits everything.
+// charges the request to each workspace still served and drops those whose
+// allowance is used up, in one pass over the checks. It returns false when
+// none is left. A nil meter admits everything.
 func (m *requestMeter) admit() bool {
 	if m == nil {
 		return true
 	}
 	snapshot, at, first := currentPace(), time.Now(), !m.started
 	checks := m.checks
-	for index := 0; index < len(checks); index++ {
+	kept, dropping := checks, false
+	for index := range checks {
 		workspaceID := checks[index].workspaceID
-		if workspaceID == 0 || servedEarlier(checks[:index], workspaceID) {
+		if workspaceID == 0 || chargeRequest(snapshot, workspaceID, first, at) {
+			if dropping {
+				kept = append(kept, checks[index])
+			}
 			continue
 		}
-		if chargeRequest(snapshot, workspaceID, first, at) {
+		if dropping {
 			continue
 		}
-		checks = withoutWorkspace(checks, workspaceID, m.owned)
-		m.owned = true
-		index--
+		// The first workspace to drop out: keep the checks before it, copied
+		// unless the slice is already the meter's own. Later checks are then
+		// appended behind them, which never overtakes the read position.
+		dropping = true
+		if m.owned {
+			kept = checks[:index]
+		} else {
+			kept = append(make([]workspaceCheck, 0, len(checks)-1), checks[:index]...)
+			m.owned = true
+		}
 	}
-	m.checks = checks
-	if len(checks) == 0 {
+	m.checks = kept
+	if len(kept) == 0 {
 		return false
 	}
 	m.started = true
 	return true
-}
-
-// servedEarlier reports whether a workspace shares the request through an
-// earlier check, so it is charged once per request.
-func servedEarlier(checks []workspaceCheck, workspaceID uint) bool {
-	for _, check := range checks {
-		if check.workspaceID == workspaceID {
-			return true
-		}
-	}
-	return false
-}
-
-// withoutWorkspace removes a workspace's checks, copying first unless the
-// slice is already the meter's own.
-func withoutWorkspace(checks []workspaceCheck, workspaceID uint, owned bool) []workspaceCheck {
-	var kept []workspaceCheck
-	if owned {
-		kept = checks[:0]
-	} else {
-		kept = make([]workspaceCheck, 0, len(checks)-1)
-	}
-	for _, check := range checks {
-		if check.workspaceID != workspaceID {
-			kept = append(kept, check)
-		}
-	}
-	return kept
 }
 
 var chargeRequest = func(snapshot *checkpace.Snapshot, workspaceID uint, firstOfCheck bool, at time.Time) bool {

@@ -380,7 +380,7 @@ func Flush(ctx context.Context) error {
 // Run refreshes immediately, then on RefreshInterval and on RequestRefresh,
 // and flushes metered usage every FlushInterval. Explicit requests are
 // coalesced to at most one load per five seconds. Usage is flushed once more
-// when ctx ends.
+// when ctx ends, so ctx must end only after the checker has stopped charging.
 func Run(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()

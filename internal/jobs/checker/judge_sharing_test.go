@@ -143,3 +143,36 @@ func BenchmarkBuildRequestAssignmentsSharedRoute(b *testing.B) {
 	}
 	b.ReportMetric(float64(requests)/float64(b.N), "requests/check")
 }
+
+// A route payload can list an owner twice until it is rewritten. The request
+// meter charges once per check, so the owner must not gain a second one.
+func TestRepeatedOwnerIsServedOncePerAssignment(t *testing.T) {
+	oldLookup := lookupCheckerWorkspace
+	t.Cleanup(func() { lookupCheckerWorkspace = oldLookup })
+	judge := &domain.Judge{ID: 1, FullString: "http://judge.invalid/"}
+	judge.SetUp()
+	judges := []domain.JudgeWithRegex{{Judge: judge, Regex: "default"}}
+	snapshots := map[uint]*checkerconfig.Workspace{}
+	for id := uint(1); id <= 2; id++ {
+		snapshots[id] = checkerconfig.Build(domain.Workspace{ID: id, HTTPProtocol: true, HTTPSProtocol: true, Timeout: 5000, Retries: 1}, nil, judges, nil)
+	}
+	lookupCheckerWorkspace = func(id uint) (*checkerconfig.Workspace, bool) { return snapshots[id], true }
+
+	proxy := domain.Proxy{ID: 7, Workspaces: []domain.Workspace{{ID: 1}, {ID: 2}, {ID: 1}}}
+	assignments, _, hasChecks, _, _ := buildRequestAssignments(proxy)
+	if len(assignments) == 0 || !hasChecks[1] || !hasChecks[2] {
+		t.Fatalf("built %d assignments with eligibility %v", len(assignments), hasChecks)
+	}
+	for key, assignment := range assignments {
+		served := map[uint]bool{}
+		for _, check := range assignment.checks {
+			if served[check.workspaceID] {
+				t.Fatalf("assignment %s holds two checks of workspace %d", key, check.workspaceID)
+			}
+			served[check.workspaceID] = true
+		}
+		if len(served) != 2 {
+			t.Fatalf("assignment %s serves %v, want both owners", key, served)
+		}
+	}
+}
