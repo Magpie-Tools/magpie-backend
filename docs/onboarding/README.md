@@ -58,6 +58,9 @@ What this metric can and cannot show, decided before any move was made:
 - Documentation adds to what is read. Step 0 therefore raises the number; the
   count cannot express that a map makes the remaining reading easier to find.
 
+The per-commit checks, the SQL-log comparisons and the open gates are in
+[verification-log.md](verification-log.md).
+
 ## Checkpoints
 
 ### Baseline: `3f66f5d`, before step 0
