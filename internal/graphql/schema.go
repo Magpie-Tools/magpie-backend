@@ -8,6 +8,7 @@ import (
 
 	gql "github.com/graphql-go/graphql"
 
+	"magpie/internal/account"
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -566,7 +567,7 @@ func fetchViewer(ctx context.Context) (interface{}, error) {
 		return nil, err
 	}
 
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 	if user.ID == 0 {
 		return nil, fmt.Errorf("user %d not found", userID)
 	}

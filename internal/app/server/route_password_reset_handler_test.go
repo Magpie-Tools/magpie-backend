@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/account"
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -476,9 +477,9 @@ func stubPasswordResetConfigForTests(t *testing.T) func() {
 		return "https://app.example/reset-password?token=" + token, nil
 	}
 	queueEmailFn = previousQueueEmail
-	getUserByEmailFn = database.GetUserByEmail
-	createPasswordResetToken = database.CreatePasswordResetToken
-	deleteResetTokensForUser = database.DeletePasswordResetTokensForUser
+	getUserByEmailFn = account.GetUserByEmail
+	createPasswordResetToken = account.CreatePasswordResetToken
+	deleteResetTokensForUser = account.DeletePasswordResetTokensForUser
 	nowFn = time.Now
 
 	return func() {

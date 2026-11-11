@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"magpie/internal/account"
 	"magpie/internal/api/dto"
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/auth"
@@ -47,8 +48,8 @@ var (
 	loginFallbackPasswordHashOnce sync.Once
 	loginFallbackPasswordHash     string
 
-	changePasswordInStore            = database.ChangePassword
-	rollbackPasswordIfCurrentInStore = database.ChangePasswordIfCurrent
+	changePasswordInStore            = account.ChangePassword
+	rollbackPasswordIfCurrentInStore = account.ChangePasswordIfCurrent
 	revokeUserSessions               = auth.RevokeAllUserJWTs
 	validateOutboundConfigURL        = support.ValidateOutboundHTTPURLContext
 	runGeoLiteUpdateOnSave           = jobruntime.RunGeoLiteUpdate
@@ -466,7 +467,7 @@ func getUserProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 	if user.ID == 0 {
 		writeError(w, "User not found", http.StatusNotFound)
 		return
@@ -481,7 +482,7 @@ func getUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 
 	writeJSON(w, http.StatusOK, user.Role)
 }
@@ -493,7 +494,7 @@ func changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 
 	var payload dto.ChangePassword
 	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
@@ -561,7 +562,7 @@ func deleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 	if user.ID == 0 {
 		writeError(w, "User not found", http.StatusNotFound)
 		return

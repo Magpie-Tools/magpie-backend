@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"magpie/internal/account"
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/mail"
 	"magpie/internal/platform/pg"
@@ -38,9 +38,9 @@ var (
 	queueEmailFn              = func(kind, toAddress, subject, body string) error {
 		return mail.EnqueueEmailOutbox(kind, toAddress, subject, body, resolveEmailOutboxMaxAttempts())
 	}
-	getUserByEmailFn         = database.GetUserByEmail
-	createPasswordResetToken = database.CreatePasswordResetToken
-	deleteResetTokensForUser = database.DeletePasswordResetTokensForUser
+	getUserByEmailFn         = account.GetUserByEmail
+	createPasswordResetToken = account.CreatePasswordResetToken
+	deleteResetTokensForUser = account.DeletePasswordResetTokensForUser
 	resolveResetTokenEmailFn = lookupPasswordResetTokenEmail
 	nowFn                    = time.Now
 )
@@ -404,7 +404,7 @@ func resetPasswordWithToken(rawToken string, newPassword string) (string, error)
 			return errors.Join(errRevokeActiveSessions, err)
 		}
 
-		if err := database.DeletePasswordResetTokensForUser(tx, user.ID); err != nil {
+		if err := account.DeletePasswordResetTokensForUser(tx, user.ID); err != nil {
 			return err
 		}
 

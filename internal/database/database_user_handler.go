@@ -30,12 +30,6 @@ type dashboardInfoCacheEntry struct {
 
 var dashboardInfoCache sync.Map
 
-func GetUserFromId(id uint) domain.User {
-	var users domain.User
-	pg.DB.Where("id = ?", id).First(&users)
-	return users
-}
-
 func GetWorkspacesThatDontHaveJudges() []domain.Workspace {
 	var workspaces []domain.Workspace
 	pg.DB.Where("id NOT IN (SELECT DISTINCT workspace_id FROM user_judges)").Find(&workspaces)
@@ -739,21 +733,6 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 	}
 
 	return info, nil
-}
-
-func ChangePassword(userID uint, password string) error {
-	err := pg.DB.Model(&domain.User{}).Where("ID = ?", userID).Update("password", password).Error
-	return err
-}
-
-func ChangePasswordIfCurrent(userID uint, expectedPassword string, newPassword string) (bool, error) {
-	result := pg.DB.Model(&domain.User{}).
-		Where("ID = ? AND password = ?", userID, expectedPassword).
-		Update("password", newPassword)
-	if result.Error != nil {
-		return false, result.Error
-	}
-	return result.RowsAffected > 0, nil
 }
 
 func changedCheckerRuleTags(before, after []dto.TagCheckerRule) []uint64 {

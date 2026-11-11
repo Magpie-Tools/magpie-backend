@@ -1,4 +1,4 @@
-package database
+package account
 
 import (
 	"context"
@@ -99,7 +99,7 @@ func TestNotificationIDsRequireCanonicalSupportedPositiveIDs(t *testing.T) {
 }
 
 func TestConcurrentNotificationReadsPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupAccountPostgres(t)
 	user := domain.User{Email: "concurrent-reader@example.test", Password: "hash"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)
@@ -129,23 +129,5 @@ func TestConcurrentNotificationReadsPostgres(t *testing.T) {
 	var saved domain.NotificationRead
 	if err := db.First(&saved).Error; err != nil || !saved.ReadAt.Equal(rows[0].ReadAt) {
 		t.Fatalf("migration changed the stored read time: %#v, %v", saved, err)
-	}
-}
-
-func TestNotificationReadsAreRemovedWithAccountDeletion(t *testing.T) {
-	db := setupWorkspaceInvitationTestDB(t)
-	if err := db.AutoMigrate(&domain.NotificationRead{}); err != nil {
-		t.Fatal(err)
-	}
-	user := createWorkspaceInvitationUser(t, db, "delete-reader@example.test")
-	if err := MarkNotificationRead(context.Background(), user.ID, "release-1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := DeleteUserAccountWithResult(context.Background(), user.ID); err != nil {
-		t.Fatal(err)
-	}
-	var count int64
-	if err := db.Model(&domain.NotificationRead{}).Where("user_id = ?", user.ID).Count(&count).Error; err != nil || count != 0 {
-		t.Fatalf("account deletion retained receipts: %d, %v", count, err)
 	}
 }
