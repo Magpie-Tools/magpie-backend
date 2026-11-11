@@ -147,14 +147,14 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		}
 		if tx.Dialector.Name() == "postgres" {
 			if defaultChanged {
-				if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspaceID); err != nil {
+				if err := RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspaceID); err != nil {
 					return err
 				}
 			} else if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
 				return err
 			}
 			if defaultChanged {
-				if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspaceID); err != nil {
+				if err := RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspaceID); err != nil {
 					return err
 				}
 			} else if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {

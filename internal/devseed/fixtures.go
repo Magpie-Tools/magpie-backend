@@ -1,4 +1,4 @@
-package database
+package devseed
 
 import (
 	"crypto/sha256"
@@ -11,6 +11,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/security"
 	"magpie/internal/support/reputation"
@@ -269,10 +270,10 @@ func seedDevelopmentWorkspace(tx *gorm.DB, workspace *domain.Workspace, index in
 	if err := seedDevelopmentAlerts(tx, *workspace, index, options, result); err != nil {
 		return err
 	}
-	if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID); err != nil {
+	if err := database.RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID); err != nil {
 		return err
 	}
-	if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID); err != nil {
+	if err := database.RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID); err != nil {
 		return err
 	}
 	result.Proxies += len(proxies)
@@ -359,7 +360,7 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 					}
 				}
 			}
-			daily = append(daily, domain.ProxyDailyCheck{ProxyID: proxy.ID, Day: startOfUTCDay(checkedAt.Add(-time.Duration(day) * 24 * time.Hour)), ChecksCount: dayChecks, CreatedAt: options.Now, UpdatedAt: options.Now})
+			daily = append(daily, domain.ProxyDailyCheck{ProxyID: proxy.ID, Day: database.StartOfUTCDay(checkedAt.Add(-time.Duration(day) * 24 * time.Hour)), ChecksCount: dayChecks, CreatedAt: options.Now, UpdatedAt: options.Now})
 		}
 		if !isAlive {
 			metrics.FailureStreak = 5
@@ -387,7 +388,7 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 	for _, proxy := range proxies {
 		ids = append(ids, proxy.ID)
 	}
-	return markProxyDailyChecksBackfilled(tx, ids)
+	return database.MarkProxyDailyChecksBackfilled(tx, ids)
 }
 
 func seedDevelopmentTimeline(tx *gorm.DB, workspace domain.Workspace, access []domain.ManagedProxy, options DevelopmentSeedOptions) error {

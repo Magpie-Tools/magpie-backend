@@ -14,6 +14,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/database"
+	"magpie/internal/devseed"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	jobruntime "magpie/internal/jobs/runtime"
@@ -50,7 +51,7 @@ func run() error {
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments")
 	}
-	options := database.DevelopmentSeedOptions{Emails: strings.Split(*accounts, ","), Password: os.Getenv("MAGPIE_DEV_PASSWORD"),
+	options := devseed.DevelopmentSeedOptions{Emails: strings.Split(*accounts, ","), Password: os.Getenv("MAGPIE_DEV_PASSWORD"),
 		ProxiesPerWorkspace: *proxies, HistoryDays: *days, Seed: *seed}
 	if config.RuntimeEnvironmentIndicatesProduction() {
 		return fmt.Errorf("development data cannot be seeded in production")
@@ -69,7 +70,7 @@ func run() error {
 		return err
 	}
 	defer sqlDB.Close()
-	plan, err := database.PlanDevelopmentSeed(ctx, db, options)
+	plan, err := devseed.PlanDevelopmentSeed(ctx, db, options)
 	if err != nil {
 		return err
 	}
@@ -106,7 +107,7 @@ func run() error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Replacing %d workspaces and %d routes; generating %d fixtures with %d days of history.\n", len(plan.ResetWorkspaces), plan.ExistingRoutes, plan.NewRoutes, *days)
-	result, err := database.SeedDevelopmentData(ctx, db, options)
+	result, err := devseed.SeedDevelopmentData(ctx, db, options)
 	if err != nil {
 		return fmt.Errorf("development reset rolled back: %w", err)
 	}

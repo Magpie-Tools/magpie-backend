@@ -16,6 +16,6 @@
 # Scrape-source settings and source tag assignments.
 ./internal/scrapestore ^(TestSourceTagsPostgresMigrationAndLifecycle)$
 # Development seed.
-./internal/database ^(TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres|TestDevelopmentSeedRollsBackAfterFixtureInsertFailurePostgres)$
+./internal/devseed ^(TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres|TestDevelopmentSeedRollsBackAfterFixtureInsertFailurePostgres)$
 # Checker failure streak writes.
 ./internal/jobs/checker ^(TestSaturatedFailureStreaksSkipWritesPostgres|TestFailureResetAvoidsZeroWritesAndLocksPostgres)$

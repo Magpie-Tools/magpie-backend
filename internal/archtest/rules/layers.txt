@@ -15,7 +15,7 @@ group persistence: database platform/pg platform/schema gorm.io github.com/jackc
 # Base packages extracted from the core. They sit below it.
 group base: platform/pg platform/schema evidence
 # Feature packages. Add each new feature package here in the change that creates it.
-group features: abuseipdb account alerts blacklist geolite ipgeolocation judgestore mail scrapestore settings
+group features: abuseipdb account alerts blacklist devseed geolite ipgeolocation judgestore mail scrapestore settings
 
 # Base packages never import the core, a feature, transport or bootstrap.
 forbid base: core features transport bootstrap auth
@@ -23,9 +23,9 @@ forbid base: core features transport bootstrap auth
 forbid features: transport bootstrap auth
 # alerts sits below the core: the core may call it, it never imports the core.
 forbid alerts: core
-# geolite, blacklist and scrapestore sit above the core: they may call the
-# core, the core never imports them.
-forbid core: geolite blacklist scrapestore
+# geolite, blacklist, scrapestore and devseed sit above the core: they may
+# call the core, the core never imports them.
+forbid core: geolite blacklist scrapestore devseed
 # The core never imports transport, bootstrap, checker execution or listeners.
 forbid core: transport bootstrap auth checker-execution listeners
 # Compiled checker settings, judge selection and cadence never import

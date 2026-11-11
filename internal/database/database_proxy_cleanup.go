@@ -82,7 +82,7 @@ func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, [
 		return 0, nil, nil, result.Error
 	}
 
-	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(pausedProxyIDs))
+	inactive, refresh, err := LoadProxyQueueChangesForUint64(db, mapKeysUint64(pausedProxyIDs))
 	return total, inactive, refresh, err
 }
 
@@ -114,7 +114,7 @@ func CleanupProxyLimitViolations(ctx context.Context) (int64, []domain.Proxy, []
 			allPaused[proxyID] = struct{}{}
 		}
 	}
-	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(allPaused))
+	inactive, refresh, err := LoadProxyQueueChangesForUint64(db, mapKeysUint64(allPaused))
 	return total, inactive, refresh, err
 }
 
@@ -167,7 +167,7 @@ func cleanupProxyLimitViolationsWithConfig(ctx context.Context, limitCfg config.
 			pausedIDs[proxyID] = struct{}{}
 		}
 	}
-	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(pausedIDs))
+	inactive, refresh, err := LoadProxyQueueChangesForUint64(db, mapKeysUint64(pausedIDs))
 	return totalPaused, inactive, refresh, err
 }
 

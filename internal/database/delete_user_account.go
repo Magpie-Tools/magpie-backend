@@ -268,7 +268,7 @@ func loadProxyQueueChanges(tx *gorm.DB, proxyIDs []int) (inactive, refresh []dom
 	return inactive, refresh, nil
 }
 
-func loadProxyQueueChangesForUint64(tx *gorm.DB, proxyIDs []uint64) (inactive, refresh []domain.Proxy, err error) {
+func LoadProxyQueueChangesForUint64(tx *gorm.DB, proxyIDs []uint64) (inactive, refresh []domain.Proxy, err error) {
 	if len(proxyIDs) == 0 {
 		return nil, nil, nil
 	}

@@ -55,7 +55,7 @@ func incrementProxyDailyChecks(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 		if checkTime.IsZero() {
 			checkTime = time.Now().UTC()
 		}
-		day := startOfUTCDay(checkTime)
+		day := StartOfUTCDay(checkTime)
 		key := dailyCheckAggregationKey{
 			ProxyID: stat.ProxyID,
 			Day:     day,
@@ -186,11 +186,11 @@ func ensureProxyDailyChecksBackfilledWithDB(db *gorm.DB, workspaceID uint) (bool
 			return nil
 		}
 
-		if err := backfillProxyDailyChecksForProxyIDsTx(tx, missingProxyIDs, startOfUTCDay(time.Now())); err != nil {
+		if err := backfillProxyDailyChecksForProxyIDsTx(tx, missingProxyIDs, StartOfUTCDay(time.Now())); err != nil {
 			return err
 		}
 
-		if err := markProxyDailyChecksBackfilled(tx, missingProxyIDs); err != nil {
+		if err := MarkProxyDailyChecksBackfilled(tx, missingProxyIDs); err != nil {
 			return err
 		}
 
@@ -235,7 +235,7 @@ func loadWorkspaceProxyIDsMissingBackfill(tx *gorm.DB, workspaceID uint) ([]uint
 	return proxyIDs, nil
 }
 
-func markProxyDailyChecksBackfilled(tx *gorm.DB, proxyIDs []uint64) error {
+func MarkProxyDailyChecksBackfilled(tx *gorm.DB, proxyIDs []uint64) error {
 	if tx == nil || len(proxyIDs) == 0 {
 		return nil
 	}
@@ -265,9 +265,9 @@ func queryDashboardCheckCountsFromDaily(workspaceID uint, weekAgo time.Time) (da
 
 func queryDashboardCheckCountsFromDailyWithDB(db *gorm.DB, workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
 	var counts dashboardCheckCounts
-	todayStart := startOfUTCDay(time.Now())
+	todayStart := StartOfUTCDay(time.Now())
 	cutoff := weekAgo.UTC()
-	nextDayStart := startOfUTCDay(cutoff).Add(24 * time.Hour)
+	nextDayStart := StartOfUTCDay(cutoff).Add(24 * time.Hour)
 
 	// Join current ownership once for retained counters and raw boundary
 	// attempts. Keep UNION constants typed so PostgreSQL can flatten the
@@ -362,7 +362,7 @@ SET checks_count = GREATEST(proxy_daily_checks.checks_count, EXCLUDED.checks_cou
 	return nil
 }
 
-func startOfUTCDay(value time.Time) time.Time {
+func StartOfUTCDay(value time.Time) time.Time {
 	value = value.UTC()
 	year, month, day := value.Date()
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
@@ -374,7 +374,7 @@ func CompactProxyDailyChecks(ctx context.Context, before time.Time, limit int) (
 	if pg.DB == nil {
 		return 0, nil
 	}
-	before = startOfUTCDay(before)
+	before = StartOfUTCDay(before)
 	var count int64
 	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if pg.IsPostgresDialector(tx) {
@@ -391,10 +391,10 @@ func CompactProxyDailyChecks(ctx context.Context, before time.Time, limit int) (
 				Where("d.day < ? AND b.proxy_id IS NULL", before).Order("d.proxy_id").Limit(proxyDailyBackfillBatchSize).Pluck("d.proxy_id", &missing).Error; err != nil {
 				return err
 			}
-			if err := backfillProxyDailyChecksForProxyIDsTx(tx, missing, startOfUTCDay(time.Now())); err != nil {
+			if err := backfillProxyDailyChecksForProxyIDsTx(tx, missing, StartOfUTCDay(time.Now())); err != nil {
 				return err
 			}
-			if err := markProxyDailyChecksBackfilled(tx, missing); err != nil {
+			if err := MarkProxyDailyChecksBackfilled(tx, missing); err != nil {
 				return err
 			}
 			query := `WITH candidates AS (

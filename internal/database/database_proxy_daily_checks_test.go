@@ -26,7 +26,7 @@ func TestDashboardCheckCountsFollowCurrentProxyOwnership(t *testing.T) {
 		t.Fatalf("insert user_proxies: %v", err)
 	}
 
-	oldDay := startOfUTCDay(time.Now().UTC().AddDate(0, 0, -10))
+	oldDay := StartOfUTCDay(time.Now().UTC().AddDate(0, 0, -10))
 	if err := db.Exec(
 		`INSERT INTO proxy_daily_checks (proxy_id, day, checks_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
 		1, oldDay, 3, time.Now().UTC(), time.Now().UTC(),
@@ -42,7 +42,7 @@ func TestDashboardCheckCountsFollowCurrentProxyOwnership(t *testing.T) {
 		}
 	}
 
-	currentDay := startOfUTCDay(time.Now().UTC())
+	currentDay := StartOfUTCDay(time.Now().UTC())
 	if err := db.Exec(
 		`INSERT INTO proxy_daily_checks (proxy_id, day, checks_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
 		1, currentDay, 2, time.Now().UTC(), time.Now().UTC(),

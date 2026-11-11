@@ -1,4 +1,4 @@
-package database
+package devseed
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/config"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/support"
 
@@ -264,7 +265,7 @@ func resetDevelopmentWorkspaces(tx *gorm.DB, workspaceIDs []uint, result *Develo
 	// Batch the candidate IDs to stay below PostgreSQL's bind-parameter limit.
 	for start := 0; start < len(proxyIDs); start += 1000 {
 		batch := proxyIDs[start:min(start+1000, len(proxyIDs))]
-		inactive, refresh, err := loadProxyQueueChangesForUint64(tx, batch)
+		inactive, refresh, err := database.LoadProxyQueueChangesForUint64(tx, batch)
 		if err != nil {
 			return err
 		}

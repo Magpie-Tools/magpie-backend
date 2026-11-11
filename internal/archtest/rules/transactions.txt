@@ -11,3 +11,9 @@ allow: platform/schema.PrepareCheckerSettingsSchema          # one transaction a
 allow: platform/schema.migrateLegacyProxyStorage              # one transaction per batch of legacy credential rows
 allow: platform/schema.migrateProxyStatisticsToPartitioned    # explicit Begin/Commit around the partition swap
 allow: platform/schema.ensureMonthlyPartitionForTable         # one transaction per monthly partition
+
+# The development seed moved from internal/database with its transaction. It
+# receives the handle the command opened and runs one transaction on it. The
+# follow-up gives devseed the handle at construction and opens the transaction
+# in its own store function.
+allow: devseed.SeedDevelopmentData

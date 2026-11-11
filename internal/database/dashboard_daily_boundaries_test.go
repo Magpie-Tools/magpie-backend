@@ -31,9 +31,9 @@ func (capture *dashboardBoundarySQLCapture) Trace(_ context.Context, _ time.Time
 func TestDashboardDailyBoundaryCountsPreserveOwnershipAndCutoffs(t *testing.T) {
 	db := openDashboardBoundaryTestDB(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	today := startOfUTCDay(now)
+	today := StartOfUTCDay(now)
 	cutoff := now.AddDate(0, 0, -7)
-	nextDay := startOfUTCDay(cutoff).Add(24 * time.Hour)
+	nextDay := StartOfUTCDay(cutoff).Add(24 * time.Hour)
 	timestamps := []time.Time{
 		cutoff.Add(-time.Microsecond), cutoff, nextDay.Add(-time.Microsecond),
 		nextDay, nextDay.Add(2 * time.Hour), today.Add(-time.Microsecond),
@@ -45,7 +45,7 @@ func TestDashboardDailyBoundaryCountsPreserveOwnershipAndCutoffs(t *testing.T) {
 			if err := db.Exec("INSERT INTO proxy_statistics (proxy_id,created_at) VALUES (?,?)", proxyID, checkedAt).Error; err != nil {
 				t.Fatal(err)
 			}
-			days[startOfUTCDay(checkedAt)]++
+			days[StartOfUTCDay(checkedAt)]++
 		}
 		for day, count := range days {
 			if err := db.Exec("INSERT INTO proxy_daily_checks (proxy_id,day,checks_count) VALUES (?,?,?)", proxyID, day, count).Error; err != nil {

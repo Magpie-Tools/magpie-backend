@@ -568,14 +568,14 @@ func refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx *gorm.DB, workspa
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
-		if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ? AND up.proxy_id IN ?", workspaceID, proxyIDs[start:end]); err != nil {
+		if err := RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ? AND up.proxy_id IN ?", workspaceID, proxyIDs[start:end]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func refreshWorkspaceProxyFilterIndexes(tx *gorm.DB, where string, args ...interface{}) error {
+func RefreshWorkspaceProxyFilterIndexes(tx *gorm.DB, where string, args ...interface{}) error {
 	if tx == nil || !tx.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{}) {
 		return nil
 	}
@@ -792,7 +792,7 @@ WHERE ROW(
 }
 
 func refreshAllWorkspaceScrapeSourceStats(db *gorm.DB) error {
-	return refreshWorkspaceScrapeSourceStats(db, "")
+	return RefreshWorkspaceScrapeSourceStats(db, "")
 }
 
 func refreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) error {
@@ -804,7 +804,7 @@ func refreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) er
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
-		if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE ss.id IN ?", siteIDs[start:end]); err != nil {
+		if err := RefreshWorkspaceScrapeSourceStats(tx, "WHERE ss.id IN ?", siteIDs[start:end]); err != nil {
 			return err
 		}
 	}
@@ -820,7 +820,7 @@ func RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx *gorm.DB, workspaceID
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
-		if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ? AND ss.id IN ?", workspaceID, siteIDs[start:end]); err != nil {
+		if err := RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ? AND ss.id IN ?", workspaceID, siteIDs[start:end]); err != nil {
 			return err
 		}
 	}
@@ -898,7 +898,7 @@ func flushDirtySourceStats(ctx context.Context) bool {
 		values[i] = []any{pair.WorkspaceID, pair.ScrapeSiteID}
 	}
 	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err := refreshWorkspaceScrapeSourceStats(pg.DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
+	err := RefreshWorkspaceScrapeSourceStats(pg.DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
 	// HasTable can hide a canceled schema lookup behind a false result. Keep
 	// the batch even if cancellation raced an otherwise successful refresh.
 	if err == nil {
@@ -948,7 +948,7 @@ func refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspac
 	return RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, workspaceID, affectedSiteIDs)
 }
 
-func refreshWorkspaceScrapeSourceStats(tx *gorm.DB, where string, args ...interface{}) error {
+func RefreshWorkspaceScrapeSourceStats(tx *gorm.DB, where string, args ...interface{}) error {
 	if tx == nil || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}

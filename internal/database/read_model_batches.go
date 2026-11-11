@@ -193,7 +193,7 @@ func RefreshReadModelIndexes(ctx context.Context) error {
 		for i, pair := range pairs {
 			values[i] = []any{pair.WorkspaceID, pair.ScrapeSiteID}
 		}
-		if err := refreshWorkspaceScrapeSourceStats(db, "WHERE (uss.workspace_id, ss.id) IN ?", values); err != nil {
+		if err := RefreshWorkspaceScrapeSourceStats(db, "WHERE (uss.workspace_id, ss.id) IN ?", values); err != nil {
 			return err
 		}
 		after = pairs[len(pairs)-1]

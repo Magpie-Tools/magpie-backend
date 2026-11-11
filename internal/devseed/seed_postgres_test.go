@@ -1,4 +1,4 @@
-package database
+package devseed
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/schema"
 	"magpie/internal/security"
@@ -21,7 +22,7 @@ func developmentSeedTestOptions() DevelopmentSeedOptions {
 
 func setupDevelopmentSeedTest(t *testing.T) (*gorm.DB, DevelopmentSeedOptions, []domain.User) {
 	t.Helper()
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupDevSeedPostgres(t)
 	if err := schema.SeedDefaults(db); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +40,7 @@ func setupDevelopmentSeedTest(t *testing.T) (*gorm.DB, DevelopmentSeedOptions, [
 		if err := db.Create(&user).Error; err != nil {
 			t.Fatal(err)
 		}
-		if _, err := CreatePersonalWorkspaceForUser(db, user); err != nil {
+		if _, err := database.CreatePersonalWorkspaceForUser(db, user); err != nil {
 			t.Fatal(err)
 		}
 		users = append(users, user)
@@ -53,7 +54,7 @@ func TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres(t *testing.T) {
 	if err := db.Create(&outsider).Error; err != nil {
 		t.Fatal(err)
 	}
-	outsideWorkspace, err := CreatePersonalWorkspaceForUser(db, outsider)
+	outsideWorkspace, err := database.CreatePersonalWorkspaceForUser(db, outsider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +132,7 @@ func TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres(t *testing.T) {
 		if err := db.Where("name = ?", "Personal lab").First(&workspace).Error; err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadCheckerWorkspace(context.Background(), workspace.ID); err != nil {
+		if _, err := database.LoadCheckerWorkspace(context.Background(), workspace.ID); err != nil {
 			t.Fatal(err)
 		}
 		var reloaded domain.Workspace
@@ -210,7 +211,7 @@ func TestDevelopmentSeedRollsBackAfterFixtureInsertFailurePostgres(t *testing.T)
 }
 
 func TestDevelopmentSeedCreatesMissingAccountsAndRequiresPasswordPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupDevSeedPostgres(t)
 	if err := schema.SeedDefaults(db); err != nil {
 		t.Fatal(err)
 	}

@@ -123,7 +123,7 @@ func TestDailyCompactionPreservesTotalsAndBackfill(t *testing.T) {
 		}
 	}
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, startOfUTCDay(now))
+		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, StartOfUTCDay(now))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestDailyCompactionPreservesTotalsAndBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, startOfUTCDay(now))
+		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, StartOfUTCDay(now))
 	}); err != nil {
 		t.Fatal(err)
 	}
