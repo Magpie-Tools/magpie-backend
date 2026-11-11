@@ -26,7 +26,7 @@ that first. Paths are relative to `internal/`.
 | Runtime configuration | `config`, `settings`, `checkerconfig` | Instance settings, workspace settings application, compiled checker snapshots. |
 | Shared models | `domain` | GORM models and their hooks. No queries. |
 | Clients and helpers | `abuseipdb`, `ipgeolocation`, `geolite`, `blacklist`, `auth`, `security`, `support`, `support/reputation`, `instanceid`, `app/releases`, `app/version` | External API clients, JWTs, credential encryption, Redis client and leader locks. |
-| Guardrails and tools | `archtest`, `tools/onboarding`, `tools/sqllog` | Architecture tests and their data, run under `go test ./...`; the onboarding measurement; the SQL-log digest. |
+| Guardrails and tools | `archtest`, `tools/movecheck`, `tools/onboarding`, `tools/sqllog` | Architecture tests and their data, run under `go test ./...`; the rename-only move check; the onboarding measurement; the SQL-log digest. |
 
 ## Where new code goes
 
@@ -91,6 +91,10 @@ make test-integration
 `make test-integration` starts disposable PostgreSQL and Redis containers on
 free ports, runs the suite against them and removes them. It never touches an
 existing container.
+
+A change that moves code between packages is verified as a pure move with
+`make move-check BASE=<revision>`: every declaration must be token-identical
+to one in the base once package qualifiers and export case are normalized.
 
 A change that moves a statement to another handle, or moves a function that
 runs inside another package's transaction, also needs the SQL-log comparison in

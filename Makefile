@@ -1,6 +1,6 @@
 # Required checks. See AGENTS.md.
 
-.PHONY: test test-race vet build check test-integration sql-log onboarding
+.PHONY: test test-race vet build check test-integration sql-log move-check onboarding
 
 test:
 	go test ./... -count=1
@@ -25,6 +25,11 @@ test-integration:
 # docs/onboarding/sql-log.md. OUT names the digest file to write.
 sql-log:
 	scripts/sql-log.sh $(OUT)
+
+# Verifies that the working tree is a pure move relative to BASE: the
+# rename-only diff. Lists changed, added and removed declarations.
+move-check:
+	scripts/move-check.sh $(BASE)
 
 # Prints the onboarding measurement for the fixed task set.
 onboarding:
