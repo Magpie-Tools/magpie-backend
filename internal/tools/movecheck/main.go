@@ -221,7 +221,7 @@ func parseFile(path, relative string) ([]*declaration, error) {
 				case *ast.ValueSpec:
 					names := make([]string, 0, len(spec.Names))
 					for _, name := range spec.Names {
-						names = append(names, name.Name)
+						names = append(names, foldFirst(name.Name))
 					}
 					add(decl.Tok.String()+" "+strings.Join(names, ","), spec)
 				}
