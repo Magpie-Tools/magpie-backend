@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
@@ -28,7 +27,7 @@ func (c *alertSQLCounter) Trace(ctx context.Context, begin time.Time, sql func()
 }
 
 func TestAlertsBatchedTransitionsPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupAlertsPostgres(t)
 	workspace := domain.Workspace{Name: "Batch operations", CheckerGeneration: 1}
 	other := domain.Workspace{Name: "Other tenant"}
 	alertMust(t, db.Create(&workspace).Error)
@@ -39,7 +38,7 @@ func TestAlertsBatchedTransitionsPostgres(t *testing.T) {
 		if i == 11 {
 			owner = other.ID
 		}
-		destination, err := alerts.SaveAlertDestination(context.Background(), owner, 0, dto.AlertDestinationWrite{Name: fmt.Sprintf("Ops %d", i), Kind: "email", Enabled: i != 10, Target: alertString("ops@example.test")})
+		destination, err := SaveAlertDestination(context.Background(), owner, 0, dto.AlertDestinationWrite{Name: fmt.Sprintf("Ops %d", i), Kind: "email", Enabled: i != 10, Target: alertString("ops@example.test")})
 		alertMust(t, err)
 		ids = append(ids, destination.ID)
 	}
@@ -129,10 +128,10 @@ func TestAlertsBatchedTransitionsPostgres(t *testing.T) {
 }
 
 func TestAlertsBatchRollsBackWhenOutboxWriteFailsPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupAlertsPostgres(t)
 	workspace := domain.Workspace{Name: "Atomic transitions"}
 	alertMust(t, db.Create(&workspace).Error)
-	destination, err := alerts.SaveAlertDestination(context.Background(), workspace.ID, 0, dto.AlertDestinationWrite{Name: "Ops", Kind: "email", Enabled: true, Target: alertString("ops@example.test")})
+	destination, err := SaveAlertDestination(context.Background(), workspace.ID, 0, dto.AlertDestinationWrite{Name: "Ops", Kind: "email", Enabled: true, Target: alertString("ops@example.test")})
 	alertMust(t, err)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	last, breach := now.Add(-time.Minute), now.Add(-2*time.Minute)

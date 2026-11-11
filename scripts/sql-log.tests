@@ -3,8 +3,10 @@
 # that package moves can disturb. A test moves between lines with its code;
 # its name stays. See docs/onboarding/sql-log.md.
 
-# Current evidence, rotator pools, snapshots and alert measurements.
-./internal/database ^(TestRotatorEvidenceScopesSharedInventoryPostgres|TestSnapshotAliveCountsScopeSharedInventoryPostgres|TestAlertsPostgresEvidenceClaimsAndRetention|TestAlertsBatchedTransitionsPostgres|TestAlertsBatchRollsBackWhenOutboxWriteFailsPostgres|TestAlertRotatorNotificationScopePostgres)$
+# Current evidence, rotator pools and snapshots.
+./internal/database ^(TestRotatorEvidenceScopesSharedInventoryPostgres|TestSnapshotAliveCountsScopeSharedInventoryPostgres)$
+# Alert measurements, transitions and delivery claims.
+./internal/alerts ^(TestAlertsPostgresEvidenceClaimsAndRetention|TestAlertsBatchedTransitionsPostgres|TestAlertsBatchRollsBackWhenOutboxWriteFailsPostgres|TestAlertRotatorNotificationScopePostgres)$
 # The statistics transaction and check usage.
 ./internal/database ^(TestCheckerEvidencePersistenceOperationBudgetPostgres|TestStatisticsReorderingKeepsStatementCountsPostgres|TestStatisticsTailUsageFailureRollsBackAllEffectsPostgres|TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres)$
 # Import, reimport usage, lifecycle and failure actions.

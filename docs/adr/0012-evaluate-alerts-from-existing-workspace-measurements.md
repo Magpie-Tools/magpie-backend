@@ -41,7 +41,7 @@ The destination variant also verified exactly 400,000 durable notification recor
 MAGPIE_TEST_ALERT_SCALE=1 \
 MAGPIE_TEST_ALERT_SCALE_DESTINATIONS=1 \
 MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=5432 user=alerts_test password=... dbname=alerts_test sslmode=disable' \
-GOMAXPROCS=2 go test ./internal/database -run '^TestAlertsScaleCadencePostgres$' -count=1 -v
+GOMAXPROCS=2 go test ./internal/alerts -run '^TestAlertsScaleCadencePostgres$' -count=1 -v
 ```
 
 Without `MAGPIE_TEST_ALERT_SCALE_DESTINATIONS=1`, the test reproduces the zero-destination workload. Normal test runs skip this scale regression. PostgreSQL tests also cover the full per-workspace fanout of 100 rules and ten enabled destinations, constant batch statement counts, outbox rollback, and current/legacy route-count equivalence.

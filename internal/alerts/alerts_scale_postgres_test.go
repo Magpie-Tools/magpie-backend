@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"context"
@@ -20,7 +20,7 @@ func TestAlertsScaleCadencePostgres(t *testing.T) {
 	if os.Getenv("MAGPIE_TEST_ALERT_SCALE") != "1" {
 		t.Skip("set MAGPIE_TEST_ALERT_SCALE=1 for the 200,000-rule cadence check")
 	}
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupAlertsPostgres(t)
 	sqlDB, err := db.DB()
 	alertMust(t, err)
 	sqlDB.SetMaxOpenConns(32)

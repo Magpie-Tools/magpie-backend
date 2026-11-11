@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"magpie/internal/alerts"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 )
@@ -90,7 +89,7 @@ func RetryAlertDelivery(ctx context.Context, workspaceID uint, id uint64) error 
 			return result.Error
 		}
 		if result.RowsAffected != 1 {
-			return alerts.AlertInvalid("only the latest failed delivery with an enabled destination and unchanged rule can be retried")
+			return alertInvalid("only the latest failed delivery with an enabled destination and unchanged rule can be retried")
 		}
 		return nil
 	})

@@ -6,50 +6,17 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 	"reflect"
 	"testing"
 	"time"
 )
 
-func testCheckerProfiles() *dto.CheckerSettings {
-	w := domain.Workspace{HTTPProtocol: true, Timeout: 1000, Retries: 0, TransportProtocol: "tcp"}
-	s := w.DefaultCheckerSettings()
-	return s
-}
+func testCheckerProfiles() *dto.CheckerSettings { return testdb.CheckerProfiles() }
 
 func seedCheckerEvidenceTest(t *testing.T, db *gorm.DB) (domain.Workspace, domain.Workspace, domain.Proxy, domain.Judge) {
 	t.Helper()
-	for i, name := range domain.CheckerProtocols {
-		if err := db.Create(&domain.Protocol{ID: i + 1, Name: name}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	judge := domain.Judge{FullString: "http://127.0.0.1:8080/"}
-	if err := db.Create(&judge).Error; err != nil {
-		t.Fatal(err)
-	}
-	a, b := domain.Workspace{Name: "Accept", CheckerConfig: testCheckerProfiles()}, domain.Workspace{Name: "Reject", CheckerConfig: testCheckerProfiles()}
-	if err := db.Create(&a).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&b).Error; err != nil {
-		t.Fatal(err)
-	}
-	for id, regex := range map[uint]string{a.ID: "accepted", b.ID: "different"} {
-		if err := db.Create(&domain.WorkspaceJudge{WorkspaceID: id, JudgeID: judge.ID, Regex: regex}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	proxy := domain.Proxy{IP: "192.0.2.1", Port: 8080}
-	if err := db.Create(&proxy).Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []uint{a.ID, b.ID} {
-		if err := db.Create(&domain.ManagedProxy{WorkspaceID: id, ProxyID: proxy.ID}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	return a, b, proxy, judge
+	return testdb.SeedCheckerEvidence(t, db)
 }
 
 func TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres(t *testing.T) {

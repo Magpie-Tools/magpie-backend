@@ -22,7 +22,7 @@ that first. Paths are relative to `internal/`.
 | Transport | `app/server`, `graphql`, `api/dto` | The central REST route table, GraphQL schema, request and response shapes. |
 | Hot path | `jobs/checker`, `jobs/queue/proxy`, `rotatingproxy`, `checkpace` | Checker workers, the Redis proxy queue, rotating listeners, allowance cadence and the check usage meter. Imports are pinned. |
 | Background jobs | `jobs/runtime`, `jobs/scraper`, `jobs/queue/sites`, `jobs/maintenance`, `jobs/checker/judges` | Statistics admission and ingestion, rollups, scraping, cleanup, the judge cache. |
-| Features | `alerts`, `mail` | Alert rules and destinations (below the core, which calls it inside its transactions); the email outbox with its delivery and maintenance routines. |
+| Features | `alerts`, `mail` | Alert rules, evaluation, incidents and delivery, below the core, which calls it inside its transactions; the email outbox with its delivery and maintenance routines. |
 | Core persistence | `database` | Routes and managed proxies, statistics and latest evidence, read models, dashboards, rotators, checker settings, usage accounting. |
 | Platform | `platform/pg`, `platform/schema` | Generic PostgreSQL helpers and every database connection (the GORM pool, the rebuild command's connection, the native COPY connection); the ordered schema steps, migrations and seed rows. |
 | Evidence | `evidence` | SQL builders for a workspace's current checker evidence, alive counts, and a rotator's pool-eligibility query and cache key. Runs on the caller's handle. |

@@ -1,4 +1,4 @@
-package runtime
+package alerts
 
 import (
 	"context"
@@ -10,9 +10,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
-	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/security"
 	"magpie/internal/support"
@@ -25,12 +23,12 @@ func StartAlertEvaluationRoutine(ctx context.Context) {
 		for {
 			passCtx, cancel := context.WithTimeout(leaderCtx, 45*time.Second)
 			now := time.Now().UTC()
-			if err := database.EvaluateAlerts(passCtx, now); err != nil && leaderCtx.Err() == nil {
+			if err := EvaluateAlerts(passCtx, now); err != nil && leaderCtx.Err() == nil {
 				log.Error("Alert evaluation failed", "error", err)
 			}
 			cancel()
 			cleanupCtx, cancelCleanup := context.WithTimeout(leaderCtx, 10*time.Second)
-			if err := database.CleanupAlertHistory(cleanupCtx, now); err != nil && leaderCtx.Err() == nil {
+			if err := CleanupAlertHistory(cleanupCtx, now); err != nil && leaderCtx.Err() == nil {
 				log.Error("Alert history cleanup failed", "error", err)
 			}
 			cancelCleanup()
@@ -52,7 +50,7 @@ func StartAlertDeliveryRoutine(ctx context.Context) {
 	defer client.CloseIdleConnections()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	runAlertDeliveryLoop(ctx, 10, ticker.C, database.ClaimAlertDeliveries, func(ctx context.Context, message domain.AlertDelivery) {
+	runAlertDeliveryLoop(ctx, 10, ticker.C, ClaimAlertDeliveries, func(ctx context.Context, message domain.AlertDelivery) {
 		deliverAlertMessage(ctx, client, message)
 	})
 }
@@ -136,12 +134,12 @@ func runAlertDeliveryLoop(ctx context.Context, concurrency int, poll <-chan time
 }
 
 func deliverAlertMessage(ctx context.Context, client *http.Client, message domain.AlertDelivery) {
-	destination, err := database.GetAlertDeliveryDestination(ctx, message)
+	destination, err := GetAlertDeliveryDestination(ctx, message)
 	if err != nil {
 		if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return
 		}
-		_ = database.FinishAlertDelivery(ctx, message, "canceled", "Destination disabled or deleted", time.Now().UTC(), time.Now().UTC())
+		_ = FinishAlertDelivery(ctx, message, "canceled", "Destination disabled or deleted", time.Now().UTC(), time.Now().UTC())
 		return
 	}
 	err = sendAlertMessage(ctx, client, message, destination)
@@ -161,12 +159,12 @@ func deliverAlertMessage(ctx context.Context, client *http.Client, message domai
 				delay = sendErr.RetryAfter
 			}
 		}
-		if message.Attempts >= database.AlertMaximumDeliveryAttempts {
+		if message.Attempts >= AlertMaximumDeliveryAttempts {
 			status = "failed"
 		}
 		next = now.Add(delay)
 	}
-	if err := database.FinishAlertDelivery(ctx, message, status, reason, next, now); err != nil && ctx.Err() == nil {
+	if err := FinishAlertDelivery(ctx, message, status, reason, next, now); err != nil && ctx.Err() == nil {
 		log.Error("Alert delivery status could not be saved", "delivery_id", message.ID)
 	}
 }
@@ -176,7 +174,7 @@ func sendAlertMessage(ctx context.Context, client *http.Client, message domain.A
 	if err != nil {
 		return &support.AlertSendError{Message: "Destination could not be decrypted", Permanent: true}
 	}
-	if err := alerts.ValidateAlertTarget(destination.Kind, target); err != nil {
+	if err := ValidateAlertTarget(destination.Kind, target); err != nil {
 		return &support.AlertSendError{Message: "Destination blocked by outbound policy", Permanent: true}
 	}
 	var event dto.AlertEvent

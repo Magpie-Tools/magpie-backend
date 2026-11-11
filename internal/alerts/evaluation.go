@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"context"

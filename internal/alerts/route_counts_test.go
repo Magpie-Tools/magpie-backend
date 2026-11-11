@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"reflect"
@@ -10,8 +10,8 @@ import (
 )
 
 func TestAlertBatchedWorkspaceCountsPreserveEligibility(t *testing.T) {
-	t.Run("SQLite", func(t *testing.T) { testAlertWorkspaceCounts(t, setupRotatingProxyTestDB(t)) })
-	t.Run("Postgres", func(t *testing.T) { testAlertWorkspaceCounts(t, setupProxyIngestionPostgresTest(t)) })
+	t.Run("SQLite", func(t *testing.T) { testAlertWorkspaceCounts(t, setupAlertsSQLite(t)) })
+	t.Run("Postgres", func(t *testing.T) { testAlertWorkspaceCounts(t, setupAlertsPostgres(t)) })
 }
 
 func testAlertWorkspaceCounts(t *testing.T, db *gorm.DB) {

@@ -9,7 +9,6 @@ import (
 	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 )
 
@@ -172,7 +171,7 @@ func retryAlertDelivery(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := database.RetryAlertDelivery(r.Context(), workspaceID, id); err != nil {
+	if err := alerts.RetryAlertDelivery(r.Context(), workspaceID, id); err != nil {
 		writeAlertError(w, err)
 		return
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/redis/go-redis/v9"
 
+	"magpie/internal/alerts"
 	"magpie/internal/blacklist"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/checkpace"
@@ -233,8 +234,8 @@ func (running *Runtime) setup(ctx context.Context) error {
 		jobruntime.StartAbuseIPDBRoutine,
 		jobruntime.StartIPGeolocationRoutine,
 		mail.StartEmailDeliveryRoutine,
-		jobruntime.StartAlertEvaluationRoutine,
-		jobruntime.StartAlertDeliveryRoutine,
+		alerts.StartAlertEvaluationRoutine,
+		alerts.StartAlertDeliveryRoutine,
 		mail.StartEmailDeliveryMaintenanceRoutine,
 		blacklist.StartRefreshRoutine,
 		checker.ThreadDispatcher,

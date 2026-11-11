@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"context"
@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	testdb "magpie/internal/testkit/db"
 )
 
 func TestAlertsConcurrentCountsAndStateTimeoutPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	a, b, _, _ := seedCheckerEvidenceTest(t, db)
+	db := setupAlertsPostgres(t)
+	a, b, _, _ := testdb.SeedCheckerEvidence(t, db)
 	rules := []domain.AlertRule{createAlertRouteRule(t, a.ID), createAlertRouteRule(t, a.ID), createAlertRouteRule(t, b.ID), createAlertRouteRule(t, b.ID)}
 	// Simulate a configuration transaction holding one workspace lock. Its
 	// timeout must not cancel other workspaces or duplicate shared count scans.
@@ -73,8 +73,8 @@ func TestAlertsConcurrentCountsAndStateTimeoutPostgres(t *testing.T) {
 }
 
 func TestAlertEvaluationSchedulingMigrationPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	workspace, _, _, _ := seedCheckerEvidenceTest(t, db)
+	db := setupAlertsPostgres(t)
+	workspace, _, _, _ := testdb.SeedCheckerEvidence(t, db)
 	rule := createAlertRouteRule(t, workspace.ID)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	alertMust(t, applyAlertObservation(context.Background(), rule, workspace, workspace.Name, AlertObservation{Value: alertFloat(100)}, now))
@@ -86,7 +86,7 @@ func TestAlertEvaluationSchedulingMigrationPostgres(t *testing.T) {
 		t.Fatal("scheduling migration changed existing observations")
 	}
 	alertMust(t, db.Model(&stored).UpdateColumn("last_evaluation_attempt_at", now).Error)
-	page, err := alerts.GetAlerts(context.Background(), workspace.ID, 0)
+	page, err := GetAlerts(context.Background(), workspace.ID, 0)
 	alertMust(t, err)
 	encoded, err := json.Marshal(page)
 	alertMust(t, err)
@@ -96,13 +96,13 @@ func TestAlertEvaluationSchedulingMigrationPostgres(t *testing.T) {
 }
 
 func TestAlertRotatorNotificationScopePostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	workspace, _, _, _ := seedCheckerEvidenceTest(t, db)
+	db := setupAlertsPostgres(t)
+	workspace, _, _, _ := testdb.SeedCheckerEvidence(t, db)
 	rotator := domain.RotatingProxy{WorkspaceID: workspace.ID, Name: "HTTP pool", ProtocolID: 1}
 	alertMust(t, db.Create(&rotator).Error)
-	destination, err := alerts.SaveAlertDestination(context.Background(), workspace.ID, 0, dto.AlertDestinationWrite{Name: "Ops", Kind: "email", Enabled: true, Target: alertString("ops@example.com")})
+	destination, err := SaveAlertDestination(context.Background(), workspace.ID, 0, dto.AlertDestinationWrite{Name: "Ops", Kind: "email", Enabled: true, Target: alertString("ops@example.com")})
 	alertMust(t, err)
-	rule, err := alerts.SaveAlertRule(context.Background(), workspace.ID, 0, dto.AlertRuleWrite{Name: "Pool check failures", RotatorID: &rotator.ID, Metric: domain.AlertMetricSuccessRate, Threshold: alertFloat(80), Enabled: true, DestinationIDs: []uint64{destination.ID}})
+	rule, err := SaveAlertRule(context.Background(), workspace.ID, 0, dto.AlertRuleWrite{Name: "Pool check failures", RotatorID: &rotator.ID, Metric: domain.AlertMetricSuccessRate, Threshold: alertFloat(80), Enabled: true, DestinationIDs: []uint64{destination.ID}})
 	alertMust(t, err)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for i := 0; i <= 2; i++ {
@@ -118,32 +118,32 @@ func TestAlertRotatorNotificationScopePostgres(t *testing.T) {
 }
 
 func TestAlertDestinationMentionMigrationPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	workspace, _, _, _ := seedCheckerEvidenceTest(t, db)
-	destination, err := alerts.SaveAlertDestination(context.Background(), workspace.ID, 0, dto.AlertDestinationWrite{Name: "Discord", Kind: "discord", Enabled: true, Target: alertString("https://discord.com/api/webhooks/123/token")})
+	db := setupAlertsPostgres(t)
+	workspace, _, _, _ := testdb.SeedCheckerEvidence(t, db)
+	destination, err := SaveAlertDestination(context.Background(), workspace.ID, 0, dto.AlertDestinationWrite{Name: "Discord", Kind: "discord", Enabled: true, Target: alertString("https://discord.com/api/webhooks/123/token")})
 	alertMust(t, err)
 	alertMust(t, db.Exec("ALTER TABLE alert_destinations DROP COLUMN mention_mode, DROP COLUMN mention_id").Error)
 	alertMust(t, db.AutoMigrate(&domain.AlertDestination{}))
 	var stored domain.AlertDestination
 	alertMust(t, db.First(&stored, destination.ID).Error)
 	if stored.MentionMode != "none" || stored.MentionID != "" || stored.TargetEncrypted == "" {
-		t.Fatalf("migration changed an existing destination or enabled mentions: %#v", alerts.AlertDestinationDTO(stored))
+		t.Fatalf("migration changed an existing destination or enabled mentions: %#v", alertDestinationDTO(stored))
 	}
 }
 
 func TestAlertsPostgresEvidenceClaimsAndRetention(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	a, b, proxy, judge := seedCheckerEvidenceTest(t, db)
+	db := setupAlertsPostgres(t)
+	a, b, proxy, judge := testdb.SeedCheckerEvidence(t, db)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	rows := make([]domain.ProxyStatistic, 20)
 	for i := range rows {
 		rows[i] = domain.ProxyStatistic{ProxyID: proxy.ID, ProtocolID: 1, JudgeID: judge.ID, Alive: true, ResponseTime: 120, TransportProtocol: "tcp", CreatedAt: now, CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: a.ID, ConfigKey: "a-current", Alive: false}, {WorkspaceID: b.ID, ConfigKey: "b-current", Alive: true}}}
 	}
 	alertMust(t, db.Create(&rows).Error)
-	rule, err := alerts.SaveAlertRule(context.Background(), a.ID, 0, dto.AlertRuleWrite{Name: "Failures", Metric: domain.AlertMetricSuccessRate, Threshold: alertFloat(80), Enabled: true})
+	rule, err := SaveAlertRule(context.Background(), a.ID, 0, dto.AlertRuleWrite{Name: "Failures", Metric: domain.AlertMetricSuccessRate, Threshold: alertFloat(80), Enabled: true})
 	alertMust(t, err)
 	for i := 0; i < 10; i++ {
-		destination, err := alerts.SaveAlertDestination(context.Background(), a.ID, 0, dto.AlertDestinationWrite{Name: "Ops", Kind: "email", Enabled: true, Target: alertString("ops@example.com")})
+		destination, err := SaveAlertDestination(context.Background(), a.ID, 0, dto.AlertDestinationWrite{Name: "Ops", Kind: "email", Enabled: true, Target: alertString("ops@example.com")})
 		alertMust(t, err)
 		rule.DestinationIDs = append(rule.DestinationIDs, destination.ID)
 	}

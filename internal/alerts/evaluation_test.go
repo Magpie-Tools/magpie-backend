@@ -1,4 +1,4 @@
-package database
+package alerts
 
 import (
 	"context"
@@ -7,20 +7,19 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"magpie/internal/alerts"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 )
 
 func createAlertRouteRule(t *testing.T, workspaceID uint) domain.AlertRule {
 	t.Helper()
-	rule, err := alerts.SaveAlertRule(context.Background(), workspaceID, 0, dto.AlertRuleWrite{Name: "Minimum routes", Metric: domain.AlertMetricUsableRoutes, Threshold: alertFloat(1), Enabled: true})
+	rule, err := SaveAlertRule(context.Background(), workspaceID, 0, dto.AlertRuleWrite{Name: "Minimum routes", Metric: domain.AlertMetricUsableRoutes, Threshold: alertFloat(1), Enabled: true})
 	alertMust(t, err)
 	return rule
 }
 
 func TestAlertsResumeUnattemptedWorkspacesAfterCanceledPasses(t *testing.T) {
-	db := setupRotatingProxyTestDB(t)
+	db := setupAlertsSQLite(t)
 	workspaces := make([]domain.Workspace, 3)
 	for i := range workspaces {
 		workspaces[i] = domain.Workspace{Name: "Workspace"}
@@ -92,7 +91,7 @@ func TestAlertsBatchRulesAcrossWorkspaces(t *testing.T) {
 }
 
 func TestAlertBatchFencesEditedDeletedAndReconfiguredRules(t *testing.T) {
-	db := setupRotatingProxyTestDB(t)
+	db := setupAlertsSQLite(t)
 	workspace := domain.Workspace{Name: "Operations", CheckerGeneration: 1}
 	other := domain.Workspace{Name: "Other workspace"}
 	alertMust(t, db.Create(&workspace).Error)
@@ -108,11 +107,11 @@ func TestAlertBatchFencesEditedDeletedAndReconfiguredRules(t *testing.T) {
 		rules = append(rules, rule)
 		inputs = append(inputs, alertRuleObservation{snapshot: rule, scopeName: workspace.Name, observation: AlertObservation{Value: alertFloat(0)}})
 	}
-	edited, err := alerts.SaveAlertRule(context.Background(), workspace.ID, rules[0].ID, dto.AlertRuleWrite{Name: "Edited", Metric: domain.AlertMetricUsableRoutes, Threshold: alertFloat(2), Enabled: true})
+	edited, err := SaveAlertRule(context.Background(), workspace.ID, rules[0].ID, dto.AlertRuleWrite{Name: "Edited", Metric: domain.AlertMetricUsableRoutes, Threshold: alertFloat(2), Enabled: true})
 	alertMust(t, err)
-	_, err = alerts.SaveAlertRule(context.Background(), workspace.ID, rules[2].ID, dto.AlertRuleWrite{Name: "Disabled", Metric: domain.AlertMetricUsableRoutes, Threshold: alertFloat(1), Enabled: false})
+	_, err = SaveAlertRule(context.Background(), workspace.ID, rules[2].ID, dto.AlertRuleWrite{Name: "Disabled", Metric: domain.AlertMetricUsableRoutes, Threshold: alertFloat(1), Enabled: false})
 	alertMust(t, err)
-	alertMust(t, alerts.DeleteAlertRule(context.Background(), workspace.ID, rules[3].ID))
+	alertMust(t, DeleteAlertRule(context.Background(), workspace.ID, rules[3].ID))
 	now := time.Now().UTC().Truncate(time.Second)
 	for minute := 0; minute <= 2; minute++ {
 		alertMust(t, applyAlertObservations(context.Background(), workspace, inputs, now.Add(time.Duration(minute)*time.Minute)))
@@ -155,7 +154,7 @@ func TestAlertBatchFencesEditedDeletedAndReconfiguredRules(t *testing.T) {
 }
 
 func TestAlertsMeasurementTimeoutLeavesTimeForStateAndLaterWorkspaces(t *testing.T) {
-	db := setupRotatingProxyTestDB(t)
+	db := setupAlertsSQLite(t)
 	a, b := domain.Workspace{Name: "Slow"}, domain.Workspace{Name: "Fast"}
 	alertMust(t, db.Create(&a).Error)
 	alertMust(t, db.Create(&b).Error)
@@ -215,7 +214,7 @@ func TestAlertsAggregateTimeoutStillEvaluatesCountsAndKeepsIncidentOpen(t *testi
 }
 
 func TestAlertRotatorMetadataIsWorkspaceScopedWithoutCountsOrCredentials(t *testing.T) {
-	db := setupRotatingProxyTestDB(t)
+	db := setupAlertsSQLite(t)
 	a, b := domain.Workspace{Name: "A"}, domain.Workspace{Name: "B"}
 	alertMust(t, db.Create(&a).Error)
 	alertMust(t, db.Create(&b).Error)
@@ -227,12 +226,12 @@ func TestAlertRotatorMetadataIsWorkspaceScopedWithoutCountsOrCredentials(t *test
 	// a scope. The full rotating-proxy endpoint would fail on both conditions.
 	alertMust(t, db.Exec("DROP TABLE proxy_latest_statistics").Error)
 	alertMust(t, db.Model(&domain.RotatingProxy{}).Where("id = ?", rotator.ID).UpdateColumn("auth_password", "invalid-encrypted-credential").Error)
-	metadata, err := alerts.GetAlertRotators(context.Background(), a.ID)
+	metadata, err := GetAlertRotators(context.Background(), a.ID)
 	alertMust(t, err)
 	if len(metadata) != 1 || metadata[0] != (dto.AlertRotator{ID: rotator.ID, Name: rotator.Name, Protocol: "http"}) {
 		t.Fatalf("wrong metadata: %#v", metadata)
 	}
-	empty, err := alerts.GetAlertRotators(context.Background(), b.ID+1)
+	empty, err := GetAlertRotators(context.Background(), b.ID+1)
 	alertMust(t, err)
 	if empty == nil || len(empty) != 0 {
 		t.Fatal("empty metadata must encode as an empty array")
