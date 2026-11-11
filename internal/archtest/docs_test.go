@@ -157,7 +157,12 @@ func checkTestCommand(t *testing.T, loaded *repository, file, command string) {
 	var dirs []string
 	patterns := map[string]string{}
 	for index := 2; index < len(fields); index++ {
-		field := strings.Trim(fields[index], ",.;:")
+		// Trim trailing punctuation only: a leading "./" names a package, and a
+		// trailing "..." is a package pattern rather than a full stop.
+		field := strings.TrimRight(fields[index], ",;:")
+		if !strings.HasSuffix(field, "...") {
+			field = strings.TrimRight(field, ".")
+		}
 		switch {
 		case field == "-run" || field == "-bench":
 			if index+1 < len(fields) {
