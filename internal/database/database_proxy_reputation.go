@@ -50,12 +50,19 @@ type proxyReputationSummary struct {
 
 // RecalculateProxyReputations recomputes per-proxy, per-protocol reputation scores for the given proxy IDs.
 func RecalculateProxyReputations(ctx context.Context, proxyIDs []uint64) error {
+	return recalculateProxyReputations(DB, ctx, proxyIDs)
+}
+
+// Keep one database handle throughout a job, including jobs that outlive their
+// caller. A later database replacement must not redirect part of a backfill.
+func recalculateProxyReputations(db *gorm.DB, ctx context.Context, proxyIDs []uint64) error {
 	if len(proxyIDs) == 0 {
 		return nil
 	}
-	if DB == nil {
+	if db == nil {
 		return fmt.Errorf("database not initialised")
 	}
+	db = db.WithContext(ctx)
 
 	for start := 0; start < len(proxyIDs); start += reputationBatchSize {
 		end := start + reputationBatchSize
@@ -63,7 +70,7 @@ func RecalculateProxyReputations(ctx context.Context, proxyIDs []uint64) error {
 			end = len(proxyIDs)
 		}
 
-		if err := recalculateProxyReputationsBatch(ctx, proxyIDs[start:end]); err != nil {
+		if err := recalculateProxyReputationsBatch(db, proxyIDs[start:end]); err != nil {
 			return err
 		}
 	}
@@ -71,15 +78,11 @@ func RecalculateProxyReputations(ctx context.Context, proxyIDs []uint64) error {
 	return nil
 }
 
-func recalculateProxyReputationsBatch(ctx context.Context, proxyIDs []uint64) error {
+func recalculateProxyReputationsBatch(db *gorm.DB, proxyIDs []uint64) error {
 	if len(proxyIDs) == 0 {
 		return nil
 	}
-	if DB == nil {
-		return fmt.Errorf("database not initialised")
-	}
-
-	inputs, err := loadProxyReputationInputs(ctx, proxyIDs)
+	inputs, err := loadProxyReputationInputs(db, proxyIDs)
 	if err != nil {
 		return err
 	}
@@ -139,12 +142,10 @@ func recalculateProxyReputationsBatch(ctx context.Context, proxyIDs []uint64) er
 		return nil
 	}
 
-	return upsertProxyReputations(ctx, reputations)
+	return upsertProxyReputations(db, reputations)
 }
 
-func loadProxyReputationInputs(ctx context.Context, proxyIDs []uint64) (map[uint64]*proxyReputationInput, error) {
-	db := DB.WithContext(ctx)
-
+func loadProxyReputationInputs(db *gorm.DB, proxyIDs []uint64) (map[uint64]*proxyReputationInput, error) {
 	var proxyRows []struct {
 		ID            uint64
 		EstimatedType string
@@ -191,7 +192,7 @@ func loadProxyReputationInputs(ctx context.Context, proxyIDs []uint64) (map[uint
 		}
 	}
 
-	statRows, err := loadReputationSamples(ctx, proxyIDs)
+	statRows, err := loadReputationSamples(db, proxyIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +225,7 @@ func loadProxyReputationInputs(ctx context.Context, proxyIDs []uint64) (map[uint
 	return inputs, nil
 }
 
-func loadReputationSamples(ctx context.Context, proxyIDs []uint64) ([]reputationSample, error) {
+func loadReputationSamples(db *gorm.DB, proxyIDs []uint64) ([]reputationSample, error) {
 	if len(proxyIDs) == 0 {
 		return nil, nil
 	}
@@ -258,7 +259,7 @@ ORDER BY proxy_id, protocol, rn;
 
 	var rows []reputationSample
 
-	if err := DB.WithContext(ctx).
+	if err := db.
 		Raw(query, proxyIDs, reputationSampleLimit).
 		Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load proxy statistics for reputation: %w", err)
@@ -427,12 +428,11 @@ func reputationLabelFromScore(score float64) string {
 	}
 }
 
-func upsertProxyReputations(ctx context.Context, reputations []domain.ProxyReputation) error {
+func upsertProxyReputations(db *gorm.DB, reputations []domain.ProxyReputation) error {
 	if len(reputations) == 0 {
 		return nil
 	}
 
-	db := DB.WithContext(ctx)
 	useConstraintlessFallback := false
 
 	for start := 0; start < len(reputations); start += reputationUpsertBatchSize {
