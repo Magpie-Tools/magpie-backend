@@ -14,7 +14,6 @@ import (
 
 	"magpie/internal/account"
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
 	"magpie/internal/domain"
 	"magpie/internal/mail"
 	"magpie/internal/platform/pg"
@@ -58,7 +57,7 @@ func forgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := auth.NormalizeEmail(payload.Email)
+	email := domain.NormalizeEmail(payload.Email)
 	if email == "" {
 		writeJSON(w, http.StatusOK, map[string]string{"message": forgotPasswordSuccessMessage})
 		return
@@ -360,7 +359,7 @@ func lookupPasswordResetTokenEmail(rawToken string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return auth.NormalizeEmail(row.Email), nil
+	return domain.NormalizeEmail(row.Email), nil
 }
 
 func resetPasswordWithToken(rawToken string, newPassword string) (string, error) {

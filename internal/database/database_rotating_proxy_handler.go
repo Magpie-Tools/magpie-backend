@@ -150,7 +150,7 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 		entity.ListenPort = listenPort
 
 		if err := tx.Create(&entity).Error; err != nil {
-			if isUniqueConstraintError(err) {
+			if pg.IsUniqueConstraintError(err) {
 				return ErrRotatingProxyNameConflict
 			}
 			return err
@@ -491,15 +491,6 @@ func fetchProtocolByName(tx *gorm.DB, name string) (domain.Protocol, error) {
 		Where("LOWER(name) = ?", strings.ToLower(name)).
 		First(&protocol).Error
 	return protocol, err
-}
-
-func isUniqueConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	normalized := strings.ToLower(err.Error())
-	return strings.Contains(normalized, "duplicate key value violates unique constraint") ||
-		strings.Contains(normalized, "unique constraint failed")
 }
 
 func allocateListenPort(tx *gorm.DB, instanceID string) (uint16, error) {

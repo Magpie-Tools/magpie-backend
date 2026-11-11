@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
@@ -313,7 +312,7 @@ func ListWorkspaceMembers(workspaceID uint) ([]dto.WorkspaceMember, error) {
 }
 
 func AddWorkspaceMember(workspaceID uint, email, role string, billingAdmin bool) (dto.WorkspaceMember, error) {
-	email = auth.NormalizeEmail(email)
+	email = domain.NormalizeEmail(email)
 	role = strings.ToLower(strings.TrimSpace(role))
 	membership := domain.WorkspaceMembership{WorkspaceID: workspaceID, Role: role, BillingAdmin: billingAdmin}
 	if err := membership.Normalize(); err != nil {
@@ -333,7 +332,7 @@ func AddWorkspaceMember(workspaceID uint, email, role string, billingAdmin bool)
 	membership.UserID = user.ID
 	if err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&membership).Error; err != nil {
-			if isUniqueConstraintError(err) {
+			if pg.IsUniqueConstraintError(err) {
 				return ErrWorkspaceMemberExists
 			}
 			return err

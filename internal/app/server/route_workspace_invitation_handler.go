@@ -49,7 +49,7 @@ func createWorkspaceInvitation(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	payload.Email = auth.NormalizeEmail(payload.Email)
+	payload.Email = domain.NormalizeEmail(payload.Email)
 	payload.Role = normalizeInvitationRole(payload.Role)
 	if payload.Email == "" {
 		writeError(w, "Invitee email is required", http.StatusBadRequest)

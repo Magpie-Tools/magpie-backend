@@ -77,7 +77,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &credentials, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	credentials.Email = auth.NormalizeEmail(credentials.Email)
+	credentials.Email = domain.NormalizeEmail(credentials.Email)
 
 	user := domain.User{
 		Email:    credentials.Email,
@@ -164,7 +164,7 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &credentials, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	credentials.Email = auth.NormalizeEmail(credentials.Email)
+	credentials.Email = domain.NormalizeEmail(credentials.Email)
 
 	if blocked, retryAfter := loginFailuresBlocked(r, credentials.Email); blocked {
 		setRetryAfterHeader(w, retryAfter)

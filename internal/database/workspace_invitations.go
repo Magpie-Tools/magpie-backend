@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
@@ -23,7 +22,7 @@ var (
 )
 
 func CreateWorkspaceInvitation(workspaceID, inviterUserID uint, email, role string, billingAdmin bool, expiresAt time.Time) (dto.WorkspaceInvitation, error) {
-	email = auth.NormalizeEmail(email)
+	email = domain.NormalizeEmail(email)
 	role = strings.ToLower(strings.TrimSpace(role))
 	if workspaceID == 0 || inviterUserID == 0 || email == "" {
 		return dto.WorkspaceInvitation{}, errors.New("workspace, inviter, and invitee are required")
@@ -68,7 +67,7 @@ func CreateWorkspaceInvitation(workspaceID, inviterUserID uint, email, role stri
 			WorkspaceID:   workspaceID,
 			InviteeUserID: invitee.ID,
 			InviterUserID: &inviterID,
-			InviterEmail:  auth.NormalizeEmail(inviter.Email),
+			InviterEmail:  domain.NormalizeEmail(inviter.Email),
 			Role:          role,
 			BillingAdmin:  billingAdmin,
 			ExpiresAt:     expiresAt.UTC(),
@@ -77,7 +76,7 @@ func CreateWorkspaceInvitation(workspaceID, inviterUserID uint, email, role stri
 			return err
 		}
 		if err := tx.Create(&created).Error; err != nil {
-			if isUniqueConstraintError(err) {
+			if pg.IsUniqueConstraintError(err) {
 				return ErrWorkspaceInvitationExists
 			}
 			return err
@@ -220,7 +219,7 @@ func AcceptWorkspaceInvitation(invitationID, userID uint, now time.Time) (dto.Wo
 			return err
 		}
 		if err := tx.Create(&membership).Error; err != nil {
-			if isUniqueConstraintError(err) {
+			if pg.IsUniqueConstraintError(err) {
 				return ErrWorkspaceMemberExists
 			}
 			return err

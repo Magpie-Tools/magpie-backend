@@ -37,5 +37,4 @@ forbid checkpace: persistence
 # may import it.
 only checkpace: domain
 
-violation database: auth                 # auth.NormalizeEmail; moves to a base package with the workspace extraction
 violation database: jobs/checker/judges  # checker settings read the judge cache (checker_settings.go); checker-settings SQL stays in the core

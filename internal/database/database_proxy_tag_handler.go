@@ -64,7 +64,7 @@ func CreateProxyTag(workspaceID uint, name, color string) (dto.ProxyTag, error) 
 	}
 
 	if err := pg.DB.Create(&tag).Error; err != nil {
-		if isUniqueConstraintError(err) {
+		if pg.IsUniqueConstraintError(err) {
 			return dto.ProxyTag{}, ErrProxyTagNameConflict
 		}
 		return dto.ProxyTag{}, err
@@ -107,7 +107,7 @@ func UpdateProxyTag(workspaceID uint, tagID uint64, name, color string) (dto.Pro
 		}
 
 		if err := tx.Save(&updated).Error; err != nil {
-			if isUniqueConstraintError(err) {
+			if pg.IsUniqueConstraintError(err) {
 				return ErrProxyTagNameConflict
 			}
 			return err
