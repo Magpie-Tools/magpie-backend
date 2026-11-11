@@ -15,6 +15,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 )
 
@@ -415,7 +416,7 @@ func TestDashboardRefreshRejectsInFlightOldGenerationPostgres(t *testing.T) {
 			t.Error(err)
 		}
 	}}
-	DB = db.Session(&gorm.Session{Logger: hooks})
+	pg.DB = db.Session(&gorm.Session{Logger: hooks})
 	info := RefreshDashboardInfoCache(a.ID)
 	if !raced || len(info.JudgeValidProxies) != 0 {
 		t.Fatal("in-flight health was published", info)
@@ -423,7 +424,7 @@ func TestDashboardRefreshRejectsInFlightOldGenerationPostgres(t *testing.T) {
 	if _, ok := dashboardInfoCache.Load(a.ID); ok {
 		t.Fatal("obsolete dashboard refresh stored")
 	}
-	DB = db
+	pg.DB = db
 	// A delayed store after invalidation must also be rejected on another instance's read.
 	dashboardInfoCache.Store(a.ID, dashboardInfoCacheEntry{version: originalVersion, info: dto.DashboardInfo{TotalChecks: 987654}})
 	recentKey := dashboardProxyListCacheKey{WorkspaceID: a.ID, Limit: 1}
@@ -488,9 +489,9 @@ func TestSmallSourceHealthAggregatesCandidatesPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	capture := &checkerSourceQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: capture})
+	pg.DB = db.Session(&gorm.Session{Logger: capture})
 	detail, err := GetScrapeSiteDetail(a.ID, site.ID)
-	DB = db
+	pg.DB = db
 	if err != nil || detail.ProxyCount != 1 || detail.AliveCount != 1 {
 		t.Fatal(fmt.Sprint(detail), err)
 	}

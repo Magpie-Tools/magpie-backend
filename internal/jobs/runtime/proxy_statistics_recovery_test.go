@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -110,9 +110,9 @@ func statisticsRecoveryFixture(t *testing.T) (*gorm.DB, *redis.Client, proxyStat
 	if err := db.Exec("INSERT INTO proxies (id, host, port, country, estimated_type) VALUES (1, '192.0.2.1', 8080, '', '')").Error; err != nil {
 		t.Fatal(err)
 	}
-	oldDB := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = oldDB })
+	oldDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = oldDB })
 
 	var opts *redis.Options
 	if url := os.Getenv("MAGPIE_TEST_REDIS_URL"); url != "" {

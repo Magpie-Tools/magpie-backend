@@ -41,13 +41,13 @@ func queueProxyReputationRefresh(tx *gorm.DB, proxyIDs []uint64) error {
 // ClaimProxyReputationRefreshes distributes persisted work across instances.
 // Claims expire after worker crashes and do not hold a lock while calculating.
 func ClaimProxyReputationRefreshes(ctx context.Context, limit int, lease time.Duration) ([]domain.ProxyReputationRefresh, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 	if limit < 1 {
 		return nil, nil
 	}
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	until := now.Add(lease)
 	var jobs []domain.ProxyReputationRefresh
@@ -75,10 +75,10 @@ func ClaimProxyReputationRefreshes(ctx context.Context, limit int, lease time.Du
 }
 
 func CompleteProxyReputationRefreshes(ctx context.Context, jobs []domain.ProxyReputationRefresh, succeeded bool) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for start := 0; start < len(jobs); start += 1000 {
 			chunk := jobs[start:min(start+1000, len(jobs))]
 			ownedRows, completedRows := make([]string, len(chunk)), make([]string, len(chunk))
@@ -109,11 +109,11 @@ func CompleteProxyReputationRefreshes(ctx context.Context, jobs []domain.ProxyRe
 }
 
 func ProxyReputationRefreshBacklog(ctx context.Context) (int64, time.Time, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, time.Time{}, fmt.Errorf("database not initialised")
 	}
 	var count int64
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	if err := db.Model(&domain.ProxyReputationRefresh{}).Count(&count).Error; err != nil {
 		return 0, time.Time{}, err
 	}

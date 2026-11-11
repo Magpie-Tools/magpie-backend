@@ -17,6 +17,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"gorm.io/driver/sqlite"
@@ -105,7 +106,7 @@ func TestLoginUser_FindsUserCaseInsensitively(t *testing.T) {
 		Password: hashedPassword,
 		Role:     "user",
 	}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
@@ -146,10 +147,10 @@ func TestSaveSettings_PersistsConfigWhenBlacklistCleanupFails(t *testing.T) {
 		}
 	})
 
-	prevDB := database.DB
-	database.DB = nil
+	prevDB := pg.DB
+	pg.DB = nil
 	t.Cleanup(func() {
-		database.DB = prevDB
+		pg.DB = prevDB
 	})
 
 	newCfg := originalCfg
@@ -858,9 +859,9 @@ func TestChangePasswordWithSessionRevocation_ChangesPasswordBeforeRevocation(t *
 func setupUserRegistrationTestDB(t *testing.T) {
 	t.Helper()
 
-	prevDB := database.DB
+	prevDB := pg.DB
 	t.Cleanup(func() {
-		database.DB = prevDB
+		pg.DB = prevDB
 	})
 
 	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"

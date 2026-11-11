@@ -93,8 +93,8 @@ SELECT w.id,'current','tcp',n,1,TRUE,n,CURRENT_TIMESTAMP FROM workspaces w CROSS
 		writeEvidencePruneArtifact(t, "baseline-latency.json", encoded)
 	}
 	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
-	defer func() { DB = db }()
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
+	defer func() { pg.DB = db }()
 	var capturedSQL string
 	measure := func(name string, expectedDeleted int64) {
 		t.Helper()

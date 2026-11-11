@@ -20,6 +20,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 )
 
@@ -415,7 +416,7 @@ func persistProxyMetadata(proxies []domain.Proxy) error {
 		for _, proxy := range proxies[i:end] {
 			batch = append(batch, proxyMetadataUpdate{ID: proxy.ID, Country: proxy.Country, EstimatedType: proxy.EstimatedType})
 		}
-		if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
+		if err := updateProxyMetadataBatch(pg.DB, batch, localProxyMetadata); err != nil {
 			return err
 		}
 	}

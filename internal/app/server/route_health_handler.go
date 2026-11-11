@@ -10,7 +10,7 @@ import (
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/app/version"
 	"magpie/internal/checkpace"
-	"magpie/internal/database"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 )
 
@@ -112,11 +112,11 @@ func readyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkDatabaseComponent(ctx context.Context) probeComponent {
-	if database.DB == nil {
+	if pg.DB == nil {
 		return probeComponent{Status: componentStatusDown, Details: "database connection is not initialized"}
 	}
 
-	sqlDB, err := database.DB.DB()
+	sqlDB, err := pg.DB.DB()
 	if err != nil {
 		return probeComponent{Status: componentStatusDown, Details: "database sql handle unavailable"}
 	}

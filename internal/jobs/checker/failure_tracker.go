@@ -9,6 +9,7 @@ import (
 
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -311,7 +312,7 @@ func applyFailureResets(candidates map[uint][]uint64) error {
 	if len(candidates) == 0 {
 		return nil
 	}
-	if database.DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
 
@@ -339,7 +340,7 @@ func execResetChunk(pairs []failurePair) error {
 		return nil
 	}
 
-	db := database.DB
+	db := pg.DB
 	if db == nil {
 		return fmt.Errorf("database not initialised")
 	}
@@ -381,7 +382,7 @@ func applyFailureIncrements(entries []failureIncrementEntry) (map[failureKey]uin
 	if len(entries) == 0 {
 		return nil, nil
 	}
-	if database.DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
@@ -408,7 +409,7 @@ func execIncrementChunk(entries []failureIncrementEntry) (map[failureKey]uint16,
 		return nil, nil
 	}
 
-	db := database.DB
+	db := pg.DB
 	if db == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}

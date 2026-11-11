@@ -4,10 +4,11 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 )
 
 func collectProxyIDsForDeletion(workspaceID uint, settings dto.DeleteSettings) ([]uint, error) {
-	query := DB.Model(&domain.Proxy{}).
+	query := pg.DB.Model(&domain.Proxy{}).
 		Select("DISTINCT proxies.id").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
 		Where("user_proxies.workspace_id = ?", workspaceID)

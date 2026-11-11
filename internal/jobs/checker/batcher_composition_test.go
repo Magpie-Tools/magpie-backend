@@ -10,15 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-// batcherStatements records the statements a batcher issues on database.DB.
+// batcherStatements records the statements a batcher issues on pg.DB.
 type batcherStatements struct {
 	logger.Interface
 	mu         sync.Mutex
@@ -45,9 +45,9 @@ func (c *batcherStatements) count() int {
 func captureBatcherStatements(t *testing.T, db *gorm.DB, match string) *batcherStatements {
 	t.Helper()
 	capture := &batcherStatements{Interface: db.Logger, match: match}
-	previous := database.DB
-	database.DB = db.Session(&gorm.Session{Logger: capture})
-	t.Cleanup(func() { database.DB = previous })
+	previous := pg.DB
+	pg.DB = db.Session(&gorm.Session{Logger: capture})
+	t.Cleanup(func() { pg.DB = previous })
 	return capture
 }
 

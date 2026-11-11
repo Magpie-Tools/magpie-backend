@@ -11,6 +11,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	workspacesettings "magpie/internal/settings"
 )
 
@@ -579,7 +580,7 @@ func fetchViewer(ctx context.Context) (interface{}, error) {
 		return nil, fmt.Errorf("workspace %d not found", workspaceID)
 	}
 	var subscription domain.WorkspaceSubscription
-	if database.DB.Where("workspace_id = ?", workspaceID).First(&subscription).Error == nil {
+	if pg.DB.Where("workspace_id = ?", workspaceID).First(&subscription).Error == nil {
 		workspace.Subscription = subscription
 	}
 	return &viewerData{

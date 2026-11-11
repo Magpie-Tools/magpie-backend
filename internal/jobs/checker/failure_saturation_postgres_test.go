@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"magpie/internal/database"
-
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"magpie/internal/platform/pg"
 )
 
 type failureIncrementSQLCapture struct {
@@ -56,8 +56,8 @@ func TestSaturatedFailureStreaksSkipWritesPostgres(t *testing.T) {
 	}
 	sqlDB, _ := db.DB()
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	previous := database.DB
-	t.Cleanup(func() { database.DB = previous })
+	previous := pg.DB
+	t.Cleanup(func() { pg.DB = previous })
 
 	// 1,000 owners share 50 routes; route 1 is dead for 200 of them. Rows carry
 	// ciphertext-sized credentials as in production.
@@ -84,7 +84,7 @@ FROM generate_series(1,1000) w CROSS JOIN generate_series(1,50) p`,
 		saturated = append(saturated, failureIncrementEntry{workspaceID: owner, proxyID: 1})
 	}
 	capture := &failureIncrementSQLCapture{Interface: db.Logger}
-	database.DB = db.Session(&gorm.Session{Logger: capture})
+	pg.DB = db.Session(&gorm.Session{Logger: capture})
 	counts, err := execIncrementChunk(saturated)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ FROM generate_series(1,1000) w CROSS JOIN generate_series(1,50) p`,
 	}
 
 	// Below saturation still increments and stops exactly at the cap.
-	database.DB = db
+	pg.DB = db
 	below := []failureIncrementEntry{{workspaceID: 1, proxyID: 2}, {workspaceID: 2, proxyID: 2}}
 	for round := 0; round < 2; round++ {
 		counts, err := execIncrementChunk(below)
@@ -130,15 +130,15 @@ FROM generate_series(1,1000) w CROSS JOIN generate_series(1,50) p`,
 	type sample struct{ ms, walRecords, walBytes float64 }
 	measure := func(fixture string, entries []failureIncrementEntry) map[string]sample {
 		capture.statements = nil
-		database.DB = db.Session(&gorm.Session{Logger: capture})
+		pg.DB = db.Session(&gorm.Session{Logger: capture})
 		err := db.Transaction(func(tx *gorm.DB) error {
-			database.DB = tx.Session(&gorm.Session{Logger: capture})
+			pg.DB = tx.Session(&gorm.Session{Logger: capture})
 			if _, err := execIncrementChunk(entries); err != nil {
 				return err
 			}
 			return errRollbackMeasurement
 		})
-		database.DB = db
+		pg.DB = db
 		if !errors.Is(err, errRollbackMeasurement) || len(capture.statements) != 1 {
 			t.Fatal(err, capture.statements)
 		}

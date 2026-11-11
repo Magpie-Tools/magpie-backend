@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/logger"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 type alertSQLCounter struct {
@@ -56,7 +57,7 @@ func TestAlertsBatchedTransitionsPostgres(t *testing.T) {
 		inputs[i] = alertRuleObservation{snapshot: rule, scopeName: workspace.Name, observation: AlertObservation{Value: alertFloat(0)}}
 	}
 	counter := &alertSQLCounter{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: counter})
+	pg.DB = db.Session(&gorm.Session{Logger: counter})
 	alertMust(t, applyAlertObservations(context.Background(), workspace, inputs, now))
 	if count := counter.statements.Load(); count > 8 {
 		t.Fatalf("opening 100 incidents and 1,000 messages used %d statements", count)

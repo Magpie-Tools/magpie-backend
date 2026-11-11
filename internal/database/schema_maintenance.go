@@ -13,10 +13,10 @@ import (
 // MaintainProxyStatisticsPartitions runs for an already partitioned schema,
 // including installations that disable application schema migrations.
 func MaintainProxyStatisticsPartitions(ctx context.Context, now time.Time) error {
-	if DB == nil || !pg.IsPostgresDialector(DB) {
+	if pg.DB == nil || !pg.IsPostgresDialector(pg.DB) {
 		return nil
 	}
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	partitioned, err := schema.IsProxyStatisticsPartitioned(db)
 	if err != nil || !partitioned {
 		return err
@@ -38,14 +38,14 @@ func MaintainProxyStatisticsPartitions(ctx context.Context, now time.Time) error
 }
 
 func DropProxyStatisticsPartitionsOlderThan(ctx context.Context, olderThan time.Time, maxDrops int) (int, error) {
-	if DB == nil || olderThan.IsZero() {
+	if pg.DB == nil || olderThan.IsZero() {
 		return 0, nil
 	}
 	if maxDrops <= 0 {
 		maxDrops = 1
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -93,11 +93,11 @@ func DropProxyStatisticsPartitionsOlderThan(ctx context.Context, olderThan time.
 }
 
 func ValidateProxyScrapeSiteCascadeConstraints(ctx context.Context) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

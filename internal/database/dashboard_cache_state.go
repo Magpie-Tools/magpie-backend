@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/platform/pg"
 )
 
 const (
@@ -243,10 +244,10 @@ func refreshDashboardComponent(ctx context.Context, key dashboardCacheKey) (any,
 }
 
 func loadDashboardComponent(ctx context.Context, key dashboardCacheKey) (any, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, errors.New("dashboard cache: database connection was not initialised")
 	}
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	switch key.component {
 	case dashboardInfoComponent:
 		return refreshDashboardInfoCache(db, key.workspaceID)
@@ -288,10 +289,10 @@ func cachedDashboardComponent(key dashboardCacheKey, version checkerHealthVersio
 }
 
 func dashboardHealthVersionContext(ctx context.Context, workspaceID uint) (checkerHealthVersion, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return checkerHealthVersion{}, nil
 	}
-	return currentCheckerHealthVersionWithDB(DB.WithContext(ctx), workspaceID)
+	return currentCheckerHealthVersionWithDB(pg.DB.WithContext(ctx), workspaceID)
 }
 
 func maskDashboardComponent(key dashboardCacheKey, value any) any {

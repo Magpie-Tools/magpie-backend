@@ -13,6 +13,7 @@ import (
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
@@ -50,11 +51,11 @@ func (access WorkspaceAccess) IsOwner() bool          { return access.Role == do
 func (access WorkspaceAccess) CanManageBilling() bool { return access.IsOwner() || access.BillingAdmin }
 
 func ResolveWorkspaceAccess(userID, requestedWorkspaceID uint) (WorkspaceAccess, error) {
-	if DB == nil || userID == 0 {
+	if pg.DB == nil || userID == 0 {
 		return WorkspaceAccess{}, ErrWorkspaceNotFound
 	}
 
-	query := DB.Model(&domain.WorkspaceMembership{}).Where("user_id = ?", userID)
+	query := pg.DB.Model(&domain.WorkspaceMembership{}).Where("user_id = ?", userID)
 	if requestedWorkspaceID > 0 {
 		query = query.Where("workspace_id = ?", requestedWorkspaceID)
 	} else {
@@ -80,7 +81,7 @@ func ResolveWorkspaceAccess(userID, requestedWorkspaceID uint) (WorkspaceAccess,
 
 func CreatePersonalWorkspaceForUser(tx *gorm.DB, user domain.User) (domain.Workspace, error) {
 	if tx == nil {
-		tx = DB
+		tx = pg.DB
 	}
 	if tx == nil || user.ID == 0 {
 		return domain.Workspace{}, errors.New("cannot create workspace without a stored user")
@@ -144,7 +145,7 @@ func CreateWorkspace(userID uint, name string) (dto.Workspace, error) {
 	}
 
 	var result dto.Workspace
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		var user domain.User
 		if err := tx.Select("id", "role").First(&user, userID).Error; err != nil {
 			return err
@@ -190,7 +191,7 @@ func CreateWorkspace(userID uint, name string) (dto.Workspace, error) {
 
 func ListWorkspaces(userID uint) ([]dto.Workspace, error) {
 	var memberships []domain.WorkspaceMembership
-	if err := DB.Where("user_id = ?", userID).
+	if err := pg.DB.Where("user_id = ?", userID).
 		Preload("Workspace.Subscription").
 		Order("is_default DESC, created_at ASC, workspace_id ASC").
 		Find(&memberships).Error; err != nil {
@@ -211,9 +212,9 @@ func ListWorkspaces(userID uint) ([]dto.Workspace, error) {
 		Stored      uint64
 	}
 	counts := make(map[uint]routeCounts, len(memberships))
-	if DB.Migrator().HasTable(&domain.ManagedProxy{}) {
+	if pg.DB.Migrator().HasTable(&domain.ManagedProxy{}) {
 		var rows []routeCounts
-		if err := DB.Model(&domain.ManagedProxy{}).
+		if err := pg.DB.Model(&domain.ManagedProxy{}).
 			Select("workspace_id, COUNT(*) AS stored, SUM(CASE WHEN state = ? THEN 1 ELSE 0 END) AS active", domain.ManagedProxyStateActive).
 			Where("workspace_id IN ?", workspaceIDs).
 			Group("workspace_id").Scan(&rows).Error; err != nil {
@@ -232,14 +233,14 @@ func ListWorkspaces(userID uint) ([]dto.Workspace, error) {
 
 func GetWorkspace(workspaceID, userID uint) (dto.Workspace, error) {
 	var membership domain.WorkspaceMembership
-	if err := DB.Where("workspace_id = ? AND user_id = ?", workspaceID, userID).
+	if err := pg.DB.Where("workspace_id = ? AND user_id = ?", workspaceID, userID).
 		Preload("Workspace.Subscription").First(&membership).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return dto.Workspace{}, ErrWorkspaceNotFound
 		}
 		return dto.Workspace{}, err
 	}
-	active, stored, err := workspaceManagedProxyCounts(DB, workspaceID)
+	active, stored, err := workspaceManagedProxyCounts(pg.DB, workspaceID)
 	if err != nil {
 		return dto.Workspace{}, err
 	}
@@ -254,7 +255,7 @@ func RenameWorkspace(workspaceID uint, name string) error {
 	if len([]rune(name)) > 120 {
 		return errors.New("workspace name is too long")
 	}
-	result := DB.Model(&domain.Workspace{}).Where("id = ?", workspaceID).Update("name", name)
+	result := pg.DB.Model(&domain.Workspace{}).Where("id = ?", workspaceID).Update("name", name)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -265,7 +266,7 @@ func RenameWorkspace(workspaceID uint, name string) error {
 }
 
 func SetDefaultWorkspace(userID, workspaceID uint) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		var membership domain.WorkspaceMembership
 		if err := tx.Where("user_id = ? AND workspace_id = ?", userID, workspaceID).First(&membership).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -290,7 +291,7 @@ func ListWorkspaceMembers(workspaceID uint) ([]dto.WorkspaceMember, error) {
 		BillingAdmin bool      `gorm:"column:billing_admin"`
 		CreatedAt    time.Time `gorm:"column:created_at"`
 	}
-	if err := DB.Table("workspace_memberships wm").
+	if err := pg.DB.Table("workspace_memberships wm").
 		Select("wm.user_id, u.email, wm.role, wm.billing_admin, wm.created_at").
 		Joins("JOIN users u ON u.id = wm.user_id").
 		Where("wm.workspace_id = ?", workspaceID).
@@ -323,14 +324,14 @@ func AddWorkspaceMember(workspaceID uint, email, role string, billingAdmin bool)
 	}
 
 	var user domain.User
-	if err := DB.Where("LOWER(email) = ?", email).First(&user).Error; err != nil {
+	if err := pg.DB.Where("LOWER(email) = ?", email).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return dto.WorkspaceMember{}, errors.New("user account not found")
 		}
 		return dto.WorkspaceMember{}, err
 	}
 	membership.UserID = user.ID
-	if err := DB.Transaction(func(tx *gorm.DB) error {
+	if err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&membership).Error; err != nil {
 			if isUniqueConstraintError(err) {
 				return ErrWorkspaceMemberExists
@@ -360,7 +361,7 @@ func UpdateWorkspaceMember(workspaceID, memberUserID uint, role string, billingA
 	if err := updated.Normalize(); err != nil {
 		return err
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		var existing domain.WorkspaceMembership
 		if err := tx.Where("workspace_id = ? AND user_id = ?", workspaceID, memberUserID).First(&existing).Error; err != nil {
 			return err
@@ -379,7 +380,7 @@ func UpdateWorkspaceMember(workspaceID, memberUserID uint, role string, billingA
 }
 
 func RemoveWorkspaceMember(workspaceID, memberUserID uint) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Select("id", "personal").First(&workspace, workspaceID).Error; err != nil {
 			return err
@@ -418,7 +419,7 @@ func RemoveWorkspaceMember(workspaceID, memberUserID uint) error {
 
 func GetWorkspaceByID(workspaceID uint) domain.Workspace {
 	var workspace domain.Workspace
-	DB.First(&workspace, workspaceID)
+	pg.DB.First(&workspace, workspaceID)
 	return workspace
 }
 
@@ -428,7 +429,7 @@ func GetWorkspacesByIDsForChecker(ids []uint) (map[uint]domain.Workspace, error)
 		return nil, nil
 	}
 	var workspaces []domain.Workspace
-	if err := DB.Where("id IN ?", ids).Find(&workspaces).Error; err != nil {
+	if err := pg.DB.Where("id IN ?", ids).Find(&workspaces).Error; err != nil {
 		return nil, err
 	}
 	result := make(map[uint]domain.Workspace, len(workspaces))
@@ -440,7 +441,7 @@ func GetWorkspacesByIDsForChecker(ids []uint) (map[uint]domain.Workspace, error)
 
 func GetWorkspaceMemberPreference(workspaceID, userID uint) domain.WorkspaceMemberPreference {
 	var preference domain.WorkspaceMemberPreference
-	if err := DB.Where("workspace_id = ? AND user_id = ?", workspaceID, userID).First(&preference).Error; err != nil {
+	if err := pg.DB.Where("workspace_id = ? AND user_id = ?", workspaceID, userID).First(&preference).Error; err != nil {
 		preference.WorkspaceID = workspaceID
 		preference.UserID = userID
 	}
@@ -559,10 +560,10 @@ func workspaceAllowancesDTO(workspace domain.Workspace, subscription domain.Work
 // inherits the instance default; unlimited removes the limit. It creates the subscription row if a legacy
 // workspace lacks one.
 func UpdateWorkspaceAllowances(ctx context.Context, workspaceID uint, request dto.WorkspaceAllowanceUpdateRequest) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	var workspace domain.Workspace
 	if err := db.Select("id").First(&workspace, workspaceID).Error; err != nil {
 		return err

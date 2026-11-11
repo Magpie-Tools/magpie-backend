@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -14,10 +15,10 @@ import (
 func TestDashboardCheckCountsFollowCurrentProxyOwnership(t *testing.T) {
 	db := openDailyChecksSQLite(t)
 
-	previousDB := DB
-	DB = db
+	previousDB := pg.DB
+	pg.DB = db
 	t.Cleanup(func() {
-		DB = previousDB
+		pg.DB = previousDB
 	})
 
 	// Current ownership: proxy 1 belongs only to user 2.

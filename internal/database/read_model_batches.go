@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -145,13 +146,13 @@ func refreshAllWorkspaceProxyFilterIndexesBounded(db *gorm.DB) error {
 // IDs cannot survive that shutdown. A canceled or partial rebuild returns an
 // error and can be rerun without changing inventory, credentials or checker keys.
 func RefreshReadModelIndexes(ctx context.Context) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	for _, model := range []any{&domain.WorkspaceProxyFilterIndex{}, &domain.WorkspaceScrapeSourceStat{}} {
 		if !db.Migrator().HasTable(model) {
 			if err := ctx.Err(); err != nil {

@@ -14,6 +14,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"gorm.io/driver/sqlite"
@@ -29,7 +30,7 @@ func TestForgotPassword_GenericSuccessAndEmailSentForExistingUser(t *testing.T) 
 	}
 
 	user := domain.User{Email: "forgot-rate@example.com", Password: hashedPassword, Role: "user"}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
@@ -73,7 +74,7 @@ func TestForgotPassword_GenericSuccessAndEmailSentForExistingUser(t *testing.T) 
 	}
 
 	var tokens []domain.PasswordResetToken
-	if err := database.DB.Find(&tokens).Error; err != nil {
+	if err := pg.DB.Find(&tokens).Error; err != nil {
 		t.Fatalf("load reset tokens: %v", err)
 	}
 	if len(tokens) != 1 {
@@ -98,7 +99,7 @@ func TestForgotPassword_ReturnsServiceUnavailableWhenEmailOutboxPersistFails(t *
 	}
 
 	user := domain.User{Email: "reset@example.com", Password: hashedPassword, Role: "user"}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
@@ -125,7 +126,7 @@ func TestForgotPassword_ReturnsServiceUnavailableWhenEmailOutboxPersistFails(t *
 	}
 
 	var tokenCount int64
-	if err := database.DB.Model(&domain.PasswordResetToken{}).Where("user_id = ?", user.ID).Count(&tokenCount).Error; err != nil {
+	if err := pg.DB.Model(&domain.PasswordResetToken{}).Where("user_id = ?", user.ID).Count(&tokenCount).Error; err != nil {
 		t.Fatalf("count reset tokens: %v", err)
 	}
 	if tokenCount != 0 {
@@ -199,7 +200,7 @@ func TestForgotPassword_RateLimitsByEmailAcrossIPs(t *testing.T) {
 	}
 
 	user := domain.User{Email: "reset@example.com", Password: hashedPassword, Role: "user"}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
@@ -259,12 +260,12 @@ func TestResetPasswordWithToken_ChangesPasswordAndDeletesTokens(t *testing.T) {
 	}
 
 	user := domain.User{Email: "reset-rate@example.com", Password: oldHash, Role: "user"}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
 	rawToken := "plain-reset-token"
-	if err := database.DB.Create(&domain.PasswordResetToken{
+	if err := pg.DB.Create(&domain.PasswordResetToken{
 		UserID:    user.ID,
 		TokenHash: hashPasswordResetToken(rawToken),
 		ExpiresAt: time.Now().Add(30 * time.Minute),
@@ -283,7 +284,7 @@ func TestResetPasswordWithToken_ChangesPasswordAndDeletesTokens(t *testing.T) {
 	}
 
 	var updatedUser domain.User
-	if err := database.DB.First(&updatedUser, user.ID).Error; err != nil {
+	if err := pg.DB.First(&updatedUser, user.ID).Error; err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
 	if !support.CheckPasswordHash("New-password-123", updatedUser.Password) {
@@ -291,7 +292,7 @@ func TestResetPasswordWithToken_ChangesPasswordAndDeletesTokens(t *testing.T) {
 	}
 
 	var tokenCount int64
-	if err := database.DB.Model(&domain.PasswordResetToken{}).Where("user_id = ?", user.ID).Count(&tokenCount).Error; err != nil {
+	if err := pg.DB.Model(&domain.PasswordResetToken{}).Where("user_id = ?", user.ID).Count(&tokenCount).Error; err != nil {
 		t.Fatalf("count tokens: %v", err)
 	}
 	if tokenCount != 0 {
@@ -308,12 +309,12 @@ func TestResetPasswordWithToken_RollsBackWhenSessionRevocationFails(t *testing.T
 	}
 
 	user := domain.User{Email: "reset@example.com", Password: oldHash, Role: "user"}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
 	rawToken := "rollback-reset-token"
-	if err := database.DB.Create(&domain.PasswordResetToken{
+	if err := pg.DB.Create(&domain.PasswordResetToken{
 		UserID:    user.ID,
 		TokenHash: hashPasswordResetToken(rawToken),
 		ExpiresAt: time.Now().Add(30 * time.Minute),
@@ -333,7 +334,7 @@ func TestResetPasswordWithToken_RollsBackWhenSessionRevocationFails(t *testing.T
 	}
 
 	var updatedUser domain.User
-	if err := database.DB.First(&updatedUser, user.ID).Error; err != nil {
+	if err := pg.DB.First(&updatedUser, user.ID).Error; err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
 	if !support.CheckPasswordHash("old-password", updatedUser.Password) {
@@ -341,7 +342,7 @@ func TestResetPasswordWithToken_RollsBackWhenSessionRevocationFails(t *testing.T
 	}
 
 	var tokenCount int64
-	if err := database.DB.Model(&domain.PasswordResetToken{}).Where("user_id = ?", user.ID).Count(&tokenCount).Error; err != nil {
+	if err := pg.DB.Model(&domain.PasswordResetToken{}).Where("user_id = ?", user.ID).Count(&tokenCount).Error; err != nil {
 		t.Fatalf("count tokens: %v", err)
 	}
 	if tokenCount != 1 {
@@ -360,12 +361,12 @@ func TestResetPassword_RateLimitsByResolvedEmailAcrossIPs(t *testing.T) {
 	}
 
 	user := domain.User{Email: "reset@example.com", Password: oldHash, Role: "user"}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 
 	rawToken := "rate-limited-reset-token"
-	if err := database.DB.Create(&domain.PasswordResetToken{
+	if err := pg.DB.Create(&domain.PasswordResetToken{
 		UserID:    user.ID,
 		TokenHash: hashPasswordResetToken(rawToken),
 		ExpiresAt: time.Now().Add(30 * time.Minute),
@@ -426,9 +427,9 @@ func setupPasswordResetTestDB(t *testing.T) {
 	t.Helper()
 	resetAuthRateLimitsForTest(t)
 
-	prevDB := database.DB
+	prevDB := pg.DB
 	t.Cleanup(func() {
-		database.DB = prevDB
+		pg.DB = prevDB
 	})
 
 	dsn := "file:" + t.Name() + "?mode=memory&cache=shared"

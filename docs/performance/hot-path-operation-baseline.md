@@ -64,3 +64,12 @@ go test ./internal/jobs/checker -run 'TestOwnershipVerifierBatchesConcurrentRequ
 
 The queue command-budget test needs `MAGPIE_TEST_QUEUE_REDIS_URL`; without it
 the test skips.
+
+## Changes since the baseline
+
+Every change to a pinned hot-path package is recorded here with its effect on
+the counts above.
+
+| Change | Cryptographic operations | JSON encodes | Redis commands | Database queries |
+| --- | --- | --- | --- | --- |
+| The shared pool handle moved from `database.DB` to `pg.DB`. The failure tracker and the ownership verifier read the same handle under its new qualifier; `jobs/checker` now imports `platform/pg`. | +0 | +0 | +0 | +0 |

@@ -8,14 +8,15 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 func TestNotificationReadPersistsAcrossConnectionsAndIsAccountScoped(t *testing.T) {
-	previous := DB
-	t.Cleanup(func() { DB = previous })
+	previous := pg.DB
+	t.Cleanup(func() { pg.DB = previous })
 	dsn := filepath.Join(t.TempDir(), "notifications.db") + "?_fk=1"
 	open := func() *gorm.DB {
 		t.Helper()
@@ -25,16 +26,16 @@ func TestNotificationReadPersistsAcrossConnectionsAndIsAccountScoped(t *testing.
 		}
 		return db
 	}
-	DB = open()
-	if err := DB.AutoMigrate(&domain.User{}, &domain.NotificationRead{}); err != nil {
+	pg.DB = open()
+	if err := pg.DB.AutoMigrate(&domain.User{}, &domain.NotificationRead{}); err != nil {
 		t.Fatal(err)
 	}
 	user := domain.User{Email: "reader@example.test", Password: "hash"}
 	other := domain.User{Email: "other-reader@example.test", Password: "hash"}
-	if err := DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := DB.Create(&other).Error; err != nil {
+	if err := pg.DB.Create(&other).Error; err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -42,29 +43,29 @@ func TestNotificationReadPersistsAcrossConnectionsAndIsAccountScoped(t *testing.
 		t.Fatal(err)
 	}
 	var first domain.NotificationRead
-	if err := DB.First(&first).Error; err != nil {
+	if err := pg.DB.First(&first).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := MarkNotificationRead(ctx, user.ID, "release-42"); err != nil {
 		t.Fatal(err)
 	}
 	var rows []domain.NotificationRead
-	if err := DB.Find(&rows).Error; err != nil || len(rows) != 1 || !rows[0].ReadAt.Equal(first.ReadAt) {
+	if err := pg.DB.Find(&rows).Error; err != nil || len(rows) != 1 || !rows[0].ReadAt.Equal(first.ReadAt) {
 		t.Fatalf("repeated read changed receipt: %#v, %v", rows, err)
 	}
 	if err := MarkNotificationRead(ctx, other.ID, "release-7"); err != nil {
 		t.Fatal(err)
 	}
-	connection, err := DB.DB()
+	connection, err := pg.DB.DB()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := connection.Close(); err != nil {
 		t.Fatal(err)
 	}
-	DB = open()
+	pg.DB = open()
 	// The additive migration can run again without losing the first read time.
-	if err := DB.AutoMigrate(&domain.NotificationRead{}); err != nil {
+	if err := pg.DB.AutoMigrate(&domain.NotificationRead{}); err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[uint][]string{user.ID: {"release-42"}, other.ID: {"release-7"}} {
@@ -73,14 +74,14 @@ func TestNotificationReadPersistsAcrossConnectionsAndIsAccountScoped(t *testing.
 			t.Fatalf("user %d read IDs = %v, %v, want %v", id, got, err, want)
 		}
 	}
-	if err := DB.Delete(&user).Error; err != nil {
+	if err := pg.DB.Delete(&user).Error; err != nil {
 		t.Fatal(err)
 	}
 	got, err := ReadNotificationIDs(ctx, user.ID, []string{"release-42"})
 	if err != nil || len(got) != 0 {
 		t.Fatalf("deleted account retained read receipts: %v, %v", got, err)
 	}
-	connection, _ = DB.DB()
+	connection, _ = pg.DB.DB()
 	t.Cleanup(func() { _ = connection.Close() })
 }
 

@@ -8,7 +8,7 @@
 #
 # package: imports
 
-jobs/checker: container/list context encoding/base64 errors fmt github.com/charmbracelet/log gorm.io/gorm magpie/internal/api/dto magpie/internal/checkerconfig magpie/internal/checkpace magpie/internal/config magpie/internal/database magpie/internal/domain magpie/internal/jobs/checker/judges magpie/internal/jobs/queue/proxy magpie/internal/jobs/runtime magpie/internal/support math math/bits net/http regexp strconv strings sync sync/atomic time
+jobs/checker: container/list context encoding/base64 errors fmt github.com/charmbracelet/log gorm.io/gorm magpie/internal/api/dto magpie/internal/checkerconfig magpie/internal/checkpace magpie/internal/config magpie/internal/database magpie/internal/domain magpie/internal/jobs/checker/judges magpie/internal/jobs/queue/proxy magpie/internal/jobs/runtime magpie/internal/platform/pg magpie/internal/support math math/bits net/http regexp strconv strings sync sync/atomic time
 jobs/queue/proxy: context embed encoding/json errors fmt github.com/charmbracelet/log github.com/redis/go-redis/v9 hash/fnv magpie/internal/checkpace magpie/internal/domain magpie/internal/jobs/queue magpie/internal/jobs/runtime magpie/internal/security magpie/internal/support math strconv time
 rotatingproxy: bufio bytes context crypto/tls encoding/base64 encoding/binary errors fmt github.com/charmbracelet/log github.com/quic-go/quic-go github.com/quic-go/quic-go/http3 io magpie/internal/api/dto magpie/internal/config magpie/internal/database magpie/internal/domain magpie/internal/jobs/runtime magpie/internal/support net net/http net/url os strconv strings sync sync/atomic time
 checkpace: context crypto/rand encoding/hex errors fmt github.com/charmbracelet/log magpie/internal/domain math sync sync/atomic time

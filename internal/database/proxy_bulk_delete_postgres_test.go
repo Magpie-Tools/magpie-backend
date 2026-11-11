@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/logger"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 )
 
@@ -124,7 +125,7 @@ func TestBulkProxyDeletionPostgres(t *testing.T) {
 	}
 	db, a, b := seedBulkDeletePostgres(t, routes)
 	queries := &bulkDeleteQueryLog{Interface: db.Logger, counts: make(map[string]int), duration: make(map[string]time.Duration)}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	started := time.Now()
 	deleted, orphans, err := DeleteProxiesWithSettings(a.ID, dto.DeleteSettings{Scope: "all"})
 	t.Logf("routes=%d sources=41 elapsed=%s statements=%v SQL_time=%v", routes, time.Since(started), queries.counts, queries.duration)

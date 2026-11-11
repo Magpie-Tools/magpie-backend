@@ -8,18 +8,19 @@ import (
 
 	"magpie/internal/abuseipdb"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 func GetNextAbuseIPDBProxyToCheck(ctx context.Context, staleBefore time.Time) (*domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
 	var proxy domain.Proxy
-	err := DB.WithContext(ctx).
+	err := pg.DB.WithContext(ctx).
 		Model(&domain.Proxy{}).
 		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id)").
 		Where("proxies.ip_address IS NOT NULL").
@@ -39,7 +40,7 @@ func GetNextAbuseIPDBProxyToCheck(ctx context.Context, staleBefore time.Time) (*
 }
 
 func UpsertAbuseIPDBCheck(ctx context.Context, proxyID uint64, result abuseipdb.CheckResult, checkedAt time.Time) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
 	if proxyID == 0 {
@@ -64,7 +65,7 @@ func UpsertAbuseIPDBCheck(ctx context.Context, proxyID uint64, result abuseipdb.
 		CheckedAt:            checkedAt.UTC(),
 	}
 
-	return DB.WithContext(ctx).Clauses(clause.OnConflict{
+	return pg.DB.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "proxy_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"abuse_confidence_score",

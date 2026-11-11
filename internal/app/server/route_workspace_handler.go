@@ -15,6 +15,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -271,7 +272,7 @@ func updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
 	}
 	refreshCheckPace(r.Context())
 	var subscription domain.WorkspaceSubscription
-	database.DB.WithContext(r.Context()).Where("workspace_id = ?", workspaceID).Limit(1).Find(&subscription)
+	pg.DB.WithContext(r.Context()).Where("workspace_id = ?", workspaceID).Limit(1).Find(&subscription)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"check_interval_seconds":  payload.CheckIntervalSeconds,
 		"scrape_interval_seconds": payload.ScrapeIntervalSeconds,

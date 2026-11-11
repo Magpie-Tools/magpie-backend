@@ -89,7 +89,7 @@ func buildIPSearchNetwork(search string) (network string, fallbackPrefix string,
 }
 
 func buildProxySearchIDQuery(workspaceID uint, filterQuery *gorm.DB, lowerSearch string) *gorm.DB {
-	query := DB.Table("user_proxy_filter_indexes ufi").
+	query := pg.DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id AS id").
 		Where("ufi.workspace_id = ?", workspaceID)
 
@@ -102,11 +102,11 @@ func buildProxySearchIDQuery(workspaceID uint, filterQuery *gorm.DB, lowerSearch
 }
 
 func buildProxyIPSearchIDQuery(workspaceID uint, filterQuery *gorm.DB, network, fallbackPrefix, lowerSearch string, exact bool) *gorm.DB {
-	query := DB.Table("user_proxy_filter_indexes ufi").
+	query := pg.DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id AS id").
 		Where("ufi.workspace_id = ?", workspaceID)
 	tagPattern := "%" + strings.ToLower(strings.TrimSpace(lowerSearch)) + "%"
-	if pg.IsPostgresDialect(DB) {
+	if pg.IsPostgresDialect(pg.DB) {
 		query = query.Where("(ufi.ip_address <<= ?::cidr OR "+proxyTagSearchExistsSQL+")", network, tagPattern)
 	} else if exact {
 		query = query.Where("(ufi.ip_address = ? OR "+proxyTagSearchExistsSQL+")", fallbackPrefix, tagPattern)

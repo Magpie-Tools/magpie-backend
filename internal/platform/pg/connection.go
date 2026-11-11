@@ -20,6 +20,10 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+var (
+	DB *gorm.DB
+)
+
 var currentDSN atomic.Value
 
 func SetDSN(dsn string) {

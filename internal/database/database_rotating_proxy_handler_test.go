@@ -12,6 +12,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
@@ -63,10 +64,10 @@ func setupRotatingProxyTestDBWithDSN(t *testing.T, dsn string) *gorm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 
-	DB = db
+	pg.DB = db
 
 	t.Cleanup(func() {
-		DB = nil
+		pg.DB = nil
 	})
 
 	return db

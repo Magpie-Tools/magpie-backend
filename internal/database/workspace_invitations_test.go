@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -293,8 +294,8 @@ func TestConcurrentWorkspaceInvitationAcceptanceCreatesOneMembership(t *testing.
 
 func setupWorkspaceInvitationTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	previous := DB
-	t.Cleanup(func() { DB = previous })
+	previous := pg.DB
+	t.Cleanup(func() { pg.DB = previous })
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared&_fk=1", t.Name())
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -309,7 +310,7 @@ func setupWorkspaceInvitationTestDB(t *testing.T) *gorm.DB {
 	); err != nil {
 		t.Fatalf("migrate workspace invitation schema: %v", err)
 	}
-	DB = db
+	pg.DB = db
 	return db
 }
 

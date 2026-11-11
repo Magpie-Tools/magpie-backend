@@ -5,6 +5,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 	"path/filepath"
 	"testing"
@@ -16,9 +17,9 @@ func TestScrapeSourceModeMigrationAndWorkspaceIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := DB
-	DB = db
-	t.Cleanup(func() { DB = original; sqlDB, _ := db.DB(); sqlDB.Close() })
+	original := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = original; sqlDB, _ := db.DB(); sqlDB.Close() })
 	// Model the old join table, then run the same model migration used on upgrade.
 	if err := db.Exec("CREATE TABLE user_scrape_site (workspace_id integer, scrape_site_id integer, created_at datetime, PRIMARY KEY(workspace_id, scrape_site_id))").Error; err != nil {
 		t.Fatal(err)
@@ -79,9 +80,9 @@ func TestNewSourceModesAndStatusAreReturnedPerWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := DB
-	DB = db
-	t.Cleanup(func() { DB = original; sqlDB, _ := db.DB(); sqlDB.Close() })
+	original := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = original; sqlDB, _ := db.DB(); sqlDB.Close() })
 	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"magpie/internal/database"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"gorm.io/driver/sqlite"
@@ -39,10 +39,10 @@ func TestHealthz_ReturnsLivenessPayload(t *testing.T) {
 }
 
 func TestReadyz_FailsWhenDatabaseUnavailable(t *testing.T) {
-	prevDB := database.DB
-	database.DB = nil
+	prevDB := pg.DB
+	pg.DB = nil
 	t.Cleanup(func() {
-		database.DB = prevDB
+		pg.DB = prevDB
 	})
 
 	t.Setenv(envReadyzAllowRedisDegraded, "true")
@@ -95,14 +95,14 @@ func TestCheckRedisComponent_ReportsModeAndErrorDetails(t *testing.T) {
 }
 
 func TestReadyz_AllowsStartupBootstrapDegradedWhenRedisDegradedAllowed(t *testing.T) {
-	prevDB := database.DB
+	prevDB := pg.DB
 	db, err := gorm.Open(sqlite.Open("file:readyz-degraded?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	database.DB = db
+	pg.DB = db
 	t.Cleanup(func() {
-		database.DB = prevDB
+		pg.DB = prevDB
 	})
 
 	t.Setenv(envReadyzAllowRedisDegraded, "true")

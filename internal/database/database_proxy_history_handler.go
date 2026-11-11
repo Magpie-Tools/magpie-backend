@@ -6,6 +6,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 const (
@@ -16,11 +17,11 @@ const (
 // SaveProxyHistorySnapshot stores the active-route count for every workspace.
 // It records zero counts so capacity changes remain visible over time.
 func SaveProxyHistorySnapshot(ctx context.Context) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database: connection was not configured")
 	}
 
-	tx := DB
+	tx := pg.DB
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}
@@ -73,7 +74,7 @@ func SaveProxyHistorySnapshot(ctx context.Context) error {
 
 // GetProxyHistoryEntries returns recent snapshots for a workspace.
 func GetProxyHistoryEntries(workspaceID uint, limit int) []dto.ProxyHistoryEntry {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil
 	}
 
@@ -81,7 +82,7 @@ func GetProxyHistoryEntries(workspaceID uint, limit int) []dto.ProxyHistoryEntry
 
 	rows := make([]domain.ProxyHistory, 0, limit)
 
-	DB.Where("workspace_id = ?", workspaceID).
+	pg.DB.Where("workspace_id = ?", workspaceID).
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&rows)

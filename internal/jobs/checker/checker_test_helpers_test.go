@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -35,9 +35,9 @@ func setupCheckerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 
-	database.DB = db
+	pg.DB = db
 	t.Cleanup(func() {
-		database.DB = nil
+		pg.DB = nil
 	})
 
 	return db

@@ -6,6 +6,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestLegacyDefaultChangeAdvancesFullRefreshRevision(t *testing.T) {
@@ -42,10 +43,10 @@ func TestGetDashboardInfoServesCachedSnapshotWithoutDatabase(t *testing.T) {
 		dashboardInfoCache.Delete(userID)
 	})
 
-	previousDB := DB
-	DB = nil
+	previousDB := pg.DB
+	pg.DB = nil
 	t.Cleanup(func() {
-		DB = previousDB
+		pg.DB = previousDB
 	})
 
 	actual := GetDashboardInfo(userID)
@@ -71,10 +72,10 @@ func TestDashboardProxyListsServeCachedSnapshotsWithoutDatabase(t *testing.T) {
 		dashboardFastestAliveCache.Delete(fastestKey)
 	})
 
-	previousDB := DB
-	DB = nil
+	previousDB := pg.DB
+	pg.DB = nil
 	t.Cleanup(func() {
-		DB = previousDB
+		pg.DB = previousDB
 	})
 
 	recent := GetRecentProxyChecks(userID, defaultRecentProxyChecksLimit)

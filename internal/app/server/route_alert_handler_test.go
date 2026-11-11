@@ -10,6 +10,7 @@ import (
 
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestAlertAPIRolesIsolationAndWriteOnlyDestinations(t *testing.T) {
@@ -17,7 +18,7 @@ func TestAlertAPIRolesIsolationAndWriteOnlyDestinations(t *testing.T) {
 	t.Setenv("JWT_SECRET", "alert-api-test-secret")
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
 	t.Setenv("PROXY_ENCRYPTION_KEY", "alert-destination-test-key")
-	if err := database.DB.AutoMigrate(&domain.AlertRule{}, &domain.AlertDestination{}, &domain.AlertIncident{}, &domain.AlertDelivery{}, &domain.RotatingProxy{}); err != nil {
+	if err := pg.DB.AutoMigrate(&domain.AlertRule{}, &domain.AlertDestination{}, &domain.AlertIncident{}, &domain.AlertDelivery{}, &domain.RotatingProxy{}); err != nil {
 		t.Fatal(err)
 	}
 	owner, workspace := createWorkspaceMiddlewareTestUser(t, "alert-owner@example.test")

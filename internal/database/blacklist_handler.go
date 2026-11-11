@@ -24,11 +24,11 @@ const (
 
 // ListBlacklistedIPs returns all stored blacklist entries as normalized IP strings.
 func ListBlacklistedIPs(ctx context.Context) ([]string, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, errors.New("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -42,11 +42,11 @@ func ListBlacklistedIPs(ctx context.Context) ([]string, error) {
 
 // ListBlacklistedRanges returns all stored ranges in normalized CIDR form.
 func ListBlacklistedRanges(ctx context.Context) ([]domain.BlacklistedRange, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, errors.New("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -83,7 +83,7 @@ func ListBlacklistedRanges(ctx context.Context) ([]domain.BlacklistedRange, erro
 
 // ReplaceBlacklistData truncates and bulk-loads blacklist entries using COPY (or a batch fallback).
 func ReplaceBlacklistData(ctx context.Context, ips []domain.BlacklistedIP, ranges []domain.BlacklistedRange) (int, int, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, 0, errors.New("database not initialised")
 	}
 
@@ -92,7 +92,7 @@ func ReplaceBlacklistData(ctx context.Context, ips []domain.BlacklistedIP, range
 
 	if len(cleanIPs) == 0 && len(cleanRanges) == 0 {
 		// Still clear existing entries to align with "replace" semantics.
-		db := DB
+		db := pg.DB
 		if ctx != nil {
 			db = db.WithContext(ctx)
 		}
@@ -176,7 +176,7 @@ func replaceBlacklistWithCopy(ctx context.Context, dsn string, ips []domain.Blac
 }
 
 func replaceBlacklistWithBatches(ctx context.Context, ips []domain.BlacklistedIP, ranges []domain.BlacklistedRange) (int, int, error) {
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -314,7 +314,7 @@ func dedupeRanges(ranges []domain.BlacklistedRange) []domain.BlacklistedRange {
 // RemoveProxiesByIPs removes proxy/user associations for proxies whose IP is in the given list.
 // It returns the number of user-proxy relations removed and any orphaned proxies that can be purged from queues.
 func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, errors.New("database not initialised")
 	}
 
@@ -323,7 +323,7 @@ func RemoveProxiesByIPs(ctx context.Context, ips []string) (int64, []domain.Prox
 		return 0, nil, nil
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -419,14 +419,14 @@ func normalizeIP(raw string) string {
 
 // RemoveProxiesByRanges removes proxies whose IP falls inside any of the provided ranges.
 func RemoveProxiesByRanges(ctx context.Context, ranges []domain.BlacklistedRange) (int64, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, errors.New("database not initialised")
 	}
 	if len(ranges) == 0 {
 		return 0, nil, nil
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

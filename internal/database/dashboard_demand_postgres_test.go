@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func demandTestState(t *testing.T) *atomic.Int64 {
@@ -57,7 +58,7 @@ func TestDashboardDemandRequestedComponentsPostgres(t *testing.T) {
 	workspaces := seedCurrentLatestReadTest(t, db)
 	clock := demandTestState(t)
 	recorder := &demandSQLRecorder{Interface: logger.Default.LogMode(logger.Silent)}
-	DB = db.Session(&gorm.Session{Logger: recorder})
+	pg.DB = db.Session(&gorm.Session{Logger: recorder})
 	if err := RefreshRequestedDashboardCaches(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +158,7 @@ func TestDashboardDemandBackfillReadonlyAndRetainedHistoryPostgres(t *testing.T)
 		t.Fatal(err)
 	}
 	defer roSQL.Close()
-	DB = ro
+	pg.DB = ro
 	if _, err := GetDashboardInfoContext(context.Background(), workspaces[0].ID); err != nil {
 		t.Fatal("optional backfill failure changed read-only loader semantics", err)
 	}
@@ -165,7 +166,7 @@ func TestDashboardDemandBackfillReadonlyAndRetainedHistoryPostgres(t *testing.T)
 	if err := db.Model(&domain.ProxyDailyCheckProxyBackfill{}).Count(&markers).Error; err != nil || markers != 0 {
 		t.Fatal("read-only load wrote markers", markers, err)
 	}
-	DB = db
+	pg.DB = db
 	clock.Add(int64(dashboardCacheFreshness))
 	started := time.Now()
 	if _, err := GetDashboardInfoContext(context.Background(), workspaces[0].ID); err != nil {
@@ -228,7 +229,7 @@ func TestDashboardDemandConcurrentReadersAndTimerShareLoaderPostgres(t *testing.
 	workspaces := seedCurrentLatestReadTest(t, db)
 	demandTestState(t)
 	recorder := &demandSQLRecorder{Interface: logger.Default.LogMode(logger.Silent)}
-	DB = db.Session(&gorm.Session{Logger: recorder})
+	pg.DB = db.Session(&gorm.Session{Logger: recorder})
 	start := make(chan struct{})
 	results := make(chan error, 17)
 	for i := 0; i < 16; i++ {

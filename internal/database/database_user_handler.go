@@ -18,6 +18,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 )
 
@@ -31,13 +32,13 @@ var dashboardInfoCache sync.Map
 
 func GetUserFromId(id uint) domain.User {
 	var users domain.User
-	DB.Where("id = ?", id).First(&users)
+	pg.DB.Where("id = ?", id).First(&users)
 	return users
 }
 
 func GetWorkspacesThatDontHaveJudges() []domain.Workspace {
 	var workspaces []domain.Workspace
-	DB.Where("id NOT IN (SELECT DISTINCT workspace_id FROM user_judges)").Find(&workspaces)
+	pg.DB.Where("id NOT IN (SELECT DISTINCT workspace_id FROM user_judges)").Find(&workspaces)
 	return workspaces
 }
 
@@ -69,7 +70,7 @@ func AddWorkspaceJudgesRelation(workspaces []domain.Workspace, judges []*domain.
 	}
 
 	if len(workspaceJudges) > 0 {
-		if err := DB.Clauses(clause.OnConflict{
+		if err := pg.DB.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "judge_id"}},
 			DoNothing: true,
 		}).Create(&workspaceJudges).Error; err != nil {
@@ -82,7 +83,7 @@ func AddWorkspaceJudgesRelation(workspaces []domain.Workspace, judges []*domain.
 
 func GetAllWorkspaceJudgeRelations() ([]domain.WorkspaceJudge, []domain.JudgeWithRegex) {
 	var workspaceJudges []domain.WorkspaceJudge
-	if err := DB.Find(&workspaceJudges).Error; err != nil {
+	if err := pg.DB.Find(&workspaceJudges).Error; err != nil {
 		return nil, nil
 	}
 
@@ -93,7 +94,7 @@ func GetAllWorkspaceJudgeRelations() ([]domain.WorkspaceJudge, []domain.JudgeWit
 		Regex      string `gorm:"column:regex"`
 	}
 
-	if err := DB.Table("user_judges").
+	if err := pg.DB.Table("user_judges").
 		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
 		Scan(&results).Error; err != nil {
@@ -120,7 +121,7 @@ func GetAllWorkspaceJudgeRelations() ([]domain.WorkspaceJudge, []domain.JudgeWit
 func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings) error {
 	// Wrap everything in a single transaction so either all changes
 	// happen or none do.
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		var locked domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, workspaceID).Error; err != nil {
 			return err
@@ -419,7 +420,7 @@ func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
 func GetWorkspaceJudges(workspaceID uint) []dto.SimpleWorkspaceJudge {
 	var results []dto.SimpleWorkspaceJudge
 
-	if err := DB.Table("user_judges").
+	if err := pg.DB.Table("user_judges").
 		Select("judges.full_string AS Url, user_judges.regex AS Regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
 		Where("user_judges.workspace_id = ?", workspaceID).
@@ -438,7 +439,7 @@ func GetWorkspaceJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, err
 		Regex      string    `gorm:"column:regex"`
 	}
 
-	if err := DB.Table("user_judges").
+	if err := pg.DB.Table("user_judges").
 		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
 		Where("user_judges.workspace_id = ?", workspaceID).
@@ -535,7 +536,7 @@ func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, err
 }
 
 func RefreshDashboardCaches(ctx context.Context) (returnErr error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("dashboard cache: database connection was not initialised")
 	}
 	if ctx == nil {
@@ -556,7 +557,7 @@ func RefreshDashboardCaches(ctx context.Context) (returnErr error) {
 	}()
 
 	var workspaceIDs []uint
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	if err := db.Model(&domain.Workspace{}).Order("id").Pluck("id", &workspaceIDs).Error; err != nil {
 		return fmt.Errorf("dashboard cache: load workspace ids: %w", err)
 	}
@@ -741,12 +742,12 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 }
 
 func ChangePassword(userID uint, password string) error {
-	err := DB.Model(&domain.User{}).Where("ID = ?", userID).Update("password", password).Error
+	err := pg.DB.Model(&domain.User{}).Where("ID = ?", userID).Update("password", password).Error
 	return err
 }
 
 func ChangePasswordIfCurrent(userID uint, expectedPassword string, newPassword string) (bool, error) {
-	result := DB.Model(&domain.User{}).
+	result := pg.DB.Model(&domain.User{}).
 		Where("ID = ? AND password = ?", userID, expectedPassword).
 		Update("password", newPassword)
 	if result.Error != nil {

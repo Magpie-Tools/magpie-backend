@@ -12,6 +12,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"gorm.io/gorm"
@@ -41,7 +42,7 @@ const (
 )
 
 func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateRequest) (*dto.RotatingProxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
@@ -98,7 +99,7 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 
 	var result *dto.RotatingProxy
 
-	err = DB.Transaction(func(tx *gorm.DB) error {
+	err = pg.DB.Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.First(&workspace, workspaceID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -193,12 +194,12 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 }
 
 func ListRotatingProxies(workspaceID uint) ([]dto.RotatingProxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
 	var rows []domain.RotatingProxy
-	if err := DB.
+	if err := pg.DB.
 		Preload("Protocol").
 		Preload("ListenProtocol").
 		Where("workspace_id = ?", workspaceID).
@@ -279,11 +280,11 @@ func ListRotatingProxies(workspaceID uint) ([]dto.RotatingProxy, error) {
 }
 
 func DeleteRotatingProxy(workspaceID uint, rotatingProxyID uint64) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, workspaceID).Error; err != nil {
 			return err
@@ -317,13 +318,13 @@ func DeleteRotatingProxy(workspaceID uint, rotatingProxyID uint64) error {
 // listener connects upstream; a failed connection does not undo the selection.
 // This call neither performs a live check nor reserves the upstream exclusively.
 func GetNextRotatingProxy(workspaceID uint, rotatingProxyID uint64) (*dto.RotatingProxyNext, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
 	var result *dto.RotatingProxyNext
 
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		var entity domain.RotatingProxy
 		if err := tx.
 			Preload("Protocol").
@@ -382,7 +383,7 @@ func getAliveProxyCountCached(workspaceID uint, protocolID int, labels []string,
 	if count, ok := cache[cacheKey]; ok {
 		return count, nil
 	}
-	count, err := evidence.CountAliveProxiesForProtocol(DB, workspaceID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
+	count, err := evidence.CountAliveProxiesForProtocol(pg.DB, workspaceID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
 	if err != nil {
 		return 0, err
 	}
@@ -395,7 +396,7 @@ func getProxyAddressCached(workspaceID uint, proxyID uint64, cache map[uint64]st
 		return cached, nil
 	}
 
-	proxy, err := fetchWorkspaceProxyByID(DB, workspaceID, proxyID)
+	proxy, err := fetchWorkspaceProxyByID(pg.DB, workspaceID, proxyID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			cache[proxyID] = ""
@@ -573,14 +574,14 @@ func cloneFloat64Ptr(value *float64) *float64 {
 }
 
 func GetAllRotatingProxies() ([]domain.RotatingProxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
 	instanceID := support.GetInstanceID()
 
 	var proxies []domain.RotatingProxy
-	if err := DB.
+	if err := pg.DB.
 		Preload("Protocol").
 		Preload("ListenProtocol").
 		Where("instance_id = ?", instanceID).
@@ -597,7 +598,7 @@ func GetAllRotatingProxies() ([]domain.RotatingProxy, error) {
 }
 
 func CountRotatingProxiesByInstanceIDs(instanceIDs []string) (map[string]int, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
@@ -623,7 +624,7 @@ func CountRotatingProxiesByInstanceIDs(instanceIDs []string) (map[string]int, er
 		Count      int64  `gorm:"column:count"`
 	}
 	var rows []instanceCount
-	if err := DB.
+	if err := pg.DB.
 		Model(&domain.RotatingProxy{}).
 		Select("instance_id, COUNT(*) AS count").
 		Where("instance_id IN ?", cleanIDs).
@@ -644,14 +645,14 @@ func CountRotatingProxiesByInstanceIDs(instanceIDs []string) (map[string]int, er
 }
 
 func GetRotatingProxyByID(rotatorID uint64) (*domain.RotatingProxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("rotating proxy: database connection was not initialised")
 	}
 
 	instanceID := support.GetInstanceID()
 
 	var proxy domain.RotatingProxy
-	if err := DB.
+	if err := pg.DB.
 		Preload("Protocol").
 		Preload("ListenProtocol").
 		Where("id = ? AND instance_id = ?", rotatorID, instanceID).

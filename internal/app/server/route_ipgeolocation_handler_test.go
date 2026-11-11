@@ -11,8 +11,8 @@ import (
 
 	"magpie/internal/auth"
 	"magpie/internal/config"
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestIPGeolocationStatusRequiresAdminAndDoesNotExposeCredentials(t *testing.T) {
@@ -20,10 +20,10 @@ func TestIPGeolocationStatusRequiresAdminAndDoesNotExposeCredentials(t *testing.
 	withTempServerWorkingDir(t)
 	t.Setenv("JWT_SECRET", "ipgeo-status-test-secret")
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
-	if err := database.DB.AutoMigrate(&domain.IPGeolocationState{}); err != nil {
+	if err := pg.DB.AutoMigrate(&domain.IPGeolocationState{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := database.DB.Create(&domain.IPGeolocationState{ID: 1, BudgetDay: time.Now().UTC().Add(-24 * time.Hour).Format("2006-01-02"), UsedCredits: 999}).Error; err != nil {
+	if err := pg.DB.Create(&domain.IPGeolocationState{ID: 1, BudgetDay: time.Now().UTC().Add(-24 * time.Hour).Format("2006-01-02"), UsedCredits: 999}).Error; err != nil {
 		t.Fatal(err)
 	}
 	original := config.GetConfig()

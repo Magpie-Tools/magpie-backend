@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
@@ -27,7 +28,7 @@ func RunProxyGeoRefresh(ctx context.Context, batchSize int) (int64, int64, error
 		ctx = context.Background()
 	}
 
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, 0, ErrProxyGeoRefreshDatabaseNotInitialized
 	}
 
@@ -39,7 +40,7 @@ func RunProxyGeoRefresh(ctx context.Context, batchSize int) (int64, int64, error
 }
 
 func refreshProxyGeoData(ctx context.Context, batchSize int) (int64, int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, 0, ErrProxyGeoRefreshDatabaseNotInitialized
 	}
 
@@ -54,7 +55,7 @@ func refreshProxyGeoData(ctx context.Context, batchSize int) (int64, int64, erro
 
 	proxies := make([]domain.Proxy, 0, batchSize)
 
-	result := DB.WithContext(ctx).
+	result := pg.DB.WithContext(ctx).
 		Model(&domain.Proxy{}).
 		Select("id", "host", "ip_address", "country", "estimated_type").
 		Where("ip_address IS NOT NULL").
@@ -170,7 +171,7 @@ func applyProxyGeoUpdates(ctx context.Context, updates []proxyMetadataUpdate) er
 		}
 
 		batch := updates[start:end]
-		if err := updateProxyMetadataBatch(DB.WithContext(ctx), batch, localProxyMetadata); err != nil {
+		if err := updateProxyMetadataBatch(pg.DB.WithContext(ctx), batch, localProxyMetadata); err != nil {
 			return err
 		}
 		proxyIDs := make([]uint64, 0, len(batch))

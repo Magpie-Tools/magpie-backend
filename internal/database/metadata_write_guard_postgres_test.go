@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
@@ -51,8 +52,8 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 	queries := &checkerScaleQueryLogger{Interface: db.Logger}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	DB = db.WithContext(ctx).Session(&gorm.Session{Logger: queries})
-	if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
+	pg.DB = db.WithContext(ctx).Session(&gorm.Session{Logger: queries})
+	if err := updateProxyMetadataBatch(pg.DB, batch, localProxyMetadata); err != nil {
 		t.Fatal("unchanged metadata waited for a locked route", err)
 	}
 	_ = locked.Rollback().Error
@@ -60,8 +61,8 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 		t.Fatal("metadata guard added database statements", queries.queries)
 	}
 	guardedSQL := queries.queries[0]
-	DB = db
-	if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
+	pg.DB = db
+	if err := updateProxyMetadataBatch(pg.DB, batch, localProxyMetadata); err != nil {
 		t.Fatal(err)
 	}
 	var observed []uint64

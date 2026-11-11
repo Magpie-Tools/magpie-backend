@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
@@ -15,9 +16,9 @@ import (
 func setupProxyIngestionPostgresTest(t testing.TB) *gorm.DB {
 	t.Helper()
 	db := testdb.OpenPostgres(t)
-	previous := DB
-	DB = db
-	t.Cleanup(func() { DB = previous })
+	previous := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previous })
 	return db
 }
 

@@ -10,8 +10,8 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestColumnOnlySaveSkipsWorkspaceMutationAndCheckerRefresh(t *testing.T) {
@@ -27,9 +27,9 @@ func TestColumnOnlySaveSkipsWorkspaceMutationAndCheckerRefresh(t *testing.T) {
 	if err := db.AutoMigrate(&domain.User{}, &domain.Workspace{}, &domain.WorkspaceMemberPreference{}); err != nil {
 		t.Fatal(err)
 	}
-	oldDB := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = oldDB })
+	oldDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = oldDB })
 	workspace := domain.Workspace{Name: "Preferences", HTTPProtocol: true, CheckerGeneration: 42, CheckerRevision: 9, CheckerProjectedRevision: 9}
 	if err := db.Create(&workspace).Error; err != nil {
 		t.Fatal(err)

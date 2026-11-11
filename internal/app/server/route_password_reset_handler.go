@@ -17,6 +17,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/mail"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -349,7 +350,7 @@ func lookupPasswordResetTokenEmail(rawToken string) (string, error) {
 	var row struct {
 		Email string
 	}
-	err := database.DB.
+	err := pg.DB.
 		Table("password_reset_tokens").
 		Select("users.email").
 		Joins("JOIN users ON users.id = password_reset_tokens.user_id").
@@ -372,7 +373,7 @@ func resetPasswordWithToken(rawToken string, newPassword string) (string, error)
 	now := nowFn().UTC()
 	var userEmail string
 
-	err = database.DB.Transaction(func(tx *gorm.DB) error {
+	err = pg.DB.Transaction(func(tx *gorm.DB) error {
 		var resetToken domain.PasswordResetToken
 		if err := tx.Where("token_hash = ? AND expires_at > ?", tokenHash, now).First(&resetToken).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {

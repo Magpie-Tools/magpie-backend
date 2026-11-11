@@ -16,6 +16,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/rotatingproxy"
 	"magpie/internal/support"
 )
@@ -45,25 +46,25 @@ func TestCreateRotatingProxyFixtureMode(t *testing.T) {
 			_ = support.CloseRedisClient()
 			t.Cleanup(func() { _ = support.CloseRedisClient() })
 			setupUserRegistrationTestDB(t)
-			if err := database.DB.AutoMigrate(
+			if err := pg.DB.AutoMigrate(
 				&domain.ManagedProxy{}, &domain.RotatingProxy{}, &domain.ProxyLatestStatistic{}, &domain.ProxyCheckerPlan{},
 				&domain.AlertRule{}, &domain.AlertDestination{}, &domain.AlertIncident{}, &domain.AlertDelivery{},
 			); err != nil {
 				t.Fatal(err)
 			}
 			_, workspace := createWorkspaceMiddlewareTestUser(t, "rotator@example.test")
-			if err := database.DB.Model(&workspace).Update("http_protocol", true).Error; err != nil {
+			if err := pg.DB.Model(&workspace).Update("http_protocol", true).Error; err != nil {
 				t.Fatal(err)
 			}
 			if test.disableDefaultChecks {
-				if err := database.DB.Model(&workspace).Updates(map[string]any{
+				if err := pg.DB.Model(&workspace).Updates(map[string]any{
 					"http_protocol": false, "http_s_protocol": false,
 					"socks4_protocol": false, "socks5_protocol": false,
 				}).Error; err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := database.DB.Create(&[]domain.Protocol{{Name: "http"}, {Name: "socks5"}}).Error; err != nil {
+			if err := pg.DB.Create(&[]domain.Protocol{{Name: "http"}, {Name: "socks5"}}).Error; err != nil {
 				t.Fatal(err)
 			}
 

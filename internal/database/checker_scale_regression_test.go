@@ -16,6 +16,7 @@ import (
 	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 )
 
@@ -96,7 +97,7 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 		t.Fatal("fixture did not load all tagged routes", original.Proxies.Len())
 	}
 	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	measure := func(name string, work func()) {
 		t.Helper()
 		runtime.GC()
@@ -216,5 +217,5 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Fatal("recent dashboard scanned workspace", elapsed)
 	}
-	DB = db
+	pg.DB = db
 }

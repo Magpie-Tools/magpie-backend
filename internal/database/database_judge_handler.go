@@ -2,6 +2,7 @@ package database
 
 import (
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"time"
 )
 
@@ -15,7 +16,7 @@ func GetJudgesRegexFromString(judges []*domain.Judge) []*domain.JudgeWithRegex {
 		Regex      string    `gorm:"column:regex"`
 	}
 
-	if err := DB.Table("user_judges").
+	if err := pg.DB.Table("user_judges").
 		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
 		Joins("JOIN judges ON user_judges.judge_id = judges.id").
 		Where("judges.full_string IN (?)", fullStrings).
@@ -45,12 +46,12 @@ func GetJudgesRegexFromString(judges []*domain.Judge) []*domain.JudgeWithRegex {
 func GetJudgesFromString(judges []*domain.Judge) []*domain.Judge {
 	fullStrings := getStringListFromJudges(judges)
 
-	DB.Where("full_string IN (?)", fullStrings).Find(&judges)
+	pg.DB.Where("full_string IN (?)", fullStrings).Find(&judges)
 	return judges
 }
 
 func AddJudges(judges []*domain.Judge) error {
-	result := DB.Create(judges)
+	result := pg.DB.Create(judges)
 	return result.Error
 }
 

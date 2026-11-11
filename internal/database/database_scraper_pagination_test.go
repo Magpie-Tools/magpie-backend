@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestNormalizeScrapeSitePage(t *testing.T) {
@@ -41,9 +42,9 @@ func TestScrapeSourceSortingAcrossPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := DB
-	DB = db
-	t.Cleanup(func() { DB = original; sqlDB, _ := db.DB(); sqlDB.Close() })
+	original := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = original; sqlDB, _ := db.DB(); sqlDB.Close() })
 	if err := db.AutoMigrate(&domain.WorkspaceScrapeSourceStat{}, &domain.WorkspaceScrapeSite{}); err != nil {
 		t.Fatal(err)
 	}

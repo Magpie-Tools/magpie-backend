@@ -15,10 +15,6 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-var (
-	DB *gorm.DB
-)
-
 type Config struct {
 	ExistingDB   *gorm.DB
 	Dialector    gorm.Dialector
@@ -38,7 +34,7 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 
 	switch {
 	case cfg.ExistingDB != nil:
-		DB = cfg.ExistingDB
+		pg.DB = cfg.ExistingDB
 	case cfg.Dialector != nil:
 		if dsn := pg.BuildDSN(); dsn != "" {
 			pg.SetDSN(dsn)
@@ -51,66 +47,66 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("database: open connection: %w", err)
 		}
-		DB = db
+		pg.DB = db
 	default:
 		return nil, fmt.Errorf("database: no dialector or existing connection provided")
 	}
 
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database: connection was not configured")
 	}
-	if err := schema.ConfigureWorkspaceJoinTables(DB); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(pg.DB); err != nil {
 		return nil, fmt.Errorf("database: configure workspace join tables: %w", err)
 	}
 
 	if cfg.AutoMigrate {
-		if err := schema.PrepareCheckerSettingsSchema(DB); err != nil {
+		if err := schema.PrepareCheckerSettingsSchema(pg.DB); err != nil {
 			return nil, err
 		}
-		if err := schema.PrepareWorkspaceOwnershipMigration(DB); err != nil {
+		if err := schema.PrepareWorkspaceOwnershipMigration(pg.DB); err != nil {
 			return nil, fmt.Errorf("database: prepare workspace ownership migration: %w", err)
 		}
 		// Create the complete join-table shape without traversing Proxy and
 		// Workspace relationships. GORM can otherwise create user_proxies as a
 		// two-column many-to-many table before it sees ManagedProxy, and SQLite
 		// may rebuild referenced tables from that incomplete dependency graph.
-		if err := DB.AutoMigrate(&schema.ManagedProxyMigrationRow{}); err != nil {
+		if err := pg.DB.AutoMigrate(&schema.ManagedProxyMigrationRow{}); err != nil {
 			return nil, fmt.Errorf("database: migrate managed proxy ownership: %w", err)
 		}
 	}
 
 	migrations := cfg.Migrations
-	if cfg.AutoMigrate && schema.ShouldSkipProxyStatisticsAutoMigrate(DB) {
+	if cfg.AutoMigrate && schema.ShouldSkipProxyStatisticsAutoMigrate(pg.DB) {
 		migrations = schema.RemoveMigrationModel(cfg.Migrations, domain.ProxyStatistic{})
 		log.Warn("Database migration: skipping ProxyStatistic auto-migrate because proxy_statistics is partitioned")
 	}
 
 	if cfg.AutoMigrate && len(migrations) > 0 {
-		if err := DB.AutoMigrate(migrations...); err != nil {
+		if err := pg.DB.AutoMigrate(migrations...); err != nil {
 			return nil, fmt.Errorf("database: auto migrate: %w", err)
 		}
 		log.Info("Database migration completed.")
 	}
 
 	if cfg.SeedDefaults {
-		if err := schema.SeedDefaults(DB); err != nil {
+		if err := schema.SeedDefaults(pg.DB); err != nil {
 			return nil, fmt.Errorf("database: seed defaults: %w", err)
 		}
 	}
 
 	if cfg.AutoMigrate {
-		if err := schema.EnsurePostMigrateSchemas(DB); err != nil {
+		if err := schema.EnsurePostMigrateSchemas(pg.DB); err != nil {
 			return nil, err
 		}
-		if err := schema.EnsureProxyListPerformanceSchema(DB); err != nil {
+		if err := schema.EnsureProxyListPerformanceSchema(pg.DB); err != nil {
 			return nil, err
 		}
-		if err := ensureReadModelBackfill(DB); err != nil {
+		if err := ensureReadModelBackfill(pg.DB); err != nil {
 			return nil, err
 		}
 	}
 
-	return DB, nil
+	return pg.DB, nil
 }
 
 func defaultConfig() Config {

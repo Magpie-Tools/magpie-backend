@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestStatisticLedgerRetirementPreservesReplayProtection(t *testing.T) {
@@ -21,9 +22,9 @@ func TestStatisticLedgerRetirementPreservesReplayProtection(t *testing.T) {
 				db = setupProxyIngestionPostgresTest(t)
 			} else {
 				db = openDailyChecksSQLite(t)
-				old := DB
-				DB = db
-				t.Cleanup(func() { DB = old })
+				old := pg.DB
+				pg.DB = db
+				t.Cleanup(func() { pg.DB = old })
 				if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}); err != nil {
 					t.Fatal(err)
 				}

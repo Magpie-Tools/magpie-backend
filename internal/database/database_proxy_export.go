@@ -11,6 +11,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -19,7 +20,7 @@ import (
 const proxyExportBatchSize = 2000
 
 func StreamProxiesForExport(ctx context.Context, workspaceID uint, settings dto.ExportSettings, batchSize int, consume func([]domain.Proxy) error) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database connection was not initialised")
 	}
 	if consume == nil {
@@ -29,7 +30,7 @@ func StreamProxiesForExport(ctx context.Context, workspaceID uint, settings dto.
 		batchSize = proxyExportBatchSize
 	}
 
-	tx := DB.WithContext(ctx).Begin(&sql.TxOptions{
+	tx := pg.DB.WithContext(ctx).Begin(&sql.TxOptions{
 		ReadOnly:  true,
 		Isolation: sql.LevelRepeatableRead,
 	})

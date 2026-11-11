@@ -10,6 +10,7 @@ import (
 	"magpie/internal/auth"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestResolveRequestWorkspaceAccessUsesDefaultAndExplicitMembership(t *testing.T) {
@@ -96,10 +97,10 @@ func TestWorkspaceRoleMiddlewareSeparatesReadAndOperatePermissions(t *testing.T)
 func createWorkspaceMiddlewareTestUser(t *testing.T, email string) (domain.User, domain.Workspace) {
 	t.Helper()
 	user := domain.User{Email: email, Password: "hash", Role: "user"}
-	if err := database.DB.Create(&user).Error; err != nil {
+	if err := pg.DB.Create(&user).Error; err != nil {
 		t.Fatalf("create user %s: %v", email, err)
 	}
-	workspace, err := database.CreatePersonalWorkspaceForUser(database.DB, user)
+	workspace, err := database.CreatePersonalWorkspaceForUser(pg.DB, user)
 	if err != nil {
 		t.Fatalf("create personal workspace for %s: %v", email, err)
 	}

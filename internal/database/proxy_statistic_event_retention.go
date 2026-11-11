@@ -34,7 +34,7 @@ func ProxyStatisticEventSortID(id string) string {
 // bounded batch. Callers must derive before from acknowledged Redis progress,
 // never from the age of an event or the largest ID committed by one worker.
 func RetireProxyStatisticEvents(ctx context.Context, stream, before string, limit int) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil
 	}
 	floor := ProxyStatisticEventSortID(before)
@@ -42,7 +42,7 @@ func RetireProxyStatisticEvents(ctx context.Context, stream, before string, limi
 		return 0, fmt.Errorf("invalid statistics replay floor %q", before)
 	}
 	var deleted int64
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		row := domain.ProxyStatisticStream{Stream: stream, ReplayBefore: floor}
 		maximum := "MAX(proxy_statistic_streams.replay_before, EXCLUDED.replay_before)"
 		if pg.IsPostgresDialector(tx) {

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"magpie/internal/checkpace"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	sitequeue "magpie/internal/jobs/queue/sites"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -29,12 +29,12 @@ func scrapeScheduleFixture(t *testing.T, modes ...string) {
 	if err := db.AutoMigrate(&domain.WorkspaceScrapeSite{}, &domain.WorkspaceUsagePeriod{}); err != nil {
 		t.Fatal(err)
 	}
-	originalDB, originalQueue, originalBrowser, originalPace := database.DB, postProcessQueue, sharedBrowser, checkpace.Current()
-	database.DB = db
+	originalDB, originalQueue, originalBrowser, originalPace := pg.DB, postProcessQueue, sharedBrowser, checkpace.Current()
+	pg.DB = db
 	postProcessQueue = make(chan scrapedHTMLJob, 16)
 	t.Cleanup(func() {
 		checkpace.Publish(originalPace)
-		database.DB, postProcessQueue, sharedBrowser = originalDB, originalQueue, originalBrowser
+		pg.DB, postProcessQueue, sharedBrowser = originalDB, originalQueue, originalBrowser
 		sqlDB, _ := db.DB()
 		sqlDB.Close()
 	})
@@ -98,7 +98,7 @@ func TestBusyBrowserStaysPendingWithoutRefetchingCompletedHTTP(t *testing.T) {
 		t.Fatalf("HTTP hits=%d queued results=%d", hits.Load(), len(postProcessQueue))
 	}
 	var browserSubscription domain.WorkspaceScrapeSite
-	if err := database.DB.First(&browserSubscription, "workspace_id = 2").Error; err != nil {
+	if err := pg.DB.First(&browserSubscription, "workspace_id = 2").Error; err != nil {
 		t.Fatal(err)
 	}
 	if browserSubscription.LastScrapedAt != nil || browserSubscription.LastScrapeStatus != "" || browserSubscription.LastScrapeError != "" {
@@ -142,7 +142,7 @@ func TestRetryAfterDelaysBothModesWithoutMultiplyingInterval(t *testing.T) {
 
 func TestSourceLookupFailureDefersWithoutCompletingAnAttempt(t *testing.T) {
 	scrapeScheduleFixture(t, domain.ScrapeFetchHTTP)
-	if err := database.DB.Migrator().DropTable(&domain.WorkspaceScrapeSite{}); err != nil {
+	if err := pg.DB.Migrator().DropTable(&domain.WorkspaceScrapeSite{}); err != nil {
 		t.Fatal(err)
 	}
 	job := sitequeue.ScrapeSiteJob{Site: domain.ScrapeSite{ID: 1, URL: "https://example.com/list"}, Interval: 15 * time.Hour}
@@ -177,7 +177,7 @@ func TestScrapeChargesOnlyDueSubscribersWithAllowance(t *testing.T) {
 		t.Fatalf("fetches = %d, want 1", hits.Load())
 	}
 	var usage []domain.WorkspaceUsagePeriod
-	if err := database.DB.Find(&usage).Error; err != nil {
+	if err := pg.DB.Find(&usage).Error; err != nil {
 		t.Fatal(err)
 	}
 	if len(usage) != 1 || usage[0].WorkspaceID != 1 || usage[0].Scrapes != 1 {

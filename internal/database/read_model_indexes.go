@@ -347,7 +347,7 @@ func flushReadModelDirtyProxyIDs(ctx context.Context, drainAll bool) {
 	// so two flushes cannot consume the same retained prefix concurrently.
 	readModelFlushMu.Lock()
 	defer readModelFlushMu.Unlock()
-	if DB == nil {
+	if pg.DB == nil {
 		return
 	}
 	if ctx == nil {
@@ -357,7 +357,7 @@ func flushReadModelDirtyProxyIDs(ctx context.Context, drainAll bool) {
 	for processed := 0; drainAll || processed < maxBatches; processed++ {
 		refreshTimeout := readModelRefreshTimeout()
 		batchCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
-		db := DB.WithContext(batchCtx)
+		db := pg.DB.WithContext(batchCtx)
 		var ownerDuration time.Duration
 		readModelDirtyMu.Lock()
 		batch := readModelPendingBatch
@@ -876,7 +876,7 @@ func runSourceStatsRefresh(ctx context.Context) {
 // empty or a failed batch was requeued. The final drain checks the queue before
 // reporting completion and backs off before retrying a failed batch.
 func flushDirtySourceStats(ctx context.Context) bool {
-	if DB == nil {
+	if pg.DB == nil {
 		return false
 	}
 	limit := max(1, min(1000, support.GetEnvInt("SCRAPE_SOURCE_STATS_REFRESH_BATCH_SIZE", 100)))
@@ -898,7 +898,7 @@ func flushDirtySourceStats(ctx context.Context) bool {
 		values[i] = []any{pair.WorkspaceID, pair.ScrapeSiteID}
 	}
 	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err := refreshWorkspaceScrapeSourceStats(DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
+	err := refreshWorkspaceScrapeSourceStats(pg.DB.WithContext(refreshCtx), "WHERE (uss.workspace_id, ss.id) IN ?", values)
 	// HasTable can hide a canceled schema lookup behind a false result. Keep
 	// the batch even if cancellation raced an otherwise successful refresh.
 	if err == nil {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -474,7 +475,7 @@ func TestReadModelSubprefixOrdinaryPassLimitAndOperationCountsPostgres(t *testin
 	t.Setenv("READ_MODEL_REFRESH_MAX_BATCHES", "4")
 	t.Setenv("READ_MODEL_REFRESH_TIMEOUT_SECONDS", "1")
 	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	attempts := captureReadModelSubprefixAttempts(t, db)
 	removeTrigger := installReadModelSubprefixDeadlineTrigger(t, db, owners[1])
 	flushReadModelDirtyProxyIDs(context.Background(), false)

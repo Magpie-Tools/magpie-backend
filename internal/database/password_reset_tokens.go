@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
 
 func GetUserByEmail(email string) (domain.User, error) {
 	var user domain.User
-	err := DB.Where("LOWER(email) = ?", email).First(&user).Error
+	err := pg.DB.Where("LOWER(email) = ?", email).First(&user).Error
 	return user, err
 }
 
@@ -24,7 +25,7 @@ func CreatePasswordResetToken(userID uint, tokenHash string, expiresAt time.Time
 		return errors.New("token hash is required")
 	}
 
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("user_id = ?", userID).Delete(&domain.PasswordResetToken{}).Error; err != nil {
 			return err
 		}
@@ -39,13 +40,13 @@ func CreatePasswordResetToken(userID uint, tokenHash string, expiresAt time.Time
 
 func DeletePasswordResetTokensForUser(tx *gorm.DB, userID uint) error {
 	if tx == nil {
-		tx = DB
+		tx = pg.DB
 	}
 	return tx.Where("user_id = ?", userID).Delete(&domain.PasswordResetToken{}).Error
 }
 
 func DeleteExpiredPasswordResetTokens(ctx context.Context, before time.Time) (int64, error) {
-	tx := DB
+	tx := pg.DB
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}

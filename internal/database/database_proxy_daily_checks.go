@@ -99,7 +99,7 @@ func incrementProxyDailyChecks(tx *gorm.DB, statistics []domain.ProxyStatistic) 
 }
 
 func loadDashboardCheckCounts(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
-	return loadDashboardCheckCountsWithDB(DB, workspaceID, weekAgo)
+	return loadDashboardCheckCountsWithDB(pg.DB, workspaceID, weekAgo)
 }
 
 func loadDashboardCheckCountsWithDB(db *gorm.DB, workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
@@ -115,7 +115,7 @@ func loadDashboardCheckCountsWithDB(db *gorm.DB, workspaceID uint, weekAgo time.
 }
 
 func queueProxyDailyChecksBackfill(workspaceID uint) {
-	queueProxyDailyChecksBackfillWithDB(DB, workspaceID)
+	queueProxyDailyChecksBackfillWithDB(pg.DB, workspaceID)
 }
 
 func queueProxyDailyChecksBackfillWithDB(db *gorm.DB, workspaceID uint) {
@@ -158,7 +158,7 @@ func queueProxyDailyChecksBackfillWithDB(db *gorm.DB, workspaceID uint) {
 }
 
 func ensureProxyDailyChecksBackfilled(workspaceID uint) (bool, error) {
-	return ensureProxyDailyChecksBackfilledWithDB(DB, workspaceID)
+	return ensureProxyDailyChecksBackfilledWithDB(pg.DB, workspaceID)
 }
 
 func ensureProxyDailyChecksBackfilledWithDB(db *gorm.DB, workspaceID uint) (bool, error) {
@@ -260,7 +260,7 @@ func markProxyDailyChecksBackfilled(tx *gorm.DB, proxyIDs []uint64) error {
 }
 
 func queryDashboardCheckCountsFromDaily(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
-	return queryDashboardCheckCountsFromDailyWithDB(DB, workspaceID, weekAgo)
+	return queryDashboardCheckCountsFromDailyWithDB(pg.DB, workspaceID, weekAgo)
 }
 
 func queryDashboardCheckCountsFromDailyWithDB(db *gorm.DB, workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
@@ -301,7 +301,7 @@ JOIN user_proxies up ON up.proxy_id = c.proxy_id AND up.workspace_id = ?
 }
 
 func loadDashboardCheckCountsDirect(workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
-	return loadDashboardCheckCountsDirectWithDB(DB, workspaceID, weekAgo)
+	return loadDashboardCheckCountsDirectWithDB(pg.DB, workspaceID, weekAgo)
 }
 
 func loadDashboardCheckCountsDirectWithDB(db *gorm.DB, workspaceID uint, weekAgo time.Time) (dashboardCheckCounts, error) {
@@ -371,12 +371,12 @@ func startOfUTCDay(value time.Time) time.Time {
 // CompactProxyDailyChecks replaces old days with lifetime totals atomically.
 // Late statistics still enter daily counters and are folded on a later pass.
 func CompactProxyDailyChecks(ctx context.Context, before time.Time, limit int) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil
 	}
 	before = startOfUTCDay(before)
 	var count int64
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if pg.IsPostgresDialector(tx) {
 			var acquired bool
 			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(?)", proxyDailyBackfillAdvisoryLockBase).Scan(&acquired).Error; err != nil {
@@ -448,7 +448,7 @@ func CompactProxyDailyChecks(ctx context.Context, before time.Time, limit int) (
 }
 
 func DeleteOrphanProxyCheckCounters(ctx context.Context, limit int) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil
 	}
 	if ctx == nil {
@@ -461,7 +461,7 @@ func DeleteOrphanProxyCheckCounters(ctx context.Context, limit int) error {
 		done  bool
 	}
 	var tables []counterTable
-	existingTables, err := DB.WithContext(ctx).Migrator().GetTables()
+	existingTables, err := pg.DB.WithContext(ctx).Migrator().GetTables()
 	if err != nil {
 		return err
 	}
@@ -488,7 +488,7 @@ func DeleteOrphanProxyCheckCounters(ctx context.Context, limit int) error {
 				continue
 			}
 			var ids []uint64
-			query := DB.WithContext(ctx).Table(table.name + " AS c")
+			query := pg.DB.WithContext(ctx).Table(table.name + " AS c")
 			if table.after != 0 {
 				query = query.Where("c.proxy_id > ?", table.after)
 			}
@@ -500,7 +500,7 @@ func DeleteOrphanProxyCheckCounters(ctx context.Context, limit int) error {
 			}
 			if len(ids) > 0 {
 				query := `DELETE FROM ` + table.name + ` WHERE proxy_id IN ? AND NOT EXISTS (SELECT 1 FROM proxies p WHERE p.id = ` + table.name + `.proxy_id)`
-				if err := DB.WithContext(ctx).Exec(query, ids).Error; err != nil {
+				if err := pg.DB.WithContext(ctx).Exec(query, ids).Error; err != nil {
 					return err
 				}
 				table.after = ids[len(ids)-1]

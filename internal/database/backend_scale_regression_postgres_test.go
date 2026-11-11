@@ -12,6 +12,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 )
 
 func TestWorkspaceCheckUsageInventoryScalePostgres(t *testing.T) {
@@ -93,7 +94,7 @@ func TestRotatorCountLargePoolPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	start := time.Now()
 	created, err := CreateRotatingProxy(a.ID, dto.RotatingProxyCreateRequest{Name: "large-pool", Protocol: "http"})
 	if err != nil || created.AliveProxyCount != routes {
@@ -227,7 +228,7 @@ func TestSourceStatisticsRefreshCoalescesLargePoolPostgres(t *testing.T) {
 		t.Fatalf("10 changes produced %d pending source/workspace pairs, want 1", pending)
 	}
 	t.Logf("ten one-route source notifications, pool=%d, duration=%s, aggregate scans=0", routes, time.Since(start))
-	DB = measured
+	pg.DB = measured
 	flushDirtySourceStats(context.Background())
 	var stat domain.WorkspaceScrapeSourceStat
 	if err := db.First(&stat, "workspace_id = ? AND scrape_site_id = ?", a.ID, site.ID).Error; err != nil {

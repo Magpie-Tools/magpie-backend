@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/clause"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 type alertRuleObservation struct {
@@ -53,7 +54,7 @@ func recordAlertEvaluationAttempts(ctx context.Context, snapshots []domain.Alert
 	if len(snapshots) == 0 {
 		return started, nil
 	}
-	tx := DB.WithContext(ctx)
+	tx := pg.DB.WithContext(ctx)
 	workspaceID := snapshots[0].WorkspaceID
 	var ids []struct{ ID uint64 }
 	if tx.Dialector.Name() == "postgres" {
@@ -116,7 +117,7 @@ func applyAlertObservations(ctx context.Context, workspace domain.Workspace, obs
 	if len(observations) == 0 {
 		return nil
 	}
-	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var currentWorkspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "checker_dirty", "checker_generation").First(&currentWorkspace, workspace.ID).Error; err != nil {
 			return err

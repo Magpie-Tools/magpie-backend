@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 )
@@ -170,7 +170,7 @@ func fetchProxyOwnership(proxyIDs []uint64) (map[uint64]bool, error) {
 	if len(proxyIDs) == 0 {
 		return nil, nil
 	}
-	if database.DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
@@ -180,7 +180,7 @@ func fetchProxyOwnership(proxyIDs []uint64) (map[uint64]bool, error) {
 	defer cancel()
 
 	var rows []uint64
-	if err := database.DB.WithContext(ctx).
+	if err := pg.DB.WithContext(ctx).
 		Table("user_proxies").
 		Distinct("proxy_id").
 		Where("proxy_id IN ? AND state = ?", proxyIDs, domain.ManagedProxyStateActive).

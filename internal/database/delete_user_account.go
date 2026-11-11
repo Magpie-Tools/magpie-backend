@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -25,10 +26,10 @@ type DeleteUserAccountResult struct {
 // state. The transaction repeats the check to protect against concurrent
 // membership changes.
 func ValidateUserAccountDeletion(ctx context.Context, userID uint) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -39,11 +40,11 @@ func ValidateUserAccountDeletion(ctx context.Context, userID uint) error {
 // personal workspace. Memberships in all other workspaces are revoked without
 // changing those workspaces' resources, subscriptions, or capacity.
 func DeleteUserAccountWithResult(ctx context.Context, userID uint) (DeleteUserAccountResult, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return DeleteUserAccountResult{}, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

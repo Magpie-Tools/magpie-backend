@@ -9,6 +9,7 @@ import (
 
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -31,7 +32,7 @@ func InsertAndGetProxiesWithWorkspace(proxies []domain.Proxy, workspaceIDs ...ui
 		return inserted, err
 	}
 
-	proxiesWithWorkspaces, err := fetchProxiesWithWorkspaces(DB, inserted)
+	proxiesWithWorkspaces, err := fetchProxiesWithWorkspaces(pg.DB, inserted)
 	if err != nil {
 		return nil, fmt.Errorf("load imported proxies with workspaces: %w", err)
 	}
@@ -63,7 +64,7 @@ func insertAndAssociateProxies(proxies []domain.Proxy, workspaceIDs []uint) ([]d
 		return nil, nil
 	}
 
-	tx := DB.Begin()
+	tx := pg.DB.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}

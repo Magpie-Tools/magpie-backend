@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -38,9 +38,9 @@ func TestBuildProxyPageReusesExactCountAndPreservesFailureCount(t *testing.T) {
 		&domain.WorkspaceProxyFilterIndex{}, &domain.ProxyReputation{}, &domain.ProxyTag{}, &domain.ProxyTagAssignment{}); err != nil {
 		t.Fatal(err)
 	}
-	previous := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = previous })
+	previous := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previous })
 	for _, statement := range []string{
 		`INSERT INTO workspaces (id,name,checker_dirty) VALUES (1,'GraphQL owner',false)`,
 		`INSERT INTO proxies (id,host,port,country,estimated_type) VALUES (1,'192.0.2.1',8080,'N/A','N/A'),(2,'192.0.2.2',8080,'N/A','N/A'),(3,'192.0.2.3',8080,'N/A','N/A')`,

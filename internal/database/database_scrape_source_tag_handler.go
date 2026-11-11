@@ -9,6 +9,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -18,7 +19,7 @@ const scrapeTagBatchSize = 500
 
 func GetScrapeSourceTags(workspaceID uint, siteID uint64) ([]dto.ProxyTag, error) {
 	tags := []dto.ProxyTag{}
-	err := DB.Table("scrape_source_tags rule").
+	err := pg.DB.Table("scrape_source_tags rule").
 		Select("tag.id, tag.name, tag.color").
 		Joins("JOIN proxy_tags tag ON tag.id = rule.proxy_tag_id AND tag.workspace_id = rule.workspace_id").
 		Where("rule.workspace_id = ? AND rule.scrape_site_id = ?", workspaceID, siteID).
@@ -76,7 +77,7 @@ func UpdateScrapeSourceSettings(ctx context.Context, workspaceID uint, siteID ui
 		return false, fmt.Errorf("invalid fetch mode")
 	}
 	found := false
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var source domain.WorkspaceScrapeSite
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("workspace_id = ? AND scrape_site_id = ?", workspaceID, siteID).First(&source).Error
@@ -133,7 +134,7 @@ func ApplyScrapeSourceTags(ctx context.Context, siteID uint64, mode string, work
 	}
 	ids = normalizeUint64IDs(ids)
 	checkerChanged := make(map[uint]bool)
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for w := 0; w < len(workspaceIDs); w += scrapeTagBatchSize {
 			workspaces := workspaceIDs[w:min(w+scrapeTagBatchSize, len(workspaceIDs))]
 			for p := 0; p < len(ids); p += scrapeTagBatchSize {

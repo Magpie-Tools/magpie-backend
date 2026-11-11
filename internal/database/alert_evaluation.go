@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 )
 
 const AlertWindow = 15 * time.Minute
@@ -74,7 +75,7 @@ type alertRotator struct {
 func EvaluateAlerts(ctx context.Context, now time.Time) error {
 	config := defaultAlertEvaluationConfig()
 	// SQLite has a single writer. Production PostgreSQL uses four workers.
-	if DB.Dialector.Name() == "sqlite" {
+	if pg.DB.Dialector.Name() == "sqlite" {
 		config.workers = 1
 	}
 	return evaluateAlerts(ctx, now, config)
@@ -135,7 +136,7 @@ func fairAlertWorkspaceBatches(rules []domain.AlertRule) []*alertWorkspaceBatch 
 }
 
 func evaluateAlerts(ctx context.Context, now time.Time, config alertEvaluationConfig) error {
-	tx := DB.WithContext(ctx)
+	tx := pg.DB.WithContext(ctx)
 	var rules []domain.AlertRule
 	if err := tx.Where("enabled = ?", true).Order("CASE WHEN last_evaluation_attempt_at IS NULL THEN 0 ELSE 1 END, last_evaluation_attempt_at, id").Find(&rules).Error; err != nil {
 		return err
@@ -174,7 +175,7 @@ func evaluateAlerts(ctx context.Context, now time.Time, config alertEvaluationCo
 	// A history scan has its own deadline, leaving time to record Unknown and
 	// evaluate route-count rules even if the scan times out.
 	aggregateCtx, cancelAggregate := context.WithTimeout(ctx, config.aggregateTimeout)
-	aggregates, aggregateErr := config.loadAggregates(DB.WithContext(aggregateCtx), metricWorkspaceIDs, now)
+	aggregates, aggregateErr := config.loadAggregates(pg.DB.WithContext(aggregateCtx), metricWorkspaceIDs, now)
 	cancelAggregate()
 	totals := map[uint]alertCheckAggregate{}
 	for key, aggregate := range aggregates {
@@ -198,7 +199,7 @@ func evaluateAlerts(ctx context.Context, now time.Time, config alertEvaluationCo
 			}
 		}
 		countCtx, cancelCounts := context.WithTimeout(ctx, config.measurementTimeout)
-		workspaceCounts, countErr = loadAlertWorkspaceRouteObservations(DB.WithContext(countCtx), countIDs, now)
+		workspaceCounts, countErr = loadAlertWorkspaceRouteObservations(pg.DB.WithContext(countCtx), countIDs, now)
 		cancelCounts()
 	}
 	evaluateWorkspace := func(batch *alertWorkspaceBatch) error {
@@ -259,7 +260,7 @@ func evaluateAlerts(ctx context.Context, now time.Time, config alertEvaluationCo
 						if observe == nil {
 							observe = observeUsableAlertRoutes
 						}
-						observation = observe(DB.WithContext(countCtx), workspace, rotator, now)
+						observation = observe(pg.DB.WithContext(countCtx), workspace, rotator, now)
 						if countCtx.Err() != nil {
 							observation = AlertObservation{UnknownReason: "Route measurements timed out"}
 						}

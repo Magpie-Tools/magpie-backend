@@ -4,9 +4,9 @@
 # in the same diff, which makes the growth a review item. The ceiling may exceed
 # the current size by at most 100 lines, so a move out of the core lowers it.
 #
-# importers: app app/bootstrap app/server blacklist cmd/seed-dev-data geolite graphql jobs/checker jobs/maintenance jobs/runtime jobs/scraper mail rotatingproxy settings
+# importers: app app/bootstrap app/server blacklist cmd/seed-dev-data geolite graphql jobs/checker jobs/maintenance jobs/runtime jobs/scraper rotatingproxy settings
 # list only shrinks. The one exception is a package created by moving code out
 # of internal/database.
 
-line_ceiling: 17933
-importers: app app/bootstrap app/server blacklist cmd/seed-dev-data geolite graphql jobs/checker jobs/maintenance jobs/runtime jobs/scraper mail rotatingproxy settings
+line_ceiling: 17967
+importers: app app/bootstrap app/server blacklist cmd/seed-dev-data geolite graphql jobs/checker jobs/maintenance jobs/runtime jobs/scraper rotatingproxy settings

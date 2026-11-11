@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
@@ -117,8 +118,8 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		t.Fatalf("create legacy ownership: %v", err)
 	}
 
-	previousDB := DB
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	t.Cleanup(func() { pg.DB = previousDB })
 	migratedDB, err := SetupDB(func(cfg *Config) {
 		cfg.ExistingDB = legacyDB
 		cfg.Dialector = nil

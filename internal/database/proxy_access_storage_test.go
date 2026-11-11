@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
@@ -37,9 +38,9 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 		t.Fatalf("migrate database: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	users := []domain.User{
 		{Email: "first@example.test", Password: "hash", Role: "user"},
@@ -121,9 +122,9 @@ func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
 		t.Fatalf("migrate database: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	user := domain.User{Email: "ipv6@example.test", Password: "hash", Role: "user"}
 	if err := db.Create(&user).Error; err != nil {
@@ -175,9 +176,9 @@ func TestProxyAccessStoragePersistsProviderHostname(t *testing.T) {
 		t.Fatalf("migrate database: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	user := domain.User{Email: "hostname@example.test", Password: "hash", Role: "user"}
 	if err := db.Create(&user).Error; err != nil {

@@ -24,7 +24,7 @@ func ClaimAlertDeliveries(ctx context.Context, limit int, now time.Time) ([]doma
 	}
 	token := hex.EncodeToString(nonce[:])
 	var messages []domain.AlertDelivery
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&domain.AlertDelivery{}).Where("status = ? AND last_attempt_at < ?", "processing", now.Add(-5*time.Minute)).Updates(map[string]any{
 			"status":      gorm.Expr("CASE WHEN attempts >= ? THEN 'failed' ELSE 'pending' END", AlertMaximumDeliveryAttempts),
 			"last_error":  gorm.Expr("CASE WHEN attempts >= ? THEN 'Delivery attempt interrupted' ELSE last_error END", AlertMaximumDeliveryAttempts),
@@ -60,7 +60,7 @@ func ClaimAlertDeliveries(ctx context.Context, limit int, now time.Time) ([]doma
 func GetAlertDeliveryDestination(ctx context.Context, message domain.AlertDelivery) (domain.AlertDestination, error) {
 	var destination domain.AlertDestination
 	// Recheck the fenced claim and destination immediately before sending.
-	err := DB.WithContext(ctx).Where("workspace_id = ? AND id = ? AND enabled = ?", message.WorkspaceID, message.DestinationID, true).
+	err := pg.DB.WithContext(ctx).Where("workspace_id = ? AND id = ? AND enabled = ?", message.WorkspaceID, message.DestinationID, true).
 		Where("EXISTS (SELECT 1 FROM alert_deliveries d WHERE d.id = ? AND d.workspace_id = ? AND d.status = 'processing' AND d.claim_token = ?)", message.ID, message.WorkspaceID, message.ClaimToken).First(&destination).Error
 	return destination, err
 }
@@ -70,11 +70,11 @@ func FinishAlertDelivery(ctx context.Context, message domain.AlertDelivery, stat
 	if status == "sent" {
 		updates["sent_at"] = now
 	}
-	return DB.WithContext(ctx).Model(&domain.AlertDelivery{}).Where("id = ? AND workspace_id = ? AND status = 'processing' AND claim_token = ?", message.ID, message.WorkspaceID, message.ClaimToken).Updates(updates).Error
+	return pg.DB.WithContext(ctx).Model(&domain.AlertDelivery{}).Where("id = ? AND workspace_id = ? AND status = 'processing' AND claim_token = ?", message.ID, message.WorkspaceID, message.ClaimToken).Updates(updates).Error
 }
 
 func RetryAlertDelivery(ctx context.Context, workspaceID uint, id uint64) error {
-	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, workspaceID).Error; err != nil {
 			return err
@@ -96,5 +96,5 @@ func RetryAlertDelivery(ctx context.Context, workspaceID uint, id uint64) error 
 }
 
 func CleanupAlertHistory(ctx context.Context, now time.Time) error {
-	return DB.WithContext(ctx).Where("id IN (SELECT id FROM alert_incidents WHERE closed_at < ? ORDER BY id LIMIT 1000)", now.Add(-90*24*time.Hour)).Delete(&domain.AlertIncident{}).Error
+	return pg.DB.WithContext(ctx).Where("id IN (SELECT id FROM alert_incidents WHERE closed_at < ? ORDER BY id LIMIT 1000)", now.Add(-90*24*time.Hour)).Delete(&domain.AlertIncident{}).Error
 }

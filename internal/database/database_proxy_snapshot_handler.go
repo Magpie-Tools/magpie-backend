@@ -8,6 +8,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -19,11 +20,11 @@ const (
 
 // SaveProxySnapshots stores snapshots for active routes in every workspace.
 func SaveProxySnapshots(ctx context.Context) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database: connection was not configured")
 	}
 
-	tx := DB
+	tx := pg.DB
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}
@@ -76,7 +77,7 @@ func SaveProxySnapshots(ctx context.Context) error {
 
 // GetProxySnapshotEntries returns the most recent snapshots for a workspace and metric.
 func GetProxySnapshotEntries(workspaceID uint, metric string, limit int) []dto.ProxySnapshotEntry {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil
 	}
 
@@ -88,7 +89,7 @@ func GetProxySnapshotEntries(workspaceID uint, metric string, limit int) []dto.P
 
 	rows := make([]domain.ProxySnapshot, 0, limit)
 
-	DB.Where("workspace_id = ? AND metric = ?", workspaceID, metric).
+	pg.DB.Where("workspace_id = ? AND metric = ?", workspaceID, metric).
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&rows)
@@ -148,11 +149,11 @@ func scrapedProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]in
 
 // GetCurrentAliveProxyCount returns the workspace's latest alive proxy count based on proxy statistics.
 func GetCurrentAliveProxyCount(workspaceID uint) int64 {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0
 	}
 
-	counts, err := evidence.AliveProxyCountByWorkspace(DB, []uint{workspaceID})
+	counts, err := evidence.AliveProxyCountByWorkspace(pg.DB, []uint{workspaceID})
 	if err != nil {
 		return 0
 	}
@@ -161,11 +162,11 @@ func GetCurrentAliveProxyCount(workspaceID uint) int64 {
 }
 
 func GetCurrentScrapedProxyCount(workspaceID uint) int64 {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0
 	}
 
-	counts, err := scrapedProxyCountByWorkspace(DB, []uint{workspaceID})
+	counts, err := scrapedProxyCountByWorkspace(pg.DB, []uint{workspaceID})
 	if err != nil {
 		return 0
 	}
@@ -180,7 +181,7 @@ type proxySnapshotCountSummary struct {
 }
 
 func getProxySnapshotCountSummary(workspaceID uint, metric string, since time.Time) proxySnapshotCountSummary {
-	summary, _ := getProxySnapshotCountSummaryWithDB(DB, workspaceID, metric, since)
+	summary, _ := getProxySnapshotCountSummaryWithDB(pg.DB, workspaceID, metric, since)
 	return summary
 }
 

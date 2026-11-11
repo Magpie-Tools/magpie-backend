@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -251,7 +252,7 @@ func TestReadModelProjectionPairBudget(t *testing.T) {
 func TestReadModelBackgroundOperationCountsPostgres(t *testing.T) {
 	db, proxyID, _ := seedReadModelFanoutTest(t)
 	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	QueueReadModelRefreshForProxyIDs([]uint64{proxyID})
 	if len(queries.queries) != 0 {
 		t.Fatal("queue notification added a direct database operation", queries.queries)

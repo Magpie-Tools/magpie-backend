@@ -189,9 +189,9 @@ SELECT ?,'current-http','tcp',n,1,TRUE,n,37,0,?,?,CURRENT_TIMESTAMP,CURRENT_TIME
 		}
 		queries := &statisticsCostQueryLogger{Interface: db.Logger, counts: make(map[string]int)}
 		measuredDB := db.Session(&gorm.Session{Logger: queries})
-		previous := DB
-		DB = measuredDB
-		defer func() { DB = previous }()
+		previous := pg.DB
+		pg.DB = measuredDB
+		defer func() { pg.DB = previous }()
 		var beginLSN string
 		if err := db.Raw("SELECT pg_current_wal_insert_lsn()::text").Scan(&beginLSN).Error; err != nil {
 			t.Fatal(err)

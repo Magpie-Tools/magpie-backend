@@ -15,6 +15,7 @@ import (
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	jobruntime "magpie/internal/jobs/runtime"
+	"magpie/internal/platform/pg"
 	"magpie/internal/settings"
 	"magpie/internal/support"
 	"net/http"
@@ -170,7 +171,7 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user domain.User
-	if err := database.DB.Where("LOWER(email) = ?", credentials.Email).First(&user).Error; err != nil {
+	if err := pg.DB.Where("LOWER(email) = ?", credentials.Email).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			consumeInvalidPasswordWork(credentials.Password)
 			recordLoginFailure(r, credentials.Email)
@@ -636,7 +637,7 @@ func createUserWithFirstAdminRole(user *domain.User, policy userRegistrationPoli
 		return errors.New("user cannot be nil")
 	}
 
-	return database.DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		// Serialize first-user role assignment across instances.
 		if tx.Dialector.Name() == "postgres" {
 			if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", firstUserAdminAdvisoryLockKey).Error; err != nil {

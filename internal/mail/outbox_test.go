@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	testdb "magpie/internal/testkit/db"
 )
 
@@ -17,9 +17,9 @@ import (
 func setupOutboxPostgresTest(t testing.TB) *gorm.DB {
 	t.Helper()
 	db := testdb.OpenPostgres(t)
-	previous := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = previous })
+	previous := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previous })
 	return db
 }
 

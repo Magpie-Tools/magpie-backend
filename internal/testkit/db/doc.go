@@ -11,7 +11,7 @@
 // fresh cipher, so encrypted model hooks work.
 //
 // Only _test.go files may import this package; internal/archtest enforces
-// that. A package-level handle such as database.DB is swapped by a helper
-// beside its owner, not here. Scenario fixtures stay with their tests until a
-// second package needs them.
+// that. A test that needs the shared pool handle pg.DB swaps it itself and
+// restores it; the kit does not touch package-level state. Scenario fixtures
+// stay with their tests until a second package needs them.
 package testdb

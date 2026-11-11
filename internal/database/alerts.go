@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/security"
 	"magpie/internal/support"
 )
@@ -31,7 +32,7 @@ type AlertsPage struct {
 
 func GetAlertRotators(ctx context.Context, workspaceID uint) ([]dto.AlertRotator, error) {
 	rotators := []dto.AlertRotator{}
-	err := DB.WithContext(ctx).Table("rotating_proxies r").
+	err := pg.DB.WithContext(ctx).Table("rotating_proxies r").
 		Select("r.id, r.name, p.name AS protocol").Joins("JOIN protocols p ON p.id = r.protocol_id").
 		Where("r.workspace_id = ?", workspaceID).Order("r.id").Scan(&rotators).Error
 	return rotators, err
@@ -39,7 +40,7 @@ func GetAlertRotators(ctx context.Context, workspaceID uint) ([]dto.AlertRotator
 
 func GetAlerts(ctx context.Context, workspaceID uint, before uint64) (AlertsPage, error) {
 	page := AlertsPage{Rules: []domain.AlertRule{}, Destinations: []dto.AlertDestination{}, Incidents: []domain.AlertIncident{}, Deliveries: []domain.AlertDelivery{}}
-	tx := DB.WithContext(ctx)
+	tx := pg.DB.WithContext(ctx)
 	if err := tx.Where("workspace_id = ?", workspaceID).Order("id DESC").Find(&page.Rules).Error; err != nil {
 		return page, err
 	}
@@ -109,7 +110,7 @@ func SaveAlertRule(ctx context.Context, workspaceID uint, id uint64, input dto.A
 	if len(input.DestinationIDs) > 10 {
 		return rule, alertInvalid("at most ten destinations may be attached")
 	}
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Serialize configuration and count limits with workspace/rotator deletion.
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, workspaceID).Error; err != nil {
@@ -182,7 +183,7 @@ func closeAlertForConfiguration(tx *gorm.DB, rule *domain.AlertRule, now time.Ti
 }
 
 func DeleteAlertRule(ctx context.Context, workspaceID uint, id uint64) error {
-	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, workspaceID).Error; err != nil {
 			return err
@@ -229,7 +230,7 @@ func SaveAlertDestination(ctx context.Context, workspaceID uint, id uint64, inpu
 			return dto.AlertDestination{}, err
 		}
 	}
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, workspaceID).Error; err != nil {
 			return err
@@ -320,7 +321,7 @@ func cancelAlertDestinationDeliveries(tx *gorm.DB, workspaceID uint, id uint64) 
 }
 
 func DeleteAlertDestination(ctx context.Context, workspaceID uint, id uint64) error {
-	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&workspace, workspaceID).Error; err != nil {
 			return err

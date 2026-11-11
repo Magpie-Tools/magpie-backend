@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -30,7 +31,7 @@ type WebsiteBlacklistCleanupResult struct {
 // source subscriptions that resolve to blocked hosts. It returns enough detail
 // for callers to refresh caches and queues.
 func RemoveBlockedWebsitesFromWorkspaces(ctx context.Context, blockedWebsites []string) (*WebsiteBlacklistCleanupResult, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, errors.New("database not initialised")
 	}
 
@@ -42,7 +43,7 @@ func RemoveBlockedWebsitesFromWorkspaces(ctx context.Context, blockedWebsites []
 
 	result := &WebsiteBlacklistCleanupResult{}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

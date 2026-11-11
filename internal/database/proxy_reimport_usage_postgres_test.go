@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -77,9 +78,9 @@ func TestProxyReimportPreservesUsagePostgres(t *testing.T) {
 			}
 			before := reimportUsagePeriod(t, db, w.ID)
 			queries := &reimportUsageQueries{Interface: logger.Default.LogMode(logger.Silent)}
-			DB = db.Session(&gorm.Session{Logger: queries})
+			pg.DB = db.Session(&gorm.Session{Logger: queries})
 			again, err := InsertAndGetProxiesWithWorkspace(input, w.ID)
-			DB = db
+			pg.DB = db
 			if err != nil {
 				t.Fatal(err)
 			}

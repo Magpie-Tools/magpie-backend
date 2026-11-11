@@ -33,7 +33,7 @@ func CreateWorkspaceInvitation(workspaceID, inviterUserID uint, email, role stri
 	}
 
 	var created domain.WorkspaceInvitation
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		var invitee domain.User
 		if err := tx.Where("LOWER(email) = ?", email).First(&invitee).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -92,7 +92,7 @@ func CreateWorkspaceInvitation(workspaceID, inviterUserID uint, email, role stri
 
 func ListWorkspaceInvitations(workspaceID uint, now time.Time) ([]dto.WorkspaceInvitation, error) {
 	var invitations []domain.WorkspaceInvitation
-	if err := invitationQuery(DB).
+	if err := invitationQuery(pg.DB).
 		Where("workspace_invitations.workspace_id = ? AND workspace_invitations.expires_at > ?", workspaceID, now.UTC()).
 		Order("workspace_invitations.created_at ASC, workspace_invitations.id ASC").
 		Find(&invitations).Error; err != nil {
@@ -103,7 +103,7 @@ func ListWorkspaceInvitations(workspaceID uint, now time.Time) ([]dto.WorkspaceI
 
 func ListUserWorkspaceInvitations(userID uint, now time.Time) ([]dto.WorkspaceInvitation, error) {
 	var invitations []domain.WorkspaceInvitation
-	if err := invitationQuery(DB).
+	if err := invitationQuery(pg.DB).
 		Where("workspace_invitations.invitee_user_id = ? AND workspace_invitations.expires_at > ?", userID, now.UTC()).
 		Order("workspace_invitations.expires_at ASC, workspace_invitations.id ASC").
 		Find(&invitations).Error; err != nil {
@@ -114,7 +114,7 @@ func ListUserWorkspaceInvitations(userID uint, now time.Time) ([]dto.WorkspaceIn
 
 func GetWorkspaceInvitationForWorkspace(workspaceID, invitationID uint, now time.Time) (dto.WorkspaceInvitation, error) {
 	var invitation domain.WorkspaceInvitation
-	err := invitationQuery(DB).
+	err := invitationQuery(pg.DB).
 		Where("workspace_invitations.id = ? AND workspace_invitations.workspace_id = ?", invitationID, workspaceID).
 		First(&invitation).Error
 	if err != nil {
@@ -131,7 +131,7 @@ func GetWorkspaceInvitationForWorkspace(workspaceID, invitationID uint, now time
 
 func UpdateWorkspaceInvitation(workspaceID, invitationID uint, role string, billingAdmin bool, now time.Time) (dto.WorkspaceInvitation, error) {
 	role = strings.ToLower(strings.TrimSpace(role))
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		var invitation domain.WorkspaceInvitation
 		query := tx.Where("id = ? AND workspace_id = ?", invitationID, workspaceID)
 		if pg.IsPostgresDialect(tx) {
@@ -168,7 +168,7 @@ func SetWorkspaceInvitationNotificationStatus(workspaceID, invitationID uint, st
 	if err := candidate.Normalize(); err != nil {
 		return err
 	}
-	result := DB.Model(&domain.WorkspaceInvitation{}).
+	result := pg.DB.Model(&domain.WorkspaceInvitation{}).
 		Where("id = ? AND workspace_id = ?", invitationID, workspaceID).
 		Update("notification", candidate.Notification)
 	if result.Error != nil {
@@ -181,7 +181,7 @@ func SetWorkspaceInvitationNotificationStatus(workspaceID, invitationID uint, st
 }
 
 func RevokeWorkspaceInvitation(workspaceID, invitationID uint, now time.Time) error {
-	result := DB.Where("id = ? AND workspace_id = ? AND expires_at > ?", invitationID, workspaceID, now.UTC()).
+	result := pg.DB.Where("id = ? AND workspace_id = ? AND expires_at > ?", invitationID, workspaceID, now.UTC()).
 		Delete(&domain.WorkspaceInvitation{})
 	if result.Error != nil {
 		return result.Error
@@ -194,7 +194,7 @@ func RevokeWorkspaceInvitation(workspaceID, invitationID uint, now time.Time) er
 
 func AcceptWorkspaceInvitation(invitationID, userID uint, now time.Time) (dto.WorkspaceInvitationAcceptance, error) {
 	var accepted dto.WorkspaceInvitationAcceptance
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		var invitation domain.WorkspaceInvitation
 		query := tx.Where("id = ? AND invitee_user_id = ?", invitationID, userID)
 		if pg.IsPostgresDialect(tx) {
@@ -254,7 +254,7 @@ func AcceptWorkspaceInvitation(invitationID, userID uint, now time.Time) (dto.Wo
 }
 
 func DeclineWorkspaceInvitation(invitationID, userID uint, now time.Time) error {
-	result := DB.Where("id = ? AND invitee_user_id = ? AND expires_at > ?", invitationID, userID, now.UTC()).
+	result := pg.DB.Where("id = ? AND invitee_user_id = ? AND expires_at > ?", invitationID, userID, now.UTC()).
 		Delete(&domain.WorkspaceInvitation{})
 	if result.Error != nil {
 		return result.Error
@@ -263,7 +263,7 @@ func DeclineWorkspaceInvitation(invitationID, userID uint, now time.Time) error 
 		return nil
 	}
 	var invitation domain.WorkspaceInvitation
-	err := DB.Select("id", "expires_at").Where("id = ? AND invitee_user_id = ?", invitationID, userID).First(&invitation).Error
+	err := pg.DB.Select("id", "expires_at").Where("id = ? AND invitee_user_id = ?", invitationID, userID).First(&invitation).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrWorkspaceInvitationNotFound
 	}
@@ -277,7 +277,7 @@ func DeclineWorkspaceInvitation(invitationID, userID uint, now time.Time) error 
 }
 
 func DeleteExpiredWorkspaceInvitations(ctx context.Context, before time.Time) (int64, error) {
-	tx := DB
+	tx := pg.DB
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}
@@ -319,7 +319,7 @@ func workspaceInvitationDTO(invitation domain.WorkspaceInvitation) dto.Workspace
 
 func workspaceInvitationMissingReason(workspaceID, invitationID uint, now time.Time) error {
 	var invitation domain.WorkspaceInvitation
-	err := DB.Select("id", "expires_at").Where("id = ? AND workspace_id = ?", invitationID, workspaceID).First(&invitation).Error
+	err := pg.DB.Select("id", "expires_at").Where("id = ? AND workspace_id = ?", invitationID, workspaceID).First(&invitation).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return ErrWorkspaceInvitationNotFound
 	}

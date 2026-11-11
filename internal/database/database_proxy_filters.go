@@ -17,7 +17,7 @@ func buildProxyListFilterQuery(workspaceID uint, filters dto.ProxyListFilters) *
 
 	selectedProtocols := normalizeProtocolFilters(filters.Protocols)
 
-	query := DB.Table("user_proxy_filter_indexes ufi").
+	query := pg.DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id").
 		Where("ufi.workspace_id = ?", workspaceID)
 
@@ -158,13 +158,13 @@ func hasProxyHealthFilters(filters dto.ProxyListFilters) bool {
 }
 
 func GetProxyFilterOptions(workspaceID uint) (dto.ProxyFilterOptions, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return dto.ProxyFilterOptions{}, fmt.Errorf("database connection was not initialised")
 	}
 
-	query, args := proxyFilterOptionValuesQuery(DB, workspaceID)
+	query, args := proxyFilterOptionValuesQuery(pg.DB, workspaceID)
 	var rows []proxyFilterValueRow
-	err := DB.Raw(query, args...).Scan(&rows).Error
+	err := pg.DB.Raw(query, args...).Scan(&rows).Error
 	if err != nil {
 		return dto.ProxyFilterOptions{}, err
 	}

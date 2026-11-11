@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 	"magpie/internal/support/reputation"
 
@@ -51,7 +52,7 @@ type proxyReputationSummary struct {
 
 // RecalculateProxyReputations recomputes per-proxy, per-protocol reputation scores for the given proxy IDs.
 func RecalculateProxyReputations(ctx context.Context, proxyIDs []uint64) error {
-	return recalculateProxyReputations(DB, ctx, proxyIDs)
+	return recalculateProxyReputations(pg.DB, ctx, proxyIDs)
 }
 
 // Keep one database handle throughout a job, including jobs that outlive their
@@ -591,11 +592,11 @@ func GetProxyReputations(ctx context.Context, proxyIDs []uint64) (map[uint64][]d
 	if len(proxyIDs) == 0 {
 		return result, nil
 	}
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 
 	var rows []domain.ProxyReputation
 	if err := db.

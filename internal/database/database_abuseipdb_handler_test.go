@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -25,9 +26,9 @@ func TestGetNextAbuseIPDBProxyToCheckSkipsHostnameRoutes(t *testing.T) {
 		t.Fatalf("migrate database: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	user := domain.User{Email: "abuse-hostname@example.test", Password: "hash", Role: "user"}
 	if err := db.Create(&user).Error; err != nil {

@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -14,11 +15,11 @@ import (
 const autoRemoveCleanupBatchSize = 2000
 
 func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -85,10 +86,10 @@ func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, [
 }
 
 func CleanupProxyLimitViolations(ctx context.Context) (int64, []domain.Proxy, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -121,11 +122,11 @@ func cleanupProxyLimitViolationsWithConfig(ctx context.Context, limitCfg config.
 		return 0, nil, nil, nil
 	}
 
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -235,7 +236,7 @@ func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
 	}
 
 	var stillInUse []int
-	if err := DB.Model(&domain.ManagedProxy{}).
+	if err := pg.DB.Model(&domain.ManagedProxy{}).
 		Where("proxy_id IN ?", candidateIDs).
 		Distinct("proxy_id").
 		Pluck("proxy_id", &stillInUse).Error; err != nil {
@@ -273,11 +274,11 @@ func GetExistingProxyIDSet(ctx context.Context, proxyIDs []uint64) (map[uint64]s
 	if len(proxyIDs) == 0 {
 		return nil, nil
 	}
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -305,10 +306,10 @@ func GetExistingProxyIDSet(ctx context.Context, proxyIDs []uint64) (map[uint64]s
 }
 
 func DeleteOrphanProxies(ctx context.Context) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("database not initialised")
 	}
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

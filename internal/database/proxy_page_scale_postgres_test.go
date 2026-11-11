@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
@@ -45,7 +46,7 @@ FROM generate_series(1,8) w CROSS JOIN generate_series(1,%d) n`, routes),
 		}
 	}
 	queryLog := &proxyPageReadLogger{Interface: logger.Default}
-	DB = db.Session(&gorm.Session{Logger: queryLog})
+	pg.DB = db.Session(&gorm.Session{Logger: queryLog})
 	var got []int
 	for page := 1; page <= 2; page++ {
 		rows, total := GetProxyInfoPageWithFiltersAndOptions(1, page, 40, "", dto.ProxyListFilters{}, ProxyPageQueryOptions{})

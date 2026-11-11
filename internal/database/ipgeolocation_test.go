@@ -13,6 +13,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/ipgeolocation"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -33,9 +34,9 @@ func setupIPGeolocationTest(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(&domain.IPGeolocationLookup{}, &domain.IPGeolocationState{}); err != nil {
 		t.Fatal(err)
 	}
-	previous := DB
-	DB = db
-	t.Cleanup(func() { DB = previous })
+	previous := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previous })
 	if _, err := GetIPGeolocationState(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +495,7 @@ func TestIPGeolocationProjectionIsBoundedAndAuthoritativePostgres(t *testing.T) 
 		t.Fatal("refresh disagrees with provider cache", updates, err)
 	}
 	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	settings.Plugins.IPGeolocation.Enabled = false
 	if err := config.SetConfig(settings); err != nil {
 		t.Fatal(err)

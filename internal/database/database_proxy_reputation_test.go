@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -26,7 +27,7 @@ func TestRecalculateProxyReputationsKeepsOriginalDatabase(t *testing.T) {
 	// Every later read and the final upsert must still use the original DB.
 	const callback = "test:replace_reputation_database"
 	if err := db.Callback().Row().After("gorm:row").Register(callback, func(_ *gorm.DB) {
-		DB = nil
+		pg.DB = nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +35,7 @@ func TestRecalculateProxyReputationsKeepsOriginalDatabase(t *testing.T) {
 	if err := RecalculateProxyReputations(context.Background(), []uint64{proxy.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if DB != nil {
+	if pg.DB != nil {
 		t.Fatal("test did not replace the global database handle")
 	}
 	var rows []domain.ProxyReputation

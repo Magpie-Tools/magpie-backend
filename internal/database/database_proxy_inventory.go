@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -21,7 +22,7 @@ func ForEachProxyBatch(batchSize int, fn func([]domain.Proxy) error) error {
 	// Qualify each physical route once without expanding all shared owners and
 	// sorting wide duplicate rows. Hydration still loads every active owner.
 	var batchProxies []domain.Proxy
-	result := DB.
+	result := pg.DB.
 		Model(&domain.Proxy{}).
 		Where("EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id AND up.state = ?)", domain.ManagedProxyStateActive).
 		Order("proxies.id").

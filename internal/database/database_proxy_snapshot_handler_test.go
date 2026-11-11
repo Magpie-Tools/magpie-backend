@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -40,10 +41,10 @@ func TestGetProxySnapshotCountSummaryUsesLatestAndSinceBaseline(t *testing.T) {
 		t.Fatalf("create snapshot workspace: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
+	previousDB := pg.DB
+	pg.DB = db
 	t.Cleanup(func() {
-		DB = previousDB
+		pg.DB = previousDB
 	})
 
 	now := time.Date(2026, time.June, 6, 12, 0, 0, 0, time.UTC)

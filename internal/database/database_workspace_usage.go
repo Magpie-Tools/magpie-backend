@@ -9,6 +9,7 @@ import (
 
 	"magpie/internal/checkpace"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -149,10 +150,10 @@ func RecordWorkspaceManagedTrafficBatch(ctx context.Context, samples []Workspace
 	if len(samples) == 0 {
 		return nil
 	}
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	tx := DB
+	tx := pg.DB
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}
@@ -246,10 +247,10 @@ func workspaceUsageDeltaRows(periods []domain.WorkspaceUsagePeriod) []map[string
 // upsert and one usage upsert row per workspace and month. A batch whose
 // sequence the process already applied changes nothing.
 func FlushWorkspaceCheckUsage(ctx context.Context, batch checkpace.UsageBatch) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	tx := DB
+	tx := pg.DB
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}
@@ -356,20 +357,20 @@ const workspaceUsageFlushRetention = 30 * 24 * time.Hour
 // PruneWorkspaceUsageFlushes deletes batch marks of processes that stopped
 // flushing long ago. Each process start adds one mark; this runs at startup.
 func PruneWorkspaceUsageFlushes(ctx context.Context) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	return DB.WithContext(ctx).Where("updated_at < ?", time.Now().UTC().Add(-workspaceUsageFlushRetention)).
+	return pg.DB.WithContext(ctx).Where("updated_at < ?", time.Now().UTC().Add(-workspaceUsageFlushRetention)).
 		Delete(&domain.WorkspaceUsageFlush{}).Error
 }
 
 // RecordWorkspaceScrapeUsage charges one scrape to each workspace served by a
 // source fetch. Scrapes are infrequent, so each fetch writes one small upsert.
 func RecordWorkspaceScrapeUsage(ctx context.Context, workspaceIDs []uint, fetchedAt time.Time) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	tx := DB
+	tx := pg.DB
 	if ctx != nil {
 		tx = tx.WithContext(ctx)
 	}

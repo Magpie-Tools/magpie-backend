@@ -8,6 +8,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
@@ -45,9 +46,9 @@ func setupProxyTagTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate tag schema: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 	return db
 }
 

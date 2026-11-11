@@ -13,6 +13,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/ipgeolocation"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -40,9 +41,9 @@ func setIPGeoRuntimeConfig(t *testing.T, cfg config.IPGeolocationPluginConfig) {
 
 func TestIPGeolocationDisabledDoesNotTouchDatabase(t *testing.T) {
 	setIPGeoRuntimeConfig(t, config.IPGeolocationPluginConfig{})
-	original := database.DB
-	database.DB = nil
-	t.Cleanup(func() { database.DB = original })
+	original := pg.DB
+	pg.DB = nil
+	t.Cleanup(func() { pg.DB = original })
 	client := ipgeolocation.Client{HTTPClient: &http.Client{Transport: ipGeoTransport(func(*http.Request) (*http.Response, error) {
 		t.Fatal("disabled plugin made an API request")
 		return nil, nil
@@ -74,9 +75,9 @@ func setupIPGeoRuntimeDB(t *testing.T) *gorm.DB {
 			t.Fatal(err)
 		}
 	}
-	original := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = original })
+	original := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = original })
 	return db
 }
 

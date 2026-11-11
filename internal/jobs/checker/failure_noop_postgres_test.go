@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"magpie/internal/database"
-
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"magpie/internal/platform/pg"
 )
 
 type failureResetSQLCapture struct {
@@ -51,9 +51,9 @@ func TestFailureResetAvoidsZeroWritesAndLocksPostgres(t *testing.T) {
 	}
 	sqlDB, _ := db.DB()
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	previous := database.DB
-	database.DB = db
-	t.Cleanup(func() { database.DB = previous })
+	previous := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previous })
 	for _, sql := range []string{
 		`CREATE TABLE user_proxies (workspace_id bigint NOT NULL,proxy_id bigint NOT NULL,
 consecutive_failures integer NOT NULL DEFAULT 0,username text,password text,state text,
@@ -89,7 +89,7 @@ INSERT INTO observed_failure_updates VALUES(NEW.workspace_id,NEW.proxy_id); RETU
 		t.Fatal(err)
 	}
 	capture := &failureResetSQLCapture{Interface: db.Logger}
-	database.DB = db.Session(&gorm.Session{Logger: capture})
+	pg.DB = db.Session(&gorm.Session{Logger: capture})
 	done := make(chan error, 1)
 	go func() { done <- execResetChunk(pairs) }()
 	select {

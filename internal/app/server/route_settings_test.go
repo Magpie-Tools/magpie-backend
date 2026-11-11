@@ -19,6 +19,7 @@ import (
 	"magpie/internal/domain"
 	gqlschema "magpie/internal/graphql"
 	"magpie/internal/jobs/checker/judges"
+	"magpie/internal/platform/pg"
 )
 
 func setupSettingsAPITest(t *testing.T) (uint, uint) {
@@ -226,7 +227,7 @@ func TestSettingsAPIsPersistCheckerProfilesAndPreserveOmittedFields(t *testing.T
 	for _, api := range []string{"REST", "GraphQL"} {
 		t.Run(api, func(t *testing.T) {
 			userID, workspaceID := setupSettingsAPITest(t)
-			if err := database.DB.AutoMigrate(&domain.ProxyTag{}, &domain.ProxyTagAssignment{}); err != nil {
+			if err := pg.DB.AutoMigrate(&domain.ProxyTag{}, &domain.ProxyTagAssignment{}); err != nil {
 				t.Fatal(err)
 			}
 			tag, err := database.CreateProxyTag(workspaceID, "HTTP extra", "#22C55E")

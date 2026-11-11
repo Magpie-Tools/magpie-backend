@@ -8,6 +8,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
+	"magpie/internal/platform/pg"
 	"sort"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 
 func ListCheckerWorkspaces(ctx context.Context) ([]uint, error) {
 	var ids []uint
-	err := DB.WithContext(ctx).Model(&domain.Workspace{}).Pluck("id", &ids).Error
+	err := pg.DB.WithContext(ctx).Model(&domain.Workspace{}).Pluck("id", &ids).Error
 	return ids, err
 }
 
@@ -26,7 +27,7 @@ func ListCheckerWorkspaces(ctx context.Context) ([]uint, error) {
 func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig.Workspace, error) {
 	var snapshot *checkerconfig.Workspace
 	projectionChanged := false
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&workspace, workspaceID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -294,13 +295,13 @@ func filterWorkspaceStatisticEvidence(query *gorm.DB, workspaceID uint) *gorm.DB
 // historical rows. A delayed old event may recreate a pointer; the next sweep
 // drops it again, and current-health reads always reject it immediately.
 func PruneObsoleteCheckerEvidence(ctx context.Context, limit int) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("checker evidence pruning: database not initialised")
 	}
 	if limit <= 0 {
 		limit = deleteChunkSize
 	}
-	result := DB.WithContext(ctx).Exec(`DELETE FROM proxy_latest_statistics WHERE (workspace_id, config_key, proxy_id, protocol_id) IN (
+	result := pg.DB.WithContext(ctx).Exec(`DELETE FROM proxy_latest_statistics WHERE (workspace_id, config_key, proxy_id, protocol_id) IN (
 SELECT candidate.workspace_id, candidate.config_key, candidate.proxy_id, candidate.protocol_id
 FROM proxy_latest_statistics candidate WHERE `+obsoleteCheckerEvidencePredicateSQL+` LIMIT ?)`, limit)
 	return result.RowsAffected, result.Error
@@ -389,14 +390,14 @@ SELECT COUNT(*),(SELECT COUNT(*)>0 FROM recorded) FROM removed`, workspaceID, pr
 // Tombstones survive missed notifications. Once old deleted rows expire,
 // advance the full-refresh watermark so an older process cannot miss removal.
 func PruneDeletedCheckerRoutes(ctx context.Context, before time.Time, limit int) (int64, error) {
-	if DB == nil || DB.Dialector.Name() != "postgres" {
+	if pg.DB == nil || pg.DB.Dialector.Name() != "postgres" {
 		return 0, nil
 	}
 	if limit <= 0 {
 		limit = deleteChunkSize
 	}
 	var count int64
-	err := DB.WithContext(ctx).Raw(`WITH candidates AS MATERIALIZED (
+	err := pg.DB.WithContext(ctx).Raw(`WITH candidates AS MATERIALIZED (
 SELECT workspace_id,proxy_id FROM checker_proxy_changes
 WHERE deleted AND updated_at < ? ORDER BY updated_at,workspace_id,proxy_id LIMIT ?
 ), locked AS MATERIALIZED (
@@ -434,7 +435,7 @@ type checkerHealthVersion struct {
 // Read the committed generation on API cache reads, including across instances.
 // A refresh records it before querying and rechecks it before publishing.
 func currentCheckerHealthVersion(workspaceID uint) checkerHealthVersion {
-	version, err := currentCheckerHealthVersionWithDB(DB, workspaceID)
+	version, err := currentCheckerHealthVersionWithDB(pg.DB, workspaceID)
 	if err != nil {
 		version.Dirty = true
 	}
