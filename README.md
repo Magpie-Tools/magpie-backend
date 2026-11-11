@@ -6,7 +6,7 @@ scraping, reputation calculation, and rotating proxy listeners.
 
 ## Requirements
 
-- Go `1.27.3` or newer
+- Go `1.27.4` or newer
 - PostgreSQL `17`
 - Redis `7`
 
@@ -115,6 +115,8 @@ and queue/checker benchmark results. The [Go 1.27.2 security update](docs/perfor
 records the follow-up fixes and validation.
 The [Go 1.27.3 security update](docs/performance/go-1.27.3.md) covers the
 subsequent certificate-validation advisory and toolchain checks.
+Go 1.27.4 fixes [GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859),
+an HTTP/1 server header race reported by the CI vulnerability scan.
 
 ## Container image
 
