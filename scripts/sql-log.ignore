@@ -1,0 +1,7 @@
+# Regular expressions for normalized statements that scripts/sql-log.sh drops
+# before comparing. Keep this list short and explain every line: an ignored
+# statement is not compared at all.
+
+# The driver's liveness probe of a pooled connection. How often a connection is
+# checked depends on how long it sat idle, not on the code under test.
+^-- ping$

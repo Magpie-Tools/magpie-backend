@@ -1,0 +1,57 @@
+# The fixed onboarding task set (design D6). The procedure in README.md turns
+# each task into the files a newcomer must read.
+#
+# anchor: the declarations the task changes or cannot be done without reading.
+#         "Name" searches every package, "pkg.Name" one package clause,
+#         "Type#Method" a method, "file:dir/name.ext" a non-Go file by path suffix.
+#         An anchor names a symbol, never a path, so it follows a moved file.
+# test:   the contract tests to read before the change, by function name.
+#
+# The set and its anchors were fixed at step 0 and do not change between
+# checkpoints. A pure move changes neither a symbol's name nor this file.
+
+task: Add a field to alert rules
+anchor: domain.AlertRule
+anchor: dto.AlertRuleWrite
+anchor: SaveAlertRule
+anchor: GetAlerts
+anchor: saveAlertRule
+test: TestAlertAPIRolesIsolationAndWriteOnlyDestinations
+test: TestAlertsConfigurationClosesWithoutRecoveryAndSecretsStayWriteOnly
+
+task: Change how failed proxies are requeued
+anchor: checker.work
+anchor: handleFailureTracking
+anchor: requeueCheckedProxy
+anchor: failureTracker#processBatch
+anchor: verifyProxyOwnership
+anchor: RedisProxyQueue#requeueProxy
+anchor: file:queue/proxy/complete.lua
+test: TestRequeueProxy_OnlyPersistsPayloadWhenRequested
+test: TestPlaintextProxyCycleCommandBudgetAndPayload
+test: TestFailureTrackingRetainsCommittedDeletionsOnActionError
+
+task: Add a column to the proxy filter projection
+anchor: domain.WorkspaceProxyFilterIndex
+anchor: ensureReadModelSchema
+anchor: refreshWorkspaceProxyFilterScope
+anchor: flushReadModelDirtyProxyIDs
+anchor: buildProxyListFilterQuery
+test: TestReadModelBackfillStoresHostAndLiteralIPProjection
+test: TestReadModelNoopFilterRepairsEveryContentFieldPostgres
+
+task: Change workspace invitation acceptance
+anchor: domain.WorkspaceInvitation
+anchor: CreateWorkspaceInvitation
+anchor: AcceptWorkspaceInvitation
+anchor: acceptWorkspaceInvitation
+test: TestWorkspaceInvitationIsAccountBoundAndAcceptanceIsAtomic
+test: TestConcurrentWorkspaceInvitationAcceptanceCreatesOneMembership
+
+task: Change the email outbox retry policy
+anchor: domain.EmailOutbox
+anchor: ClaimPendingEmailOutbox
+anchor: MarkEmailOutboxForRetry
+anchor: scheduleEmailRetry
+anchor: resolveEmailRetryDelay
+test: TestForgotPassword_ReturnsServiceUnavailableWhenEmailOutboxPersistFails

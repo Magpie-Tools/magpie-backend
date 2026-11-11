@@ -1,6 +1,6 @@
 # Required checks. See AGENTS.md.
 
-.PHONY: test test-race vet build check test-integration
+.PHONY: test test-race vet build check test-integration sql-log onboarding
 
 test:
 	go test ./... -count=1
@@ -20,3 +20,12 @@ check: test test-race vet build
 # suite against them like CI, and removes them. RACE=0 skips the race run.
 test-integration:
 	scripts/test-integration.sh
+
+# Records per-transaction SQL statement sequences for the tests listed in
+# docs/onboarding/sql-log.md. OUT names the digest file to write.
+sql-log:
+	scripts/sql-log.sh $(OUT)
+
+# Prints the onboarding measurement for the fixed task set.
+onboarding:
+	go run ./internal/tools/onboarding
