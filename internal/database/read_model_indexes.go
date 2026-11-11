@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
@@ -968,7 +969,7 @@ WITH rows AS (
 	JOIN scrape_sites ss ON ss.id = uss.scrape_site_id
 	LEFT JOIN (proxy_scrape_site pss JOIN user_proxies up ON up.proxy_id = pss.proxy_id)
 		ON pss.scrape_site_id = ss.id AND up.workspace_id = uss.workspace_id
-	LEFT JOIN LATERAL (` + currentOverallStatusForProxySQL("up.workspace_id", "up.proxy_id") + `) pos ON TRUE
+	LEFT JOIN LATERAL (` + evidence.CurrentOverallStatusForProxySQL("up.workspace_id", "up.proxy_id") + `) pos ON TRUE
 	` + where + `
 	GROUP BY uss.workspace_id, ss.id, ss.url, uss.created_at
 )

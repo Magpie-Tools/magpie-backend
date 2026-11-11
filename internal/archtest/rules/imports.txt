@@ -22,8 +22,9 @@ blacklist: config database domain jobs/queue/proxy support
 checkerconfig: api/dto domain
 checkpace: domain
 config:
-database: abuseipdb api/dto auth checkerconfig checkpace config domain ipgeolocation jobs/checker/judges platform/pg platform/schema security support support/reputation
+database: abuseipdb api/dto auth checkerconfig checkpace config domain evidence ipgeolocation jobs/checker/judges platform/pg platform/schema security support support/reputation
 domain: api/dto instanceid security
+evidence: domain platform/pg
 geolite: config database support
 graphql: api/dto database domain settings
 instanceid:

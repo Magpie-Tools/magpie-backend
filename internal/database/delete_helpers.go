@@ -3,6 +3,7 @@ package database
 import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 )
 
 func collectProxyIDsForDeletion(workspaceID uint, settings dto.DeleteSettings) ([]uint, error) {
@@ -24,7 +25,7 @@ func collectProxyIDsForDeletion(workspaceID uint, settings dto.DeleteSettings) (
 
 	if !settings.Filter && (settings.ProxyStatus == "alive" || settings.ProxyStatus == "dead") {
 		isAlive := settings.ProxyStatus == "alive"
-		query = query.Joins(currentOverallStatusJoin(query, "INNER", "user_proxies.workspace_id", "proxies.id")).
+		query = query.Joins(evidence.CurrentOverallStatusJoin(query, "INNER", "user_proxies.workspace_id", "proxies.id")).
 			Where("pos.overall_alive = ?", isAlive)
 	}
 

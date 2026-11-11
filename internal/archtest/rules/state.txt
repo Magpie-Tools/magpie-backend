@@ -16,8 +16,9 @@ blacklist: 6
 checkerconfig: 4
 checkpace: 16
 config: 18
-database: 30
+database: 28
 domain: 9
+evidence: 2
 geolite: 4
 instanceid: 2
 ipgeolocation: 1

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 
 	"gorm.io/gorm"
 )
@@ -47,7 +48,7 @@ SELECT w.id,w.checker_http_key,'tcp',n,1,TRUE,n,37,CURRENT_TIMESTAMP FROM worksp
 			measured := db.Session(&gorm.Session{Logger: queries})
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			counts, err := aliveProxyCountByWorkspace(measured.WithContext(ctx), ids[:owners])
+			counts, err := evidence.AliveProxyCountByWorkspace(measured.WithContext(ctx), ids[:owners])
 			if err != nil || len(counts) != owners {
 				t.Fatalf("counts=%v error=%v", counts, err)
 			}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 
 	"gorm.io/gorm"
 )
@@ -243,7 +244,7 @@ VALUES (?,?,'unchanged.example',8080,'2000-01-01')`, []any{workspaces[0].ID, rou
 		t.Fatal("missing projected or control rows", len(rows))
 	}
 	var publicEvidence int64
-	if err := currentLatestStatistics(db, workspaces[0].ID).Where("pls.proxy_id=1").Count(&publicEvidence).Error; err != nil || publicEvidence != 0 {
+	if err := evidence.CurrentLatestStatistics(db, workspaces[0].ID).Where("pls.proxy_id=1").Count(&publicEvidence).Error; err != nil || publicEvidence != 0 {
 		t.Fatal("public readers exposed dirty-workspace health", publicEvidence, err)
 	}
 }

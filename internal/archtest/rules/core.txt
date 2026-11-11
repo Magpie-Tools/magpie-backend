@@ -8,5 +8,5 @@
 # list only shrinks. The one exception is a package created by moving code out
 # of internal/database.
 
-line_ceiling: 18415
+line_ceiling: 18119
 importers: app app/bootstrap app/server blacklist cmd/seed-dev-data geolite graphql jobs/checker jobs/maintenance jobs/runtime jobs/scraper rotatingproxy settings

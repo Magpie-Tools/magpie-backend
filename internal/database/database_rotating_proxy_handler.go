@@ -11,6 +11,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 	"magpie/internal/support"
 
 	"gorm.io/gorm"
@@ -34,19 +35,8 @@ var (
 	ErrRotatingProxyUptimeOutOfRange    = errors.New("uptime percentage must be between 0 and 100")
 )
 
-var (
-	reputationLabelOrder = []string{"good", "neutral", "poor"}
-	reputationLabelSet   = map[string]struct{}{
-		"good":    {},
-		"neutral": {},
-		"poor":    {},
-	}
-)
-
 const (
 	rotatingProxyNameMaxLength = 120
-	uptimeFilterMin            = "min"
-	uptimeFilterMax            = "max"
 	defaultInstanceRegion      = "Unknown"
 )
 
@@ -131,7 +121,7 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 			}
 			return err
 		}
-		filters := sanitizeRotatorReputationLabels(payload.ReputationLabels)
+		filters := evidence.SanitizeRotatorReputationLabels(payload.ReputationLabels)
 
 		entity := domain.RotatingProxy{
 			WorkspaceID:             workspaceID,
@@ -164,7 +154,7 @@ func CreateRotatingProxy(workspaceID uint, payload dto.RotatingProxyCreateReques
 			return err
 		}
 
-		aliveCount, err := countAliveProxiesForProtocol(tx, workspaceID, proxyProtocol.ID, filters, uptimeFilterType, uptimePercentage)
+		aliveCount, err := evidence.CountAliveProxiesForProtocol(tx, workspaceID, proxyProtocol.ID, filters, uptimeFilterType, uptimePercentage)
 		if err != nil {
 			return err
 		}
@@ -234,8 +224,8 @@ func ListRotatingProxies(workspaceID uint) ([]dto.RotatingProxy, error) {
 		if strings.TrimSpace(row.ListenTransportProtocol) == "" {
 			listenTransportProtocol = transportProtocol
 		}
-		labels := sanitizeRotatorReputationLabels(row.ReputationLabels.Clone())
-		uptimeFilterType, uptimePercentage := normalizeRotatorUptimeFilter(row.UptimeFilterType, row.UptimePercentage)
+		labels := evidence.SanitizeRotatorReputationLabels(row.ReputationLabels.Clone())
+		uptimeFilterType, uptimePercentage := evidence.NormalizeRotatorUptimeFilter(row.UptimeFilterType, row.UptimePercentage)
 		instanceID := strings.TrimSpace(row.InstanceID)
 		if instanceID == "" {
 			instanceID = support.GetInstanceID()
@@ -346,8 +336,8 @@ func GetNextRotatingProxy(workspaceID uint, rotatingProxyID uint64) (*dto.Rotati
 			return err
 		}
 
-		labels := sanitizeRotatorReputationLabels(entity.ReputationLabels.Clone())
-		uptimeFilterType, uptimePercentage := normalizeRotatorUptimeFilter(entity.UptimeFilterType, entity.UptimePercentage)
+		labels := evidence.SanitizeRotatorReputationLabels(entity.ReputationLabels.Clone())
+		uptimeFilterType, uptimePercentage := evidence.NormalizeRotatorUptimeFilter(entity.UptimeFilterType, entity.UptimePercentage)
 		selected, err := nextAliveProxyForProtocol(tx, workspaceID, entity.ProtocolID, labels, uptimeFilterType, uptimePercentage, entity.LastProxyID)
 		if err != nil {
 			return err
@@ -387,24 +377,17 @@ func GetNextRotatingProxy(workspaceID uint, rotatingProxyID uint64) (*dto.Rotati
 }
 
 func getAliveProxyCountCached(workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, cache map[string]int) (int, error) {
-	normLabels := sanitizeRotatorReputationLabels(labels)
-	cacheKey := buildAliveProxyCacheKey(protocolID, normLabels, uptimeFilterType, uptimePercentage)
+	normLabels := evidence.SanitizeRotatorReputationLabels(labels)
+	cacheKey := evidence.BuildAliveProxyCacheKey(protocolID, normLabels, uptimeFilterType, uptimePercentage)
 	if count, ok := cache[cacheKey]; ok {
 		return count, nil
 	}
-	count, err := countAliveProxiesForProtocol(DB, workspaceID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
+	count, err := evidence.CountAliveProxiesForProtocol(DB, workspaceID, protocolID, normLabels, uptimeFilterType, uptimePercentage)
 	if err != nil {
 		return 0, err
 	}
 	cache[cacheKey] = count
 	return count, nil
-}
-
-func countAliveProxiesForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) (int, error) {
-	var count int64
-	err := buildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage).
-		Select("COUNT(DISTINCT proxies.id)").Scan(&count).Error
-	return int(count), err
 }
 
 func getProxyAddressCached(workspaceID uint, proxyID uint64, cache map[uint64]string) (string, error) {
@@ -427,7 +410,7 @@ func getProxyAddressCached(workspaceID uint, proxyID uint64, cache map[uint64]st
 }
 
 func aliveProxiesForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) ([]domain.Proxy, error) {
-	query := buildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage)
+	query := evidence.BuildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage)
 
 	var proxies []domain.Proxy
 	err := query.
@@ -443,30 +426,8 @@ func aliveProxiesForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labe
 	return proxies, nil
 }
 
-func buildAliveProxyQuery(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) *gorm.DB {
-	filterLabels := sanitizeRotatorReputationLabels(labels)
-
-	// Scope latest evidence to this workspace before joining shared ownership.
-	// Joining the global current-evidence view expands every route's other owners.
-	query := tx.
-		Model(&domain.Proxy{}).
-		Select("proxies.*").
-		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id AND up.workspace_id = ? AND up.state = ?", workspaceID, domain.ManagedProxyStateActive).
-		Joins("JOIN workspaces checker_workspace ON checker_workspace.id = up.workspace_id AND NOT checker_workspace.checker_dirty").
-		Joins("JOIN proxy_latest_statistics pls ON pls.proxy_id = proxies.id AND pls.workspace_id = CASE WHEN checker_workspace.checker_generation = 0 THEN 0 ELSE checker_workspace.id END AND pls.protocol_id = ? AND pls.alive = ? AND (pls.transport_protocol = 'tcp' OR pls.workspace_id = 0)", protocolID, true).
-		Joins("LEFT JOIN proxy_checker_plans cp ON cp.workspace_id = up.workspace_id AND cp.proxy_id = proxies.id AND cp.protocol_id = pls.protocol_id").
-		Where(`(checker_workspace.checker_generation = 0 OR
-			(checker_workspace.checker_generation > 0 AND pls.config_key <> '' AND
-			pls.config_key = COALESCE(cp.config_key,
-				CASE pls.protocol_id WHEN 1 THEN checker_workspace.checker_http_key WHEN 2 THEN checker_workspace.checker_https_key WHEN 3 THEN checker_workspace.checker_socks4_key WHEN 4 THEN checker_workspace.checker_socks5_key ELSE '' END)))`)
-
-	query = applyReputationFilter(query, filterLabels)
-	query = applyUptimeFilter(query, tx, protocolID, uptimeFilterType, uptimePercentage)
-	return query
-}
-
 func nextAliveProxyForProtocol(tx *gorm.DB, workspaceID uint, protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64, lastProxyID *uint64) (*domain.Proxy, error) {
-	baseQuery := buildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage)
+	baseQuery := evidence.BuildAliveProxyQuery(tx, workspaceID, protocolID, labels, uptimeFilterType, uptimePercentage)
 
 	if lastProxyID != nil {
 		nextAfterCursor, err := fetchAliveProxyCandidate(baseQuery, *lastProxyID, true, workspaceID)
@@ -503,52 +464,6 @@ func fetchAliveProxyCandidate(baseQuery *gorm.DB, cursorProxyID uint64, applyCur
 	}
 
 	return &proxy, nil
-}
-
-func applyReputationFilter(query *gorm.DB, labels []string) *gorm.DB {
-	if !shouldApplyReputationFilter(labels) {
-		return query
-	}
-
-	return query.
-		Joins("JOIN proxy_reputations pr ON pr.proxy_id = proxies.id AND pr.kind = ?", domain.ProxyReputationKindOverall).
-		Where("pr.label IN ?", labels)
-}
-
-func applyUptimeFilter(query *gorm.DB, tx *gorm.DB, protocolID int, uptimeFilterType string, uptimePercentage *float64) *gorm.DB {
-	normalizedType, normalizedPercentage := normalizeRotatorUptimeFilter(uptimeFilterType, uptimePercentage)
-	if normalizedType == "" || normalizedPercentage == nil {
-		return query
-	}
-
-	// History records one physical request. Expand its workspace evidence so a
-	// shared request can have different validation outcomes in each workspace.
-	evidenceTable := "jsonb_to_recordset(COALESCE(psr.check_evidence, '[]'::jsonb)) AS e(workspace_id bigint, config_key text, alive boolean)"
-	workspaceExpr, keyExpr, aliveExpr := "e.workspace_id", "e.config_key", "e.alive"
-	if tx.Dialector.Name() == "sqlite" {
-		evidenceTable = "json_each(COALESCE(psr.check_evidence, '[]')) e"
-		workspaceExpr = "json_extract(e.value, '$.workspace_id')"
-		keyExpr = "json_extract(e.value, '$.config_key')"
-		aliveExpr = "json_extract(e.value, '$.alive')"
-	}
-	// Correlate history before expanding evidence. A candidate cannot scan
-	// retained history belonging to unrelated routes or workspaces.
-	evidenceUptime := "SELECT ROUND(100.0 * SUM(CASE WHEN " + aliveExpr + " THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) " +
-		"FROM proxy_statistics psr CROSS JOIN " + evidenceTable +
-		" WHERE psr.proxy_id = proxies.id AND psr.protocol_id = ? AND psr.transport_protocol = 'tcp' " +
-		"AND " + workspaceExpr + " = pls.workspace_id AND " + keyExpr + " = pls.config_key"
-	legacyUptime := "SELECT ROUND(100.0 * SUM(CASE WHEN psr.alive THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) " +
-		"FROM proxy_statistics psr WHERE psr.proxy_id = proxies.id AND psr.protocol_id = ?"
-	comparison := ">="
-	if normalizedType == uptimeFilterMax {
-		comparison = "<="
-	}
-	return query.Where("(CASE WHEN pls.workspace_id = 0 THEN ("+legacyUptime+") ELSE ("+evidenceUptime+") END) "+comparison+" ?",
-		protocolID, protocolID, *normalizedPercentage)
-}
-
-func shouldApplyReputationFilter(labels []string) bool {
-	return len(labels) > 0 && len(labels) < len(reputationLabelOrder)
 }
 
 func fetchWorkspaceProxyByID(tx *gorm.DB, workspaceID uint, proxyID uint64) (*domain.Proxy, error) {
@@ -621,32 +536,6 @@ func allocateListenPort(tx *gorm.DB, instanceID string) (uint16, error) {
 	return 0, ErrRotatingProxyPortExhausted
 }
 
-func sanitizeRotatorReputationLabels(labels []string) []string {
-	if len(labels) == 0 {
-		return nil
-	}
-
-	seen := make(map[string]struct{}, len(labels))
-	for _, raw := range labels {
-		label := strings.ToLower(strings.TrimSpace(raw))
-		if _, ok := reputationLabelSet[label]; ok {
-			seen[label] = struct{}{}
-		}
-	}
-
-	if len(seen) == 0 {
-		return nil
-	}
-
-	result := make([]string, 0, len(seen))
-	for _, label := range reputationLabelOrder {
-		if _, ok := seen[label]; ok {
-			result = append(result, label)
-		}
-	}
-	return result
-}
-
 func validateRotatorUptimeFilter(rawType string, rawPercentage *float64) (string, *float64, error) {
 	filterType := strings.ToLower(strings.TrimSpace(rawType))
 	hasType := filterType != ""
@@ -661,7 +550,7 @@ func validateRotatorUptimeFilter(rawType string, rawPercentage *float64) (string
 	if hasType && !hasPercentage {
 		return "", nil, ErrRotatingProxyUptimeValueMissing
 	}
-	if filterType != uptimeFilterMin && filterType != uptimeFilterMax {
+	if filterType != evidence.UptimeFilterMin && filterType != evidence.UptimeFilterMax {
 		return "", nil, ErrRotatingProxyUptimeTypeInvalid
 	}
 
@@ -674,38 +563,6 @@ func validateRotatorUptimeFilter(rawType string, rawPercentage *float64) (string
 	}
 
 	return filterType, new(math.Round(value*10) / 10), nil
-}
-
-func normalizeRotatorUptimeFilter(rawType string, rawPercentage *float64) (string, *float64) {
-	filterType := strings.ToLower(strings.TrimSpace(rawType))
-	if rawPercentage == nil {
-		return "", nil
-	}
-	if filterType != uptimeFilterMin && filterType != uptimeFilterMax {
-		return "", nil
-	}
-
-	value := *rawPercentage
-	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
-		return "", nil
-	}
-
-	return filterType, new(math.Round(value*10) / 10)
-}
-
-func buildAliveProxyCacheKey(protocolID int, labels []string, uptimeFilterType string, uptimePercentage *float64) string {
-	labelKey := "*"
-	if len(labels) > 0 {
-		labelKey = strings.Join(labels, ",")
-	}
-
-	uptimeType, uptimeValue := normalizeRotatorUptimeFilter(uptimeFilterType, uptimePercentage)
-	uptimeKey := "*"
-	if uptimeType != "" && uptimeValue != nil {
-		uptimeKey = fmt.Sprintf("%s:%0.1f", uptimeType, *uptimeValue)
-	}
-
-	return fmt.Sprintf("%d:%s:%s", protocolID, labelKey, uptimeKey)
 }
 
 func cloneFloat64Ptr(value *float64) *float64 {
@@ -828,7 +685,7 @@ func normalizeRotatingProxyProtocols(rotator *domain.RotatingProxy) {
 	if strings.TrimSpace(rotator.ListenTransportProtocol) == "" {
 		listenTransportProtocol = transportProtocol
 	}
-	uptimeFilterType, uptimePercentage := normalizeRotatorUptimeFilter(rotator.UptimeFilterType, rotator.UptimePercentage)
+	uptimeFilterType, uptimePercentage := evidence.NormalizeRotatorUptimeFilter(rotator.UptimeFilterType, rotator.UptimePercentage)
 
 	rotator.TransportProtocol = transportProtocol
 	rotator.ListenTransportProtocol = listenTransportProtocol

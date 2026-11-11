@@ -10,6 +10,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 
 	"gorm.io/gorm"
 )
@@ -134,7 +135,7 @@ func TestWorkspaceLatestStatisticsMatchesLegacyEligibility(t *testing.T) {
 			compare := func(workspaceID uint) {
 				t.Helper()
 				for _, activeOnly := range []bool{false, true} {
-					reference := db.Table("("+currentLatestStatisticsSQL+") pls").Where("pls.checking_workspace_id = ?", workspaceID)
+					reference := db.Table("("+evidence.CurrentLatestStatisticsSQL+") pls").Where("pls.checking_workspace_id = ?", workspaceID)
 					if activeOnly {
 						reference = reference.Joins("JOIN user_proxies active_up ON active_up.workspace_id=pls.checking_workspace_id AND active_up.proxy_id=pls.proxy_id AND active_up.state='active'")
 					}
@@ -143,7 +144,7 @@ func TestWorkspaceLatestStatisticsMatchesLegacyEligibility(t *testing.T) {
 					if err := reference.Select("pls.*").Order(order).Scan(&want).Error; err != nil {
 						t.Fatal(err)
 					}
-					if err := workspaceLatestStatistics(db, workspaceID, activeOnly).Select("pls.*").Order(order).Scan(&got).Error; err != nil {
+					if err := evidence.WorkspaceLatestStatistics(db, workspaceID, activeOnly).Select("pls.*").Order(order).Scan(&got).Error; err != nil {
 						t.Fatal(err)
 					}
 					if !reflect.DeepEqual(got, want) {
@@ -151,7 +152,7 @@ func TestWorkspaceLatestStatisticsMatchesLegacyEligibility(t *testing.T) {
 					}
 					if activeOnly {
 						var dashboard []domain.ProxyLatestStatistic
-						if err := dashboardLatestStatistics(db, workspaceID).Select("pls.*").Order(order).Scan(&dashboard).Error; err != nil {
+						if err := evidence.DashboardLatestStatistics(db, workspaceID).Select("pls.*").Order(order).Scan(&dashboard).Error; err != nil {
 							t.Fatal(err)
 						}
 						if !reflect.DeepEqual(dashboard, want) {
@@ -193,7 +194,7 @@ func TestDashboardScopedReadsPreserveFastestAndJudgeResultsPostgres(t *testing.T
 	for _, workspace := range workspaces {
 		for _, limit := range []int{1, 3, 100} {
 			var want []dto.ProxyFastestAlive
-			legacy := db.Table("("+currentLatestStatisticsSQL+") pls").Where("pls.checking_workspace_id=? AND pls.alive=TRUE", workspace.ID).
+			legacy := db.Table("("+evidence.CurrentLatestStatisticsSQL+") pls").Where("pls.checking_workspace_id=? AND pls.alive=TRUE", workspace.ID).
 				Select("DISTINCT ON (pls.proxy_id) pls.proxy_id,pls.response_time,pls.checked_at").
 				Order("pls.proxy_id,pls.response_time ASC,pls.checked_at DESC,pls.statistic_id DESC")
 			if err := db.Table("proxies p").Select(`p.id,p.host AS ip,p.port,COALESCE(latest.response_time,0) AS response_time,
@@ -217,7 +218,7 @@ COALESCE(pr.score,0) AS reputation_score,latest.checked_at AS latest_check`).
 			TransparentProxies uint   `json:"transparent_proxies"`
 		}
 		want := make([]judgeBuckets, 0)
-		if err := db.Table("("+currentLatestStatisticsSQL+") pls").
+		if err := db.Table("("+evidence.CurrentLatestStatisticsSQL+") pls").
 			Select(`j.full_string AS judge_url,SUM(CASE WHEN al.name='elite' THEN 1 ELSE 0 END) AS elite_proxies,
 SUM(CASE WHEN al.name='anonymous' THEN 1 ELSE 0 END) AS anonymous_proxies,
 SUM(CASE WHEN al.name='transparent' THEN 1 ELSE 0 END) AS transparent_proxies`).

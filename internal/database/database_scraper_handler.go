@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 	"magpie/internal/platform/pg"
 )
 
@@ -505,7 +506,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 				"MAX(pos.last_checked_at) AS last_checked_at",
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.workspace_id = ?", userId).
-		Joins(currentOverallStatusJoin(DB, "LEFT", "up.workspace_id", "pss.proxy_id")).
+		Joins(evidence.CurrentOverallStatusJoin(DB, "LEFT", "up.workspace_id", "pss.proxy_id")).
 		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = pss.proxy_id AND pr.kind = ?", domain.ProxyReputationKindOverall).
 		Where("pss.scrape_site_id = ?", scrapeSiteId).
 		Scan(&stats)

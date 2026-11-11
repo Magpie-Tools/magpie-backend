@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 
 	"gorm.io/gorm"
 )
@@ -105,14 +106,14 @@ func TestRotatorEvidencePreservesWorkspaceEligibility(t *testing.T) {
 	assertIDs := func(workspaceID uint, labels []string, uptimeType string, percentage *float64, want []uint64) {
 		t.Helper()
 		ids := make([]uint64, 0)
-		if err := buildAliveProxyQuery(db, workspaceID, 1, labels, uptimeType, percentage).
+		if err := evidence.BuildAliveProxyQuery(db, workspaceID, 1, labels, uptimeType, percentage).
 			Distinct("proxies.id").Order("proxies.id").Pluck("proxies.id", &ids).Error; err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(ids, want) {
 			t.Fatalf("eligible workspace=%d labels=%v uptime=%s IDs=%v want=%v", workspaceID, labels, uptimeType, ids, want)
 		}
-		count, err := countAliveProxiesForProtocol(db, workspaceID, 1, labels, uptimeType, percentage)
+		count, err := evidence.CountAliveProxiesForProtocol(db, workspaceID, 1, labels, uptimeType, percentage)
 		if err != nil || count != len(want) {
 			t.Fatalf("eligible count=%d want=%d error=%v", count, len(want), err)
 		}
@@ -122,8 +123,8 @@ func TestRotatorEvidencePreservesWorkspaceEligibility(t *testing.T) {
 	assertIDs(legacy.ID, nil, "", nil, []uint64{10})
 	assertIDs(a.ID, []string{"good"}, "", nil, []uint64{1})
 	minimum, maximum := float64(80), float64(20)
-	assertIDs(a.ID, nil, uptimeFilterMin, &minimum, []uint64{1})
-	assertIDs(a.ID, nil, uptimeFilterMax, &maximum, []uint64{3})
+	assertIDs(a.ID, nil, evidence.UptimeFilterMin, &minimum, []uint64{1})
+	assertIDs(a.ID, nil, evidence.UptimeFilterMax, &maximum, []uint64{3})
 	for _, workspaceID := range []uint{a.ID, b.ID} {
 		selected, err := nextAliveProxyForProtocol(db, workspaceID, 1, nil, "", nil, nil)
 		if err != nil || selected.ID != 1 || selected.Username != fmt.Sprintf("owner-%d", workspaceID) || selected.Password != "workspace-secret" {
@@ -204,7 +205,7 @@ CROSS JOIN LATERAL (VALUES (w.checker_http_key,TRUE),('obsolete',FALSE)) k(key,c
 	t.Logf("fixture routes=%d shared_owners=8 original_foreign_keys_validated=%d", routes, len(foreignKeys))
 	var ignored int64
 	query := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return buildAliveProxyQuery(tx, workspaces[0].ID, 1, nil, "", nil).Select("COUNT(DISTINCT proxies.id)").Count(&ignored)
+		return evidence.BuildAliveProxyQuery(tx, workspaces[0].ID, 1, nil, "", nil).Select("COUNT(DISTINCT proxies.id)").Count(&ignored)
 	})
 	if strings.Contains(query, "username") || strings.Contains(query, "password") {
 		t.Fatal("count query loads credentials")
@@ -213,7 +214,7 @@ CROSS JOIN LATERAL (VALUES (w.checker_http_key,TRUE),('obsolete',FALSE)) k(key,c
 		baseline := fmt.Sprintf(`SELECT COUNT(DISTINCT proxies.id) FROM proxies
 JOIN user_proxies up ON up.proxy_id=proxies.id AND up.workspace_id=%d AND up.state='active'
 JOIN (%s) pls ON pls.proxy_id=proxies.id AND pls.checking_workspace_id=up.workspace_id
-AND pls.protocol_id=1 AND pls.alive=TRUE AND (pls.transport_protocol='tcp' OR pls.workspace_id=0)`, workspaces[0].ID, currentLatestStatisticsSQL)
+AND pls.protocol_id=1 AND pls.alive=TRUE AND (pls.transport_protocol='tcp' OR pls.workspace_id=0)`, workspaces[0].ID, evidence.CurrentLatestStatisticsSQL)
 		var plan string
 		if err := db.Raw("EXPLAIN (FORMAT JSON) " + baseline).Row().Scan(&plan); err != nil {
 			t.Fatal(err)
@@ -234,7 +235,7 @@ AND pls.protocol_id=1 AND pls.alive=TRUE AND (pls.transport_protocol='tcp' OR pl
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	start := time.Now()
-	count, err := countAliveProxiesForProtocol(db.WithContext(ctx), workspaces[0].ID, 1, nil, "", nil)
+	count, err := evidence.CountAliveProxiesForProtocol(db.WithContext(ctx), workspaces[0].ID, 1, nil, "", nil)
 	elapsed := time.Since(start)
 	if err != nil || count != routes/8 {
 		t.Fatalf("scoped count=%d want=%d error=%v", count, routes/8, err)

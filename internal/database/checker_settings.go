@@ -281,53 +281,6 @@ func checkerProjectionDelta(tx *gorm.DB, workspaceID uint, snapshot *checkerconf
 	return ids, nil
 }
 
-// Current evidence uses the sparse override key, or the workspace default.
-// Generation zero is solely the compatibility path for unmigrated test data.
-const currentLatestStatisticsSQL = `
-SELECT pls.*, up.workspace_id AS checking_workspace_id
-FROM proxy_latest_statistics pls
-JOIN user_proxies up ON up.proxy_id = pls.proxy_id
-JOIN workspaces w ON w.id = up.workspace_id
-LEFT JOIN proxy_checker_plans cp ON cp.workspace_id = up.workspace_id AND cp.proxy_id = pls.proxy_id AND cp.protocol_id = pls.protocol_id
-WHERE NOT w.checker_dirty AND ((w.checker_generation = 0 AND pls.workspace_id = 0)
-OR (w.checker_generation > 0 AND pls.workspace_id = up.workspace_id AND pls.config_key = COALESCE(cp.config_key,
-CASE pls.protocol_id WHEN 1 THEN w.checker_http_key WHEN 2 THEN w.checker_https_key WHEN 3 THEN w.checker_socks4_key WHEN 4 THEN w.checker_socks5_key ELSE '' END) AND pls.config_key <> ''))
-`
-
-func currentLatestStatistics(tx *gorm.DB, workspaceID uint) *gorm.DB {
-	return workspaceLatestStatistics(tx, workspaceID, false)
-}
-
-const currentOverallStatusesSQL = `SELECT up.workspace_id, pos.proxy_id, pos.overall_alive, pos.last_checked_at
-FROM proxy_overall_statuses pos JOIN user_proxies up ON up.proxy_id = pos.proxy_id
-JOIN workspaces w ON w.id = up.workspace_id AND w.checker_generation = 0 AND NOT w.checker_dirty
-UNION ALL
-SELECT checking_workspace_id AS workspace_id, proxy_id,
-CASE WHEN MAX(CASE WHEN alive THEN 1 ELSE 0 END) > 0 THEN TRUE ELSE FALSE END AS overall_alive,
-MAX(checked_at) AS last_checked_at FROM (` + currentLatestStatisticsSQL + `) scoped WHERE scoped.workspace_id > 0 GROUP BY checking_workspace_id, proxy_id`
-
-// Correlate candidates before aggregation. A grouped workspace-wide subquery
-// cannot push an outer proxy filter down through GROUP BY.
-func currentOverallStatusForProxySQL(workspaceExpr, proxyExpr string) string {
-	return `SELECT legacy_up.workspace_id, pos.proxy_id, pos.overall_alive, pos.last_checked_at
-FROM proxy_overall_statuses pos JOIN user_proxies legacy_up ON legacy_up.proxy_id = pos.proxy_id
-JOIN workspaces w ON w.id = legacy_up.workspace_id AND w.checker_generation = 0 AND NOT w.checker_dirty
-WHERE legacy_up.workspace_id = ` + workspaceExpr + ` AND pos.proxy_id = ` + proxyExpr + `
-UNION ALL
-SELECT checking_workspace_id AS workspace_id, proxy_id,
-MAX(CASE WHEN alive THEN 1 ELSE 0 END) > 0 AS overall_alive, MAX(checked_at) AS last_checked_at
-FROM (` + currentLatestStatisticsSQL + `) evidence
-WHERE evidence.workspace_id > 0 AND evidence.checking_workspace_id = ` + workspaceExpr + ` AND evidence.proxy_id = ` + proxyExpr + `
-GROUP BY checking_workspace_id, proxy_id`
-}
-
-func currentOverallStatusJoin(tx *gorm.DB, kind, workspaceExpr, proxyExpr string) string {
-	if tx.Dialector.Name() == "postgres" {
-		return kind + " JOIN LATERAL (" + currentOverallStatusForProxySQL(workspaceExpr, proxyExpr) + ") pos ON TRUE"
-	}
-	return kind + " JOIN (" + currentOverallStatusesSQL + ") pos ON pos.proxy_id = " + proxyExpr + " AND pos.workspace_id = " + workspaceExpr
-}
-
 // Legacy history has no attribution. Keep it visible without treating it as
 // current evidence once a workspace has compiled settings.
 func filterWorkspaceStatisticEvidence(query *gorm.DB, workspaceID uint) *gorm.DB {

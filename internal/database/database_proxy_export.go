@@ -10,6 +10,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -187,7 +188,7 @@ func loadExportProxyBatch(tx *gorm.DB, workspaceID uint, ids []uint64) ([]domain
 		ProtocolName string
 		CreatedAt    time.Time
 	}
-	if err := currentLatestStatistics(tx, workspaceID).
+	if err := evidence.CurrentLatestStatistics(tx, workspaceID).
 		Select(
 			"pls.proxy_id AS proxy_id, "+
 				"ps.id AS statistic_id, pls.alive AS alive, ps.attempt AS attempt, "+

@@ -12,9 +12,13 @@ group core: database
 group checker-execution: jobs/checker jobs/checker/judges jobs/queue/proxy
 group listeners: rotatingproxy
 group persistence: database platform/pg platform/schema gorm.io github.com/jackc/pgx
+# Base packages extracted from the core. They sit below it.
+group base: platform/pg platform/schema evidence
 # Feature packages. Add each new feature package here in the change that creates it.
 group features: abuseipdb blacklist geolite ipgeolocation settings
 
+# Base packages never import the core, a feature, transport or bootstrap.
+forbid base: core features transport bootstrap auth
 # Feature packages never import transport, authentication middleware or bootstrap.
 forbid features: transport bootstrap auth
 # The core never imports transport, bootstrap, checker execution or listeners.

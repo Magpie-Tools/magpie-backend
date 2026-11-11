@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 )
 
 const AlertWindow = 15 * time.Minute
@@ -245,7 +246,7 @@ func evaluateAlerts(ctx context.Context, now time.Time, config alertEvaluationCo
 				}
 				cacheKey := "workspace"
 				if rotator != nil {
-					cacheKey = buildAliveProxyCacheKey(rotator.ProtocolID, rotator.ReputationLabels.Clone(), rotator.UptimeFilterType, rotator.UptimePercentage)
+					cacheKey = evidence.BuildAliveProxyCacheKey(rotator.ProtocolID, rotator.ReputationLabels.Clone(), rotator.UptimeFilterType, rotator.UptimePercentage)
 				}
 				var cached bool
 				observation, cached = counts[cacheKey]
@@ -429,7 +430,7 @@ func observeUsableAlertRoutes(tx *gorm.DB, workspace domain.Workspace, rotator *
 		value := 0.0
 		return AlertObservation{Value: &value}
 	}
-	freshness := currentLatestStatistics(tx, workspace.ID).Joins("JOIN user_proxies active_up ON active_up.workspace_id = pls.checking_workspace_id AND active_up.proxy_id = pls.proxy_id AND active_up.state = ?", domain.ManagedProxyStateActive).Where("pls.checked_at >= ? AND pls.checked_at <= ?", now.Add(-AlertWindow), now)
+	freshness := evidence.CurrentLatestStatistics(tx, workspace.ID).Joins("JOIN user_proxies active_up ON active_up.workspace_id = pls.checking_workspace_id AND active_up.proxy_id = pls.proxy_id AND active_up.state = ?", domain.ManagedProxyStateActive).Where("pls.checked_at >= ? AND pls.checked_at <= ?", now.Add(-AlertWindow), now)
 	if rotator != nil {
 		freshness = freshness.Where("pls.protocol_id = ? AND pls.transport_protocol = ?", rotator.ProtocolID, "tcp")
 	}
@@ -441,13 +442,13 @@ func observeUsableAlertRoutes(tx *gorm.DB, workspace domain.Workspace, rotator *
 	}
 	var count int64
 	if rotator != nil {
-		value, err := countAliveProxiesForProtocol(tx, workspace.ID, rotator.ProtocolID, rotator.ReputationLabels.Clone(), rotator.UptimeFilterType, rotator.UptimePercentage)
+		value, err := evidence.CountAliveProxiesForProtocol(tx, workspace.ID, rotator.ProtocolID, rotator.ReputationLabels.Clone(), rotator.UptimeFilterType, rotator.UptimePercentage)
 		if err != nil {
 			return AlertObservation{UnknownReason: "Route measurements are unavailable"}
 		}
 		count = int64(value)
 	} else {
-		counts, err := aliveProxyCountByWorkspace(tx, []uint{workspace.ID})
+		counts, err := evidence.AliveProxyCountByWorkspace(tx, []uint{workspace.ID})
 		if err != nil {
 			return AlertObservation{UnknownReason: "Route measurements are unavailable"}
 		}

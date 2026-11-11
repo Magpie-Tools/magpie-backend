@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 )
 
 func TestWorkspaceCheckUsageInventoryScalePostgres(t *testing.T) {
@@ -137,7 +138,7 @@ func TestRotatorUptimeScopesHistoryPostgres(t *testing.T) {
 	threshold := float64(80)
 	var selected domain.Proxy
 	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return buildAliveProxyQuery(tx, a.ID, 1, nil, uptimeFilterMin, &threshold).Order("proxies.id").Limit(1).Find(&selected)
+		return evidence.BuildAliveProxyQuery(tx, a.ID, 1, nil, evidence.UptimeFilterMin, &threshold).Order("proxies.id").Limit(1).Find(&selected)
 	})
 	var encoded string
 	if err := db.Raw("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) " + sql).Row().Scan(&encoded); err != nil {
@@ -169,7 +170,7 @@ func TestRotatorUptimeScopesHistoryPostgres(t *testing.T) {
 	if scanned > 1 {
 		t.Fatal("uptime read unrelated route history", scanned)
 	}
-	candidate, err := nextAliveProxyForProtocol(db, a.ID, 1, nil, uptimeFilterMin, &threshold, nil)
+	candidate, err := nextAliveProxyForProtocol(db, a.ID, 1, nil, evidence.UptimeFilterMin, &threshold, nil)
 	if err != nil || candidate.ID != p.ID {
 		t.Fatalf("candidate=%+v error=%v", candidate, err)
 	}

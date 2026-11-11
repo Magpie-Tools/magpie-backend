@@ -17,6 +17,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 	"magpie/internal/support"
 )
 
@@ -639,7 +640,7 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 
 	go func() {
 		defer wg.Done()
-		err := dashboardLatestStatistics(db, userid).
+		err := evidence.DashboardLatestStatistics(db, userid).
 			Select(
 				"j.full_string AS judge_url, "+
 					"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+

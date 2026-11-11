@@ -9,6 +9,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 
 	"gorm.io/gorm"
 )
@@ -112,10 +113,10 @@ SELECT
 	COALESCE(pos.overall_alive,FALSE) AS alive,
 	COALESCE(pos.last_checked_at, latest.checked_at) AS latest_check
 FROM candidates c
-LEFT JOIN LATERAL (` + currentOverallStatusForProxySQL("c.workspace_id", "c.id") + `) pos ON TRUE
+LEFT JOIN LATERAL (` + evidence.CurrentOverallStatusForProxySQL("c.workspace_id", "c.id") + `) pos ON TRUE
 LEFT JOIN LATERAL (
 	SELECT pls.response_time, pls.checked_at
-	FROM (` + currentLatestStatisticsSQL + `) pls
+	FROM (` + evidence.CurrentLatestStatisticsSQL + `) pls
 	WHERE pls.proxy_id = c.id AND pls.checking_workspace_id = c.workspace_id
 	ORDER BY pls.checked_at DESC, pls.statistic_id DESC
 	LIMIT 1
@@ -200,7 +201,7 @@ func refreshFastestAliveProxiesCache(db *gorm.DB, workspaceID uint, limit int) (
 	key := dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit}
 	revision := dashboardCaches.revision(key)
 
-	latestAliveStats := dashboardLatestStatistics(db, workspaceID).
+	latestAliveStats := evidence.DashboardLatestStatistics(db, workspaceID).
 		Select("DISTINCT ON (pls.proxy_id) pls.proxy_id, pls.response_time, pls.checked_at").
 		Where("pls.alive = ?", true).
 		Order("pls.proxy_id, pls.response_time ASC, pls.checked_at DESC, pls.statistic_id DESC")

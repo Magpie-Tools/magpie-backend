@@ -10,6 +10,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 	"magpie/internal/ipgeolocation"
 
 	"gorm.io/gorm"
@@ -39,7 +40,7 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 	var latestStat *dto.ProxyStatistic
 	var latestCheck *time.Time
 	var current []domain.ProxyLatestStatistic
-	if err := currentLatestStatistics(DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Order("pls.checked_at DESC, pls.statistic_id DESC").Find(&current).Error; err != nil {
+	if err := evidence.CurrentLatestStatistics(DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Order("pls.checked_at DESC, pls.statistic_id DESC").Find(&current).Error; err != nil {
 		return nil, err
 	}
 	var alive *bool
@@ -174,7 +175,7 @@ func GetProxyStatistics(workspaceID uint, proxyId uint64, limit int) ([]dto.Prox
 		return nil, err
 	}
 	var current []domain.ProxyLatestStatistic
-	if err := currentLatestStatistics(DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Find(&current).Error; err != nil {
+	if err := evidence.CurrentLatestStatistics(DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Find(&current).Error; err != nil {
 		return nil, err
 	}
 	keys := make(map[int]string, len(current))
