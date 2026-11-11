@@ -119,3 +119,40 @@ The search space a package boundary cannot rule out fell from 899,888 to
 491,541 tokens, mostly for the two moved features (alerts 245,762 to 93,605,
 mail 211,228 to 21,606).
 
+### After the peripheral features (D5)
+
+Measured on the commit that adds this section, after `account`, `abuseipdb`,
+`geolite`, `blacklist`, `judgestore`, `scrapestore`, `devseed` and
+`workspace`.
+
+| Task | Files in full | Files in part | Must-read tokens | of which listings | Search-space files | Search-space tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Add a field to alert rules | 11 | 6 | 16052 | 873 | 101 | 93754 |
+| Change how failed proxies are requeued | 11 | 2 | 30815 | 192 | 6 | 20868 |
+| Add a column to the proxy filter projection | 8 | 5 | 20329 | 1321 | 83 | 118434 |
+| Change workspace invitation acceptance | 8 | 11 | 17269 | 643 | 64 | 77839 |
+| Change the email outbox retry policy | 7 | 4 | 10326 | 633 | 38 | 21674 |
+| **Task set** | 45 | 28 | 94791 | 3662 | 292 | 332569 |
+
+The task set fell from 95,130 to 94,791 must-read tokens (-339, -0.4%). That
+is a drop, so the stop rule as written does not fire. It is small, and it
+comes from one task:
+
+- **Workspace invitations** fell from 18,200 to 17,269 (-931): its anchors
+  moved to `internal/workspace`, whose listing (643 tokens) replaced the
+  core's (1,801).
+- **Proxy filter projection** fell by the shrinking core listing (1,435 to
+  1,321 tokens) but read the longer `AGENTS.md`, for +59 in total.
+- The other three tasks rose by 173 to 181 tokens each: their anchors did not
+  move, and the package map grew by the eight new packages.
+
+The search space a package boundary cannot rule out fell from 491,541 to
+332,569 tokens, mostly for the invitations task (203,318 to 77,839) and the
+projection task (152,144 to 118,434).
+
+The trend for the remaining work is visible in these numbers: a move lowers
+the count only for tasks whose anchors leave `internal/database`; every new
+package adds a row to `AGENTS.md`, which all five tasks read. Of the planned
+work, only the `readmodel` pilot moves anchors of the task set (the
+projection task).
+
