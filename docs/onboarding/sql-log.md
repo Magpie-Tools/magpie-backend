@@ -58,7 +58,8 @@ produced byte-identical digests:
 ```
 
 Re-prove this with two runs of the base revision whenever the test list
-changes. A test is listed only if its statements are deterministic. Tests that
+changes. The source-tag test was added before the scraper store moved; two
+runs at the commit that added it produced identical digests. A test is listed only if its statements are deterministic. Tests that
 race workers against each other, or that depend on timing, are left out; their
 own assertions cover them.
 
@@ -68,4 +69,5 @@ The log covers PostgreSQL only. Tests that run on SQLite issue no statements
 here. The listed tests cover current evidence and rotator pools, alert
 measurement and transitions, the statistics transaction and check usage,
 import and reimport, lifecycle and failure actions, read-model refresh and
-rebuild, the development seed, and the checker's failure-streak writes.
+rebuild, scrape-source settings and source tag assignments, the development
+seed, and the checker's failure-streak writes.
