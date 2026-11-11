@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	dbschema "magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/postgres"
@@ -48,10 +49,10 @@ func setupProxyIngestionPostgresTest(t testing.TB) *gorm.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := dbschema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(defaultMigrations()...); err != nil {
+	if err := db.AutoMigrate(dbschema.DefaultMigrations()...); err != nil {
 		t.Fatal(err)
 	}
 	previous := DB

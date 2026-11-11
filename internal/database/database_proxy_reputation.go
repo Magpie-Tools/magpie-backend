@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 	"magpie/internal/support/reputation"
 
 	"github.com/charmbracelet/log"
@@ -452,7 +453,7 @@ func upsertProxyReputations(db *gorm.DB, reputations []domain.ProxyReputation) e
 		if err := upsertProxyReputationsChunk(db, chunk); err != nil {
 			if isMissingUniqueConstraintError(err) {
 				// Avoid full-table dedupe in the hot path. Try creating the index without cleanup.
-				if ensureErr := ensureProxyReputationIndex(db); ensureErr != nil {
+				if ensureErr := schema.EnsureProxyReputationIndex(db); ensureErr != nil {
 					log.Warn("reputation: ensure unique index failed; falling back to constraintless upsert", "error", ensureErr)
 				} else if retryErr := upsertProxyReputationsChunk(db, chunk); retryErr == nil {
 					continue

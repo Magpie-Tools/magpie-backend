@@ -1,7 +1,6 @@
-package database
+package schema
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
@@ -18,14 +17,14 @@ import (
 
 const (
 	envProxyStatisticsRetentionDaysForPartition = "PROXY_STATISTICS_RETENTION_DAYS"
-	envProxyStatisticsPartitionPrecreateMonths  = "PROXY_STATISTICS_PARTITION_PRECREATE_MONTHS"
-	envProxyStatisticsPartitionPastMonths       = "PROXY_STATISTICS_PARTITION_PAST_MONTHS"
+	EnvProxyStatisticsPartitionPrecreateMonths  = "PROXY_STATISTICS_PARTITION_PRECREATE_MONTHS"
+	EnvProxyStatisticsPartitionPastMonths       = "PROXY_STATISTICS_PARTITION_PAST_MONTHS"
 	envProxyStatisticsAutoPartitionMigration    = "PROXY_STATISTICS_AUTO_PARTITION_MIGRATION"
 	defaultProxyStatisticsRetentionDaysForPart  = 30
-	defaultPartitionPrecreateMonths             = 2
+	DefaultPartitionPrecreateMonths             = 2
 )
 
-func ensureProxyStatisticsPartitionSchema(db *gorm.DB) error {
+func EnsureProxyStatisticsPartitionSchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
@@ -36,7 +35,7 @@ func ensureProxyStatisticsPartitionSchema(db *gorm.DB) error {
 		return nil
 	}
 
-	partitioned, err := isProxyStatisticsPartitioned(db)
+	partitioned, err := IsProxyStatisticsPartitioned(db)
 	if err != nil {
 		return err
 	}
@@ -52,35 +51,35 @@ func ensureProxyStatisticsPartitionSchema(db *gorm.DB) error {
 		}
 	}
 
-	return ensureProxyStatisticsMonthlyPartitions(db, time.Now().UTC())
+	return EnsureProxyStatisticsMonthlyPartitions(db, time.Now().UTC())
 }
 
-func ensureProxyStatisticsMonthlyPartitions(db *gorm.DB, now time.Time) error {
-	currentMonth := monthStartUTC(now)
+func EnsureProxyStatisticsMonthlyPartitions(db *gorm.DB, now time.Time) error {
+	currentMonth := MonthStartUTC(now)
 	retentionDays := support.GetEnvInt(envProxyStatisticsRetentionDaysForPartition, defaultProxyStatisticsRetentionDaysForPart)
 	if retentionDays <= 0 {
 		retentionDays = defaultProxyStatisticsRetentionDaysForPart
 	}
 
-	pastMonths := support.GetEnvInt(envProxyStatisticsPartitionPastMonths, retentionDays/30+1)
+	pastMonths := support.GetEnvInt(EnvProxyStatisticsPartitionPastMonths, retentionDays/30+1)
 	if pastMonths < 2 {
 		pastMonths = 2
 	}
 
-	precreateMonths := support.GetEnvInt(envProxyStatisticsPartitionPrecreateMonths, defaultPartitionPrecreateMonths)
+	precreateMonths := support.GetEnvInt(EnvProxyStatisticsPartitionPrecreateMonths, DefaultPartitionPrecreateMonths)
 	if precreateMonths < 1 {
-		precreateMonths = defaultPartitionPrecreateMonths
+		precreateMonths = DefaultPartitionPrecreateMonths
 	}
 
 	startMonth := currentMonth.AddDate(0, -pastMonths, 0)
 	endMonth := currentMonth.AddDate(0, precreateMonths, 0)
 
-	if err := ensureProxyStatisticsDefaultPartition(db); err != nil {
+	if err := EnsureProxyStatisticsDefaultPartition(db); err != nil {
 		return err
 	}
 
 	for month := startMonth; !month.After(endMonth); month = month.AddDate(0, 1, 0) {
-		if err := ensureProxyStatisticsMonthlyPartition(db, month); err != nil {
+		if err := EnsureProxyStatisticsMonthlyPartition(db, month); err != nil {
 			return err
 		}
 	}
@@ -88,34 +87,7 @@ func ensureProxyStatisticsMonthlyPartitions(db *gorm.DB, now time.Time) error {
 	return nil
 }
 
-// MaintainProxyStatisticsPartitions runs for an already partitioned schema,
-// including installations that disable application schema migrations.
-func MaintainProxyStatisticsPartitions(ctx context.Context, now time.Time) error {
-	if DB == nil || !pg.IsPostgresDialector(DB) {
-		return nil
-	}
-	db := DB.WithContext(ctx)
-	partitioned, err := isProxyStatisticsPartitioned(db)
-	if err != nil || !partitioned {
-		return err
-	}
-	if err := ensureProxyStatisticsDefaultPartition(db); err != nil {
-		return err
-	}
-	months := support.GetEnvInt(envProxyStatisticsPartitionPrecreateMonths, defaultPartitionPrecreateMonths)
-	if months < 1 {
-		months = defaultPartitionPrecreateMonths
-	}
-	start := monthStartUTC(now)
-	for month := 0; month <= months; month++ {
-		if err := ensureProxyStatisticsMonthlyPartition(db, start.AddDate(0, month, 0)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func ensureProxyStatisticsDefaultPartition(db *gorm.DB) error {
+func EnsureProxyStatisticsDefaultPartition(db *gorm.DB) error {
 	hasDefault, err := hasProxyStatisticsDefaultPartition(db)
 	if err != nil {
 		return err
@@ -127,7 +99,7 @@ func ensureProxyStatisticsDefaultPartition(db *gorm.DB) error {
 	return ensureDefaultPartitionForTable(db, "proxy_statistics", "proxy_statistics_default")
 }
 
-func ensureProxyStatisticsMonthlyPartition(db *gorm.DB, month time.Time) error {
+func EnsureProxyStatisticsMonthlyPartition(db *gorm.DB, month time.Time) error {
 	return ensureMonthlyPartitionForTable(db, "proxy_statistics", "proxy_statistics", month)
 }
 
@@ -153,7 +125,7 @@ func migrateProxyStatisticsToPartitioned(db *gorm.DB, now time.Time) error {
 		return err
 	}
 
-	partitioned, err := isProxyStatisticsPartitioned(tx)
+	partitioned, err := IsProxyStatisticsPartitioned(tx)
 	if err != nil {
 		return err
 	}
@@ -269,18 +241,18 @@ type partitionRange struct {
 }
 
 func proxyStatisticsPartitionRange(db *gorm.DB, now time.Time) (partitionRange, error) {
-	currentMonth := monthStartUTC(now)
+	currentMonth := MonthStartUTC(now)
 	retentionDays := support.GetEnvInt(envProxyStatisticsRetentionDaysForPartition, defaultProxyStatisticsRetentionDaysForPart)
 	if retentionDays <= 0 {
 		retentionDays = defaultProxyStatisticsRetentionDaysForPart
 	}
-	pastMonths := support.GetEnvInt(envProxyStatisticsPartitionPastMonths, retentionDays/30+1)
+	pastMonths := support.GetEnvInt(EnvProxyStatisticsPartitionPastMonths, retentionDays/30+1)
 	if pastMonths < 2 {
 		pastMonths = 2
 	}
-	precreateMonths := support.GetEnvInt(envProxyStatisticsPartitionPrecreateMonths, defaultPartitionPrecreateMonths)
+	precreateMonths := support.GetEnvInt(EnvProxyStatisticsPartitionPrecreateMonths, DefaultPartitionPrecreateMonths)
 	if precreateMonths < 1 {
-		precreateMonths = defaultPartitionPrecreateMonths
+		precreateMonths = DefaultPartitionPrecreateMonths
 	}
 
 	start := currentMonth.AddDate(0, -pastMonths, 0)
@@ -291,7 +263,7 @@ func proxyStatisticsPartitionRange(db *gorm.DB, now time.Time) (partitionRange, 
 		return partitionRange{}, err
 	}
 	if minCreated.Valid {
-		minMonth := monthStartUTC(minCreated.Time)
+		minMonth := MonthStartUTC(minCreated.Time)
 		if minMonth.Before(start) {
 			start = minMonth
 		}
@@ -313,7 +285,7 @@ func ensureMonthlyPartitionForTable(db *gorm.DB, parent string, partitionPrefix 
 		return fmt.Errorf("nil database connection")
 	}
 
-	start := monthStartUTC(month)
+	start := MonthStartUTC(month)
 	end := start.AddDate(0, 1, 0)
 
 	exists, err := hasPartitionForRange(db, parent, start, end)
@@ -415,7 +387,7 @@ func reseedProxyStatisticsIDSequence(db *gorm.DB, table string) error {
 	return db.Exec(`SELECT setval(?::regclass, 1, false)`, sequence.String).Error
 }
 
-func isProxyStatisticsPartitioned(db *gorm.DB) (bool, error) {
+func IsProxyStatisticsPartitioned(db *gorm.DB) (bool, error) {
 	var partitioned bool
 	query := `
 SELECT c.relkind = 'p' AS partitioned
@@ -453,62 +425,7 @@ type proxyStatisticsPartitionInfo struct {
 	UpperBound time.Time
 }
 
-func DropProxyStatisticsPartitionsOlderThan(ctx context.Context, olderThan time.Time, maxDrops int) (int, error) {
-	if DB == nil || olderThan.IsZero() {
-		return 0, nil
-	}
-	if maxDrops <= 0 {
-		maxDrops = 1
-	}
-
-	db := DB
-	if ctx != nil {
-		db = db.WithContext(ctx)
-	}
-	if !pg.IsPostgresDialector(db) {
-		return 0, nil
-	}
-
-	partitioned, err := isProxyStatisticsPartitioned(db)
-	if err != nil || !partitioned {
-		return 0, err
-	}
-
-	partitions, err := listProxyStatisticsPartitions(db)
-	if err != nil {
-		return 0, err
-	}
-
-	dropped := 0
-	for _, partition := range partitions {
-		if partition.UpperBound.After(olderThan) {
-			continue
-		}
-		if partition.Name == "proxy_statistics_default" {
-			continue
-		}
-
-		hasLatest, err := partitionHasLatestStatisticReferences(db, partition.Name)
-		if err != nil {
-			return dropped, err
-		}
-		if hasLatest {
-			continue
-		}
-
-		if err := db.Exec(`DROP TABLE IF EXISTS ` + pg.QuoteIdentifier(partition.Name)).Error; err != nil {
-			return dropped, err
-		}
-		dropped++
-		if dropped >= maxDrops {
-			break
-		}
-	}
-
-	return dropped, nil
-}
-
-func listProxyStatisticsPartitions(db *gorm.DB) ([]proxyStatisticsPartitionInfo, error) {
+func ListProxyStatisticsPartitions(db *gorm.DB) ([]proxyStatisticsPartitionInfo, error) {
 	var rows []struct {
 		PartitionName string
 		UpperBoundRaw sql.NullString
@@ -549,7 +466,7 @@ ORDER BY upper_bound ASC`
 	return out, nil
 }
 
-func partitionHasLatestStatisticReferences(db *gorm.DB, partition string) (bool, error) {
+func PartitionHasLatestStatisticReferences(db *gorm.DB, partition string) (bool, error) {
 	query := fmt.Sprintf(`
 SELECT EXISTS (
 	SELECT 1
@@ -565,6 +482,6 @@ SELECT EXISTS (
 	return exists, nil
 }
 
-func monthStartUTC(ts time.Time) time.Time {
+func MonthStartUTC(ts time.Time) time.Time {
 	return time.Date(ts.UTC().Year(), ts.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 }

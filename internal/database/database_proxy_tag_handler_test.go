@@ -8,6 +8,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -25,7 +26,7 @@ func setupProxyTagTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open tag test database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {

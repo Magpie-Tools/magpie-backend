@@ -12,6 +12,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 )
@@ -29,7 +30,7 @@ func TestReadModelPairCostPopulatedPostgres(t *testing.T) {
 		t.Fatal("invalid populated projection route count", value)
 	}
 	db := setupProxyIngestionPostgresTest(t)
-	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, ensureProxyListPerformanceSchema, ensureProxyQueryIndexSchema} {
+	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
 		}

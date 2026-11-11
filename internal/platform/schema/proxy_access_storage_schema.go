@@ -1,4 +1,4 @@
-package database
+package schema
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ type legacyProxyStorageRow struct {
 	CurrentFingerprint []byte `gorm:"column:current_fingerprint"`
 }
 
-func ensureProxyAccessStorageSchema(db *gorm.DB) error {
+func EnsureProxyAccessStorageSchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}

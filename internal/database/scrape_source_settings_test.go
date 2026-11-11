@@ -5,6 +5,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 	"path/filepath"
 	"testing"
 	"time"
@@ -81,7 +82,7 @@ func TestNewSourceModesAndStatusAreReturnedPerWorkspace(t *testing.T) {
 	original := DB
 	DB = db
 	t.Cleanup(func() { DB = original; sqlDB, _ := db.DB(); sqlDB.Close() })
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatal(err)
 	}
 	// The import path only needs these tables. Create the read model afterwards,

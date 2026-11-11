@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -20,7 +21,7 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
@@ -104,7 +105,7 @@ func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
@@ -158,7 +159,7 @@ func TestProxyAccessStoragePersistsProviderHostname(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {

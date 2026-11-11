@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	dbschema "magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/postgres"
@@ -50,13 +51,13 @@ func TestReadModelBackfillStoresHostAndLiteralIPProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := dbschema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
-	if err := db.AutoMigrate(defaultMigrations()...); err != nil {
+	if err := db.AutoMigrate(dbschema.DefaultMigrations()...); err != nil {
 		t.Fatalf("auto migrate schema: %v", err)
 	}
-	if err := ensureProxyAccessStorageSchema(db); err != nil {
+	if err := dbschema.EnsureProxyAccessStorageSchema(db); err != nil {
 		t.Fatalf("finalize proxy host schema: %v", err)
 	}
 

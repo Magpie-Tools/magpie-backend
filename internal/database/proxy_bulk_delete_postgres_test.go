@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/logger"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 )
 
 type bulkDeleteQueryLog struct {
@@ -56,7 +57,7 @@ func seedBulkDeletePostgres(t *testing.T, routes int) (*gorm.DB, domain.Workspac
 	if err := db.Model(&b).Updates(map[string]any{"checker_generation": 1, "checker_http_key": "other-default"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	if err := ensureReadModelSchema(db); err != nil {

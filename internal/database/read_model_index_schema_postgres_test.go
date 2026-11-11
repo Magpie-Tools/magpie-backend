@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 )
@@ -67,7 +68,7 @@ func TestProxyFilterIndexStartupDeduplicatesAndStaysIdempotentPostgres(t *testin
 	if err := ensureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProxyListPerformanceSchema(db); err != nil {
+	if err := schema.EnsureProxyListPerformanceSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	canonical := proxyFilterIndexDefinitions(t, db)

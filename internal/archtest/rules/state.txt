@@ -16,7 +16,7 @@ blacklist: 6
 checkerconfig: 4
 checkpace: 16
 config: 18
-database: 31
+database: 30
 domain: 9
 geolite: 4
 instanceid: 2
@@ -28,6 +28,7 @@ jobs/queue/sites: 1
 jobs/runtime: 15
 jobs/scraper: 11
 platform/pg: 1
+platform/schema: 1
 rotatingproxy: 10
 security: 6
 support: 17

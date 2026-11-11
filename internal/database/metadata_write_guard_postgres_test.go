@@ -11,13 +11,14 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 )
 
 func TestMetadataWritesOnlyChangedValuesPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	if err := ensureProxyQueryIndexSchema(db); err != nil {
+	if err := schema.EnsureProxyQueryIndexSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{

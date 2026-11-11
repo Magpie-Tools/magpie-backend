@@ -23,7 +23,7 @@ that first. Paths are relative to `internal/`.
 | Hot path | `jobs/checker`, `jobs/queue/proxy`, `rotatingproxy`, `checkpace` | Checker workers, the Redis proxy queue, rotating listeners, allowance cadence and the check usage meter. Imports are pinned. |
 | Background jobs | `jobs/runtime`, `jobs/scraper`, `jobs/queue/sites`, `jobs/maintenance`, `jobs/checker/judges` | Statistics admission and ingestion, rollups, scraping, cleanup, the judge cache. |
 | Core persistence | `database` | Routes and managed proxies, statistics and latest evidence, read models, dashboards, rotators, checker settings, usage accounting. |
-| Platform | `platform/pg` | Generic PostgreSQL helpers and every database connection: the GORM pool, the rebuild command's connection, the native COPY connection. |
+| Platform | `platform/pg`, `platform/schema` | Generic PostgreSQL helpers and every database connection (the GORM pool, the rebuild command's connection, the native COPY connection); the ordered schema steps, migrations and seed rows. |
 | Runtime configuration | `config`, `settings`, `checkerconfig` | Instance settings, workspace settings application, compiled checker snapshots. |
 | Shared models | `domain` | GORM models and their hooks. No queries. |
 | Clients and helpers | `abuseipdb`, `ipgeolocation`, `geolite`, `blacklist`, `auth`, `security`, `support`, `support/reputation`, `instanceid`, `app/releases`, `app/version` | External API clients, JWTs, credential encryption, Redis client and leader locks. |

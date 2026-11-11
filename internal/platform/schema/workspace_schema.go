@@ -1,4 +1,4 @@
-package database
+package schema
 
 import (
 	"fmt"
@@ -90,7 +90,7 @@ type workspaceSubscriptionMigrationRow struct {
 
 func (workspaceSubscriptionMigrationRow) TableName() string { return "workspace_subscriptions" }
 
-type managedProxyMigrationRow struct {
+type ManagedProxyMigrationRow struct {
 	WorkspaceID         uint   `gorm:"column:workspace_id;primaryKey;index:idx_managed_proxies_workspace_state,priority:1"`
 	ProxyID             uint64 `gorm:"primaryKey;index:idx_user_proxies_proxy_id"`
 	UsernameEncrypted   string `gorm:"column:username;default:''"`
@@ -105,7 +105,7 @@ type managedProxyMigrationRow struct {
 	UpdatedAt           time.Time
 }
 
-func (managedProxyMigrationRow) TableName() string { return "user_proxies" }
+func (ManagedProxyMigrationRow) TableName() string { return "user_proxies" }
 
 var workspaceOwnedTables = []string{
 	"user_proxies",
@@ -120,7 +120,7 @@ var workspaceOwnedTables = []string{
 	"user_scrape_site",
 }
 
-func configureWorkspaceJoinTables(db *gorm.DB) error {
+func ConfigureWorkspaceJoinTables(db *gorm.DB) error {
 	registrations := []struct {
 		model       any
 		association string
@@ -141,7 +141,7 @@ func configureWorkspaceJoinTables(db *gorm.DB) error {
 	return nil
 }
 
-func prepareWorkspaceOwnershipMigration(db *gorm.DB) error {
+func PrepareWorkspaceOwnershipMigration(db *gorm.DB) error {
 	if db == nil || !db.Migrator().HasTable(&domain.User{}) {
 		return nil
 	}
@@ -155,7 +155,7 @@ func prepareWorkspaceOwnershipMigration(db *gorm.DB) error {
 		return fmt.Errorf("create workspace migration tables: %w", err)
 	}
 
-	if err := seedPersonalWorkspaces(db); err != nil {
+	if err := SeedPersonalWorkspaces(db); err != nil {
 		return err
 	}
 
@@ -171,7 +171,7 @@ func prepareWorkspaceOwnershipMigration(db *gorm.DB) error {
 	return nil
 }
 
-func seedPersonalWorkspaces(db *gorm.DB) error {
+func SeedPersonalWorkspaces(db *gorm.DB) error {
 	legacyOwnershipPresent := false
 	for _, table := range workspaceOwnedTables {
 		if db.Migrator().HasTable(table) && db.Migrator().HasColumn(table, "user_id") {
@@ -203,7 +203,7 @@ func seedPersonalWorkspaces(db *gorm.DB) error {
 		}
 
 		workspace := workspaceMigrationRow{
-			Name:                       personalWorkspaceName(user.Email),
+			Name:                       PersonalWorkspaceName(user.Email),
 			Personal:                   true,
 			HTTPProtocol:               user.HTTPProtocol,
 			HTTPSProtocol:              user.HTTPSProtocol,
@@ -258,7 +258,7 @@ func seedPersonalWorkspaces(db *gorm.DB) error {
 			return fmt.Errorf("create personal workspace preferences for user %d: %w", user.ID, err)
 		}
 
-		subscription := defaultWorkspaceSubscription(user.Role)
+		subscription := DefaultWorkspaceSubscription(user.Role)
 		subscription.WorkspaceID = workspace.ID
 		if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&subscription).Error; err != nil {
 			return fmt.Errorf("create personal workspace subscription for user %d: %w", user.ID, err)
@@ -279,7 +279,7 @@ func ensureWorkspaceSchema(db *gorm.DB) error {
 		return nil
 	}
 
-	if err := seedPersonalWorkspaces(db); err != nil {
+	if err := SeedPersonalWorkspaces(db); err != nil {
 		return err
 	}
 
@@ -374,7 +374,7 @@ END $$;
 	return nil
 }
 
-func personalWorkspaceName(email string) string {
+func PersonalWorkspaceName(email string) string {
 	name := strings.TrimSpace(email)
 	if at := strings.IndexByte(name, '@'); at > 0 {
 		name = name[:at]
@@ -386,7 +386,7 @@ func personalWorkspaceName(email string) string {
 	return name + "'s workspace"
 }
 
-func defaultWorkspaceSubscription(globalRole string) domain.WorkspaceSubscription {
+func DefaultWorkspaceSubscription(globalRole string) domain.WorkspaceSubscription {
 	limits := config.GetConfig().ProxyLimits
 	subscription := domain.WorkspaceSubscription{
 		PlanCode:    "self-hosted",

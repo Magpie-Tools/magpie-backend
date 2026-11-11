@@ -1,4 +1,4 @@
-package database
+package schema
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func prepareCheckerSettingsSchema(db *gorm.DB) error {
+func PrepareCheckerSettingsSchema(db *gorm.DB) error {
 	if db.Dialector.Name() != "postgres" || !db.Migrator().HasTable(&domain.ProxyLatestStatistic{}) {
 		return nil
 	}
@@ -36,7 +36,7 @@ func prepareCheckerSettingsSchema(db *gorm.DB) error {
 	})
 }
 
-func ensureCheckerSettingsSchema(db *gorm.DB) error {
+func EnsureCheckerSettingsSchema(db *gorm.DB) error {
 	if !db.Migrator().HasTable(&domain.Workspace{}) {
 		return nil
 	}

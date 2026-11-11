@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 )
 
 func TestEnsureProxyReputationSchema_SQLite(t *testing.T) {
@@ -12,11 +13,11 @@ func TestEnsureProxyReputationSchema_SQLite(t *testing.T) {
 		t.Fatalf("auto migrate proxy reputations: %v", err)
 	}
 
-	if _, err := hasProxyReputationIndex(db); err != nil {
+	if _, err := schema.HasProxyReputationIndex(db); err != nil {
 		t.Fatalf("hasProxyReputationIndex failed on sqlite: %v", err)
 	}
 
-	if err := ensureProxyReputationSchema(db); err != nil {
+	if err := schema.EnsureProxyReputationSchema(db); err != nil {
 		t.Fatalf("ensureProxyReputationSchema failed on sqlite: %v", err)
 	}
 }

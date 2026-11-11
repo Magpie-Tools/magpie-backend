@@ -13,6 +13,7 @@ import (
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -86,7 +87,7 @@ func CreatePersonalWorkspaceForUser(tx *gorm.DB, user domain.User) (domain.Works
 	}
 
 	workspace := domain.Workspace{
-		Name:                       personalWorkspaceName(user.Email),
+		Name:                       schema.PersonalWorkspaceName(user.Email),
 		Personal:                   true,
 		HTTPProtocol:               user.HTTPProtocol,
 		HTTPSProtocol:              user.HTTPSProtocol,
@@ -117,7 +118,7 @@ func CreatePersonalWorkspaceForUser(tx *gorm.DB, user domain.User) (domain.Works
 		ScrapeSourceProxyColumns: user.ScrapeSourceProxyColumns,
 		ScrapeSourceListColumns:  user.ScrapeSourceListColumns,
 	}
-	subscription := defaultWorkspaceSubscription(user.Role)
+	subscription := schema.DefaultWorkspaceSubscription(user.Role)
 	subscription.WorkspaceID = workspace.ID
 
 	if err := tx.Create(&membership).Error; err != nil {
@@ -172,7 +173,7 @@ func CreateWorkspace(userID uint, name string) (dto.Workspace, error) {
 		if err := tx.Create(&domain.WorkspaceMemberPreference{WorkspaceID: workspace.ID, UserID: userID}).Error; err != nil {
 			return err
 		}
-		subscription := defaultWorkspaceSubscription(user.Role)
+		subscription := schema.DefaultWorkspaceSubscription(user.Role)
 		subscription.WorkspaceID = workspace.ID
 		if err := tx.Create(&subscription).Error; err != nil {
 			return err
@@ -569,7 +570,7 @@ func UpdateWorkspaceAllowances(ctx context.Context, workspaceID uint, request dt
 	return db.Transaction(func(tx *gorm.DB) error {
 		subscription := domain.WorkspaceSubscription{WorkspaceID: workspaceID}
 		if err := tx.Where("workspace_id = ?", workspaceID).
-			Attrs(defaultWorkspaceSubscription("")).
+			Attrs(schema.DefaultWorkspaceSubscription("")).
 			FirstOrCreate(&subscription).Error; err != nil {
 			return err
 		}

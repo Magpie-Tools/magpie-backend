@@ -11,7 +11,7 @@ group bootstrap: app app/bootstrap
 group core: database
 group checker-execution: jobs/checker jobs/checker/judges jobs/queue/proxy
 group listeners: rotatingproxy
-group persistence: database platform/pg gorm.io github.com/jackc/pgx
+group persistence: database platform/pg platform/schema gorm.io github.com/jackc/pgx
 # Feature packages. Add each new feature package here in the change that creates it.
 group features: abuseipdb blacklist geolite ipgeolocation settings
 

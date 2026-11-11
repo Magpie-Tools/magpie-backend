@@ -14,6 +14,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 )
@@ -30,7 +31,7 @@ func TestProxyFilterIndexUpdateCostPopulatedPostgres(t *testing.T) {
 		t.Fatal("invalid projection-index route count", value)
 	}
 	db := setupProxyIngestionPostgresTest(t)
-	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, ensureProxyListPerformanceSchema, ensureProxyQueryIndexSchema} {
+	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
 		}
@@ -211,7 +212,7 @@ WHERE proxy_id IN ?`, ids).Error; err != nil {
 	}
 	canonicalBase := measure("canonical-base")
 	newIndexStart := time.Now()
-	if err := ensureProxyListPerformanceSchema(db); err != nil {
+	if err := schema.EnsureProxyListPerformanceSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	newIndexMS := float64(time.Since(newIndexStart).Microseconds()) / 1000

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -123,7 +124,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		cfg.Dialector = nil
 		cfg.AutoMigrate = true
 		cfg.SeedDefaults = false
-		cfg.Migrations = defaultMigrations()
+		cfg.Migrations = schema.DefaultMigrations()
 	})
 	if err != nil {
 		t.Fatalf("migrate database: %v", err)
@@ -179,7 +180,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		t.Fatalf("post-migration personal workspace reused account id %d", newUser.ID)
 	}
 
-	if err := seedPersonalWorkspaces(migratedDB); err != nil {
+	if err := schema.SeedPersonalWorkspaces(migratedDB); err != nil {
 		t.Fatalf("rerun personal workspace seeding: %v", err)
 	}
 	var postMigrationMemberships []domain.WorkspaceMembership

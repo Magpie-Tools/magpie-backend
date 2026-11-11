@@ -14,6 +14,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -31,7 +32,7 @@ func TestStatisticsTransactionCostPopulatedPostgres(t *testing.T) {
 		t.Fatal("statistics cost fixture requires at least 20000 routes", value)
 	}
 	db := setupProxyIngestionPostgresTest(t)
-	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, ensureProxyListPerformanceSchema, ensureProxyStatisticsRetentionSchema, ensureProxyQueryIndexSchema} {
+	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyStatisticsRetentionSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
 		}

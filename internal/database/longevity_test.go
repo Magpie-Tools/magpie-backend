@@ -10,13 +10,14 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 	"magpie/internal/support"
 )
 
 func TestBackendLongevityMonthlyPartitionHorizon(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	t.Setenv(envProxyStatisticsPartitionPrecreateMonths, "2")
-	t.Setenv(envProxyStatisticsPartitionPastMonths, "2")
+	t.Setenv(schema.EnvProxyStatisticsPartitionPrecreateMonths, "2")
+	t.Setenv(schema.EnvProxyStatisticsPartitionPastMonths, "2")
 	// A DEFAULT partition for a same-named table elsewhere must not suppress
 	// this table's own DEFAULT partition during startup or maintenance.
 	otherSchema := fmt.Sprintf("longevity_other_partition_%d", time.Now().UnixNano())
@@ -38,7 +39,7 @@ func TestBackendLongevityMonthlyPartitionHorizon(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
-	if err := ensureProxyStatisticsMonthlyPartitions(db, started); err != nil {
+	if err := schema.EnsureProxyStatisticsMonthlyPartitions(db, started); err != nil {
 		t.Fatal(err)
 	}
 	later := started.AddDate(0, 3, 0)
@@ -50,7 +51,7 @@ func TestBackendLongevityMonthlyPartitionHorizon(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("migration_date=%s after_three_months=%s physical_partition=%s", started.Format(time.DateOnly), later.Format(time.DateOnly), relation)
-	if err := ensureProxyStatisticsMonthlyPartitions(db, later); err != nil {
+	if err := schema.EnsureProxyStatisticsMonthlyPartitions(db, later); err != nil {
 		t.Fatalf("monthly maintenance cannot catch up once future data reached DEFAULT: %v", err)
 	}
 	if err := db.Raw("SELECT tableoid::regclass::text FROM proxy_statistics WHERE created_at = ?", later).Scan(&relation).Error; err != nil {

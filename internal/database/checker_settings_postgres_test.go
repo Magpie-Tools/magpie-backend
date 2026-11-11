@@ -5,6 +5,7 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 	"reflect"
 	"testing"
 	"time"
@@ -286,19 +287,19 @@ func TestCheckerAttributionMigrationPreservesLegacyPartitionHistoryPostgres(t *t
 			t.Fatal(err)
 		}
 	}
-	if err := prepareCheckerSettingsSchema(db); err != nil {
+	if err := schema.PrepareCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProxyStatisticsPartitionSchema(db); err != nil {
+	if err := schema.EnsureProxyStatisticsPartitionSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareCheckerSettingsSchema(db); err != nil {
+	if err := schema.PrepareCheckerSettingsSchema(db); err != nil {
 		t.Fatal("second migration", err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal("second attribution migration", err)
 	}
 	var count int64

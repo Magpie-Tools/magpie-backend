@@ -16,6 +16,7 @@ import (
 	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 )
 
 type checkerScaleQueryLogger struct {
@@ -52,7 +53,7 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	if err := ensureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	for _, stmt := range []struct {

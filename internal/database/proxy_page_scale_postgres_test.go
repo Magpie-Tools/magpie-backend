@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -19,7 +20,7 @@ func TestProxyPageAndCountUseWorkspaceIndexesPostgres(t *testing.T) {
 	if err := ensureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProxyListPerformanceSchema(db); err != nil {
+	if err := schema.EnsureProxyListPerformanceSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	const routes = 10000
@@ -187,7 +188,7 @@ func TestProxyListPerformanceSchemaRepairsInterruptedIndexesPostgres(t *testing.
 		t.Fatalf("invalid fixture indexes=%d error=%v", invalid, err)
 	}
 	for attempt := 0; attempt < 2; attempt++ {
-		if err := ensureProxyListPerformanceSchema(db); err != nil {
+		if err := schema.EnsureProxyListPerformanceSchema(db); err != nil {
 			t.Fatal(err)
 		}
 		var valid int64
@@ -202,7 +203,7 @@ func TestProxyListPerformanceSchemaPreservesValidNamedIndexesPostgres(t *testing
 	if err := db.Exec(`CREATE INDEX idx_workspace_proxy_filter_page ON user_proxy_filter_indexes (port)`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProxyListPerformanceSchema(db); err != nil {
+	if err := schema.EnsureProxyListPerformanceSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	var definition string

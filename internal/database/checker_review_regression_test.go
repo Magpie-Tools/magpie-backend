@@ -15,6 +15,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 )
 
 func seedCheckerTag(t *testing.T, db *gorm.DB, workspaceID uint, name string) domain.ProxyTag {
@@ -242,7 +243,7 @@ func TestCheckerRemovedMembershipDoesNotSurviveReimportPostgres(t *testing.T) {
 			t.Run(fmt.Sprintf("automatic=%t/prune=%t", automatic, prune), func(t *testing.T) {
 				db := setupProxyIngestionPostgresTest(t)
 				a, _, proxy, _ := seedCheckerEvidenceTest(t, db)
-				if err := ensureCheckerSettingsSchema(db); err != nil {
+				if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 					t.Fatal(err)
 				}
 				tag := seedCheckerTag(t, db, a.ID, "Former membership")

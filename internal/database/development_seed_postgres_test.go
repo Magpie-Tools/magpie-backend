@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 	"magpie/internal/support"
 
@@ -21,7 +22,7 @@ func developmentSeedTestOptions() DevelopmentSeedOptions {
 func setupDevelopmentSeedTest(t *testing.T) (*gorm.DB, DevelopmentSeedOptions, []domain.User) {
 	t.Helper()
 	db := setupProxyIngestionPostgresTest(t)
-	if err := seedDefaults(db); err != nil {
+	if err := schema.SeedDefaults(db); err != nil {
 		t.Fatal(err)
 	}
 	options := developmentSeedTestOptions()
@@ -210,7 +211,7 @@ func TestDevelopmentSeedRollsBackAfterFixtureInsertFailurePostgres(t *testing.T)
 
 func TestDevelopmentSeedCreatesMissingAccountsAndRequiresPasswordPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	if err := seedDefaults(db); err != nil {
+	if err := schema.SeedDefaults(db); err != nil {
 		t.Fatal(err)
 	}
 	options := developmentSeedTestOptions()

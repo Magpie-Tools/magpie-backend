@@ -1,4 +1,4 @@
-package database
+package schema
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 
 const proxyReputationIndexName = "idx_proxy_reputation_proxy_kind"
 
-func ensureProxyReputationSchema(db *gorm.DB) error {
+func EnsureProxyReputationSchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
@@ -16,7 +16,7 @@ func ensureProxyReputationSchema(db *gorm.DB) error {
 		return nil
 	}
 
-	indexExists, err := hasProxyReputationIndex(db)
+	indexExists, err := HasProxyReputationIndex(db)
 	if err != nil {
 		return fmt.Errorf("check proxy reputation index: %w", err)
 	}
@@ -28,14 +28,14 @@ func ensureProxyReputationSchema(db *gorm.DB) error {
 		return fmt.Errorf("deduplicate proxy reputations: %w", err)
 	}
 
-	if err := ensureProxyReputationIndex(db); err != nil {
+	if err := EnsureProxyReputationIndex(db); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func ensureProxyReputationIndex(db *gorm.DB) error {
+func EnsureProxyReputationIndex(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
@@ -48,7 +48,7 @@ func ensureProxyReputationIndex(db *gorm.DB) error {
 	return nil
 }
 
-func hasProxyReputationIndex(db *gorm.DB) (bool, error) {
+func HasProxyReputationIndex(db *gorm.DB) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("nil database connection")
 	}

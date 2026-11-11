@@ -1,7 +1,6 @@
-package database
+package schema
 
 import (
-	"context"
 	"fmt"
 
 	"magpie/internal/domain"
@@ -10,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func ensureProxyListPerformanceSchema(db *gorm.DB) error {
+func EnsureProxyListPerformanceSchema(db *gorm.DB) error {
 	if db == nil {
 		return fmt.Errorf("nil database connection")
 	}
@@ -208,46 +207,6 @@ END $$;
 
 	if err := db.Exec(constraintsSQL).Error; err != nil {
 		return fmt.Errorf("proxy scrape-source cascade constraints: %w", err)
-	}
-	return nil
-}
-
-func ValidateProxyScrapeSiteCascadeConstraints(ctx context.Context) error {
-	if DB == nil {
-		return fmt.Errorf("database not initialised")
-	}
-
-	db := DB
-	if ctx != nil {
-		db = db.WithContext(ctx)
-	}
-	if !pg.IsPostgresDialect(db) {
-		return nil
-	}
-
-	const validationSQL = `
-DO $$
-DECLARE
-	constraint_row RECORD;
-BEGIN
-	FOR constraint_row IN
-		SELECT conname
-		FROM pg_constraint
-		WHERE conrelid = 'proxy_scrape_site'::regclass
-		  AND contype = 'f'
-		  AND confdeltype = 'c'
-		  AND NOT convalidated
-	LOOP
-		EXECUTE format(
-			'ALTER TABLE proxy_scrape_site VALIDATE CONSTRAINT %I',
-			constraint_row.conname
-		);
-	END LOOP;
-END $$;
-`
-
-	if err := db.Exec(validationSQL).Error; err != nil {
-		return fmt.Errorf("validate proxy scrape-source cascade constraints: %w", err)
 	}
 	return nil
 }
