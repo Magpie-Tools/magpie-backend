@@ -13,8 +13,8 @@ import (
 
 	"magpie/internal/checkpace"
 	"magpie/internal/domain"
+	"magpie/internal/instanceid"
 	queueutil "magpie/internal/jobs/queue"
-	"magpie/internal/jobs/runtime"
 	"magpie/internal/security"
 	"magpie/internal/support"
 
@@ -865,7 +865,7 @@ func (rpq *RedisProxyQueue) GetActiveInstances() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return runtime.CountActiveInstances(rpq.baseContext(), client)
+	return instanceid.CountActiveInstances(rpq.baseContext(), client)
 }
 
 func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {

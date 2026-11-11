@@ -8,7 +8,7 @@
 # package: allowed internal imports
 
 cmd/magpie: app
-cmd/seed-dev-data: config database devseed jobs/queue/proxy jobs/queue/sites jobs/runtime security support
+cmd/seed-dev-data: config database devseed instanceid jobs/queue/proxy jobs/queue/sites security support
 abuseipdb: domain platform/pg
 account: domain platform/pg
 alerts: api/dto domain evidence platform/pg security support
@@ -36,8 +36,8 @@ jobs/checker: api/dto checkerconfig checkpace config database domain jobs/checke
 jobs/checker/judges: config domain
 jobs/maintenance: account database scrapestore support workspace
 jobs/queue:
-jobs/queue/proxy: checkpace domain jobs/queue jobs/runtime security support
-jobs/queue/sites: checkpace config domain jobs/queue jobs/runtime support
+jobs/queue/proxy: checkpace domain instanceid jobs/queue security support
+jobs/queue/sites: checkpace config domain instanceid jobs/queue support
 jobs/runtime: abuseipdb config database domain instanceid ipgeolocation support
 jobs/scraper: blacklist checkpace config database domain geolite jobs/queue/proxy jobs/queue/sites scrapestore support
 judgestore: api/dto domain platform/pg

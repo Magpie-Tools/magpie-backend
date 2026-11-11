@@ -14,8 +14,8 @@ import (
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/instanceid"
 	queueutil "magpie/internal/jobs/queue"
-	"magpie/internal/jobs/runtime"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -528,7 +528,7 @@ func (rssq *RedisScrapeSiteQueue) GetActiveInstances() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return runtime.CountActiveInstances(rssq.baseContext(), client)
+	return instanceid.CountActiveInstances(rssq.baseContext(), client)
 }
 
 func (rssq *RedisScrapeSiteQueue) RequeueAll() (int64, error) {

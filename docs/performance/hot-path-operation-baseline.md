@@ -75,6 +75,7 @@ the counts above.
 | --- | --- | --- | --- | --- |
 | The shared pool handle moved from `database.DB` to `pg.DB`. The failure tracker and the ownership verifier read the same handle under its new qualifier; `jobs/checker` now imports `platform/pg`. | +0 | +0 | +0 | +0 |
 | The two checker batchers moved from `init()` singletons to a `checker.Runtime` that `app/bootstrap` constructs, starts in its own routine group and stops after the checker workers and before the consumers. Workers reach the batchers through their runtime instead of a package variable; batch size, window and statements are unchanged. | +0 | +0 | +0 | +0 |
+| `CountActiveInstances` and the heartbeat index helpers moved from `jobs/runtime` to `instanceid`. `jobs/queue/proxy` imports `instanceid` instead of `jobs/runtime`, so neither queue depends on `internal/database` any more. The function runs when the checker and scraper size their workers (every 15 s), never per check, and sends the same Redis commands. | +0 | +0 | +0 | +0 |
 
 ### Measurement of the checker batcher ownership change
 

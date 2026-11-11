@@ -15,9 +15,9 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/devseed"
+	"magpie/internal/instanceid"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
-	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/security"
 	"magpie/internal/support"
 
@@ -96,7 +96,7 @@ func run() error {
 		return err
 	}
 	defer support.CloseRedisClient()
-	instances, err := jobruntime.CountActiveInstances(ctx, client)
+	instances, err := instanceid.CountActiveInstances(ctx, client)
 	if err != nil {
 		return err
 	}
