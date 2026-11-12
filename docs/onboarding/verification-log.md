@@ -79,6 +79,8 @@ with 20 logical CPUs and 38 GB of memory, Go 1.27.4.
 | `0422769` | Add rollback and locking tests for the read model's callers | pass | pass | pass | pass | pass | new reference: identical to 901b281; two runs identical |
 | `59aab12` | Extract readmodel: the proxy filter index and scrape-source counts | pass | pass | pass | pass | pass | identical to 0422769-run1 |
 | `277ebf1` | onboarding: follow anchors through export-case and method changes | pass | pass | pass | pass | pass | - |
+| `5462a6f` | Record the D2, D7 and D8 work, the scale regressions and the stop rule | pass | pass | pass | pass | pass | - |
+| `95111d2` | Bound the rebuild test's database cleanup by a hung drop, not by load | pass | pass | pass | pass | pass | - |
 
 Notes:
 
@@ -92,6 +94,19 @@ Notes:
   `MAGPIE_TEST_ALERT_SCALE`). The browser tests were not run; the scale
   regressions ran separately on selected revisions, recorded under
   [Scale regressions](#scale-regressions).
+- `make test-integration`, the repository's own target with default
+  PostgreSQL settings, failed on `5462a6f` in 2 of 4 runs, both times in the
+  cleanup of `TestApplicationRebuildReadModels`: the 10-second budget for
+  dropping its database ran out while the test's assertions had passed. A
+  probe measured the drop, which waits for a checkpoint, at 4.4-5.8 s on
+  `0422769` and 6.6-9.0 s on `5462a6f` (three runs each). Since the pilot the
+  read-model tests run as their own package in parallel with `app/bootstrap`,
+  so the checkpoint has more to flush. The commits from `59aab12` to
+  `5462a6f` carry this intermittent failure; `95111d2` gives the cleanup a
+  one-minute budget, and two complete runs of `make test-integration` on it
+  pass every package in both the plain and the race phase. The per-commit
+  integration runs in the table use servers with `fsync=off` and did not show
+  it.
 - The race suite against the real services also ran for `e99019b`,
   `e24dc03` and `59aab12`, the commits that change hot-path ownership or
   split the core: pass each time.
@@ -180,6 +195,7 @@ Gates of `59aab12`:
 | Locking | Overlapping callers projecting the same 4,000 routes in opposite orders do not deadlock; the asynchronous drain leaves an open caller's row alone, or waits for it when it must write the row and finishes after the commit. The read model's own lock and timeout tests moved with it. |
 | Repeated scale comparisons | Below, and the read-model scale regressions under [Scale regressions](#scale-regressions). |
 | Onboarding | The re-run after the pilot shows no drop; the stop rule fires (see above). |
+| Required checks | All pass on `59aab12`, except an intermittent cleanup timeout in `make test-integration` that the split's extra test parallelism made more likely; fixed by the test-only `95111d2` (see the notes under [Per-commit results](#per-commit-results)). |
 
 **Comparison harness.** `TestReadModelComparisonPostgres` on 20,000 routes
 shared by 4 workspaces and 20 sources: 8 rounds of 5,000 statistics through
