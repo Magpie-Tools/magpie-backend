@@ -565,6 +565,44 @@ func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"statistics": statistics})
 }
 
+// getProxyStatisticHours returns the proxy's checks grouped into UTC hours.
+// The optional hours parameter selects the window ending now, from 1 to 168
+// hours, and defaults to 72.
+func getProxyStatisticHours(w http.ResponseWriter, r *http.Request) {
+	workspaceID, workspaceErr := workspaceIDFromRequest(r)
+	if workspaceErr != nil {
+		writeError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	proxyID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, "Invalid proxy id", http.StatusBadRequest)
+		return
+	}
+
+	hours := 72
+	if rawHours := strings.TrimSpace(r.URL.Query().Get("hours")); rawHours != "" {
+		parsed, parseErr := strconv.Atoi(rawHours)
+		if parseErr != nil || parsed < 1 || parsed > database.MaxProxyStatisticHours {
+			writeError(w, "hours must be between 1 and 168", http.StatusBadRequest)
+			return
+		}
+		hours = parsed
+	}
+
+	// The window starts on an hour boundary so its first bucket is complete.
+	since := time.Now().UTC().Truncate(time.Hour).Add(-time.Duration(hours-1) * time.Hour)
+	buckets, dbErr := database.GetProxyStatisticHours(workspaceID, proxyID, since)
+	if dbErr != nil {
+		log.Error("error retrieving hourly proxy statistics", "error", dbErr.Error(), "proxy_id", proxyID)
+		writeError(w, "Failed to retrieve hourly proxy statistics", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"since": since, "hours": buckets})
+}
+
 func getProxyStatisticResponseBody(w http.ResponseWriter, r *http.Request) {
 	workspaceID, workspaceErr := workspaceIDFromRequest(r)
 	if workspaceErr != nil {

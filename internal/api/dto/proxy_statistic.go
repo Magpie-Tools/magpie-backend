@@ -23,3 +23,13 @@ type ProxyStatisticDetail struct {
 	ResponseBody string `json:"response_body"`
 	Regex        string `json:"regex"`
 }
+
+// ProxyStatisticHour summarises one UTC hour of a proxy's check history for
+// one workspace. AvgResponseTime averages successful checks only and is zero
+// when the hour has none.
+type ProxyStatisticHour struct {
+	Hour            time.Time `json:"hour"`
+	Checks          int64     `json:"checks"`
+	Failed          int64     `json:"failed"`
+	AvgResponseTime int64     `json:"avg_response_time"`
+}
