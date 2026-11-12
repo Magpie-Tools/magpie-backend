@@ -15,6 +15,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 )
 
 func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
@@ -61,7 +62,7 @@ func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
 			}
 		}
 
-		return refreshWorkspaceScrapeSourceStatsForSites(tx, []uint64{siteID})
+		return readmodel.RefreshWorkspaceScrapeSourceStatsForSites(tx, []uint64{siteID})
 	})
 }
 

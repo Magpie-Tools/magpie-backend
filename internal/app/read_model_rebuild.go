@@ -9,6 +9,7 @@ import (
 
 	"magpie/internal/database"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 )
 
 func rebuildReadModels(ctx context.Context) error {
@@ -47,7 +48,7 @@ func rebuildReadModels(ctx context.Context) error {
 	if err := connection.PingContext(ctx); err != nil {
 		return fmt.Errorf("read-model rebuild database connection: %w", err)
 	}
-	if err := database.RefreshReadModelIndexes(ctx); err != nil {
+	if err := readmodel.RefreshReadModelIndexes(ctx); err != nil {
 		return err
 	}
 	return ctx.Err()

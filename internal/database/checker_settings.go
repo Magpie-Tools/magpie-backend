@@ -9,6 +9,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 	"sort"
 	"time"
 
@@ -147,17 +148,17 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		}
 		if tx.Dialector.Name() == "postgres" {
 			if defaultChanged {
-				if err := RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspaceID); err != nil {
+				if err := readmodel.RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspaceID); err != nil {
 					return err
 				}
-			} else if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
+			} else if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
 				return err
 			}
 			if defaultChanged {
-				if err := RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspaceID); err != nil {
+				if err := readmodel.RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspaceID); err != nil {
 					return err
 				}
-			} else if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
+			} else if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
 				return err
 			}
 		}

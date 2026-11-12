@@ -11,6 +11,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
@@ -116,7 +117,7 @@ func TestRefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDsRollsBackWithItsC
 		return rows
 	}
 	rollBackCaller(t, db, func(tx *gorm.DB) error {
-		return refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspace.ID, ids[:2])
+		return readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspace.ID, ids[:2])
 	}, count, count, 2)
 }
 
@@ -124,7 +125,7 @@ func TestRefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDsRollsBackWithItsCa
 	db, workspace, ids, _ := boundaryFixture(t, 3)
 	count := func(handle *gorm.DB) int64 { return countSourceStats(t, handle, workspace.ID) }
 	rollBackCaller(t, db, func(tx *gorm.DB) error {
-		return refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspace.ID, ids[:1])
+		return readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspace.ID, ids[:1])
 	}, count, count, 1)
 }
 
@@ -132,7 +133,7 @@ func TestRefreshWorkspaceScrapeSourceStatsForSitesRollsBackWithItsCallerPostgres
 	db, workspace, _, site := boundaryFixture(t, 3)
 	count := func(handle *gorm.DB) int64 { return countSourceStats(t, handle, workspace.ID) }
 	rollBackCaller(t, db, func(tx *gorm.DB) error {
-		return refreshWorkspaceScrapeSourceStatsForSites(tx, []uint64{site.ID})
+		return readmodel.RefreshWorkspaceScrapeSourceStatsForSites(tx, []uint64{site.ID})
 	}, count, count, 1)
 }
 
@@ -143,7 +144,7 @@ func TestRefreshWorkspaceScrapeSourceStatsForSitesRollsBackWithItsCallerPostgres
 func TestOverlappingCallerProjectionsDoNotDeadlockPostgres(t *testing.T) {
 	const routes, rounds = 4000, 6
 	db, workspace, ids, _ := boundaryFixture(t, routes)
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, workspace.ID, ids); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, workspace.ID, ids); err != nil {
 		t.Fatal(err)
 	}
 	descending := slices.Clone(ids)
@@ -157,7 +158,7 @@ func TestOverlappingCallerProjectionsDoNotDeadlockPostgres(t *testing.T) {
 			callers.Go(func() {
 				<-start
 				errs <- db.Transaction(func(tx *gorm.DB) error {
-					if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspace.ID, order); err != nil {
+					if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspace.ID, order); err != nil {
 						return err
 					}
 					// Hold the projected rows a moment, as a caller does while
@@ -193,7 +194,7 @@ func startDrain() <-chan struct{} {
 		defer close(drained)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		StartReadModelRefreshRoutine(ctx)
+		readmodel.StartReadModelRefreshRoutine(ctx)
 	}()
 	return drained
 }
@@ -208,7 +209,7 @@ func openBoundaryCaller(t *testing.T, db *gorm.DB, workspace domain.Workspace, r
 	}
 	t.Cleanup(func() { caller.Rollback() })
 	setBoundaryEvidence(t, caller, workspace, []uint64{route}, true, at)
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(caller, workspace.ID, []uint64{route}); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(caller, workspace.ID, []uint64{route}); err != nil {
 		t.Fatal(err)
 	}
 	return caller
@@ -229,12 +230,12 @@ func boundaryRow(t *testing.T, db *gorm.DB, workspaceID uint, route uint64) doma
 // its row overwritten. The caller's commit publishes its row.
 func TestAsyncProjectionLeavesAnOpenCallersRowAlonePostgres(t *testing.T) {
 	db, workspace, ids, _ := boundaryFixture(t, 2)
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, workspace.ID, ids); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, workspace.ID, ids); err != nil {
 		t.Fatal(err)
 	}
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	caller := openBoundaryCaller(t, db, workspace, ids[0], at)
-	QueueReadModelRefreshForProxyIDs(ids[:1])
+	readmodel.QueueReadModelRefreshForProxyIDs(ids[:1])
 	select {
 	case <-startDrain():
 	case <-time.After(10 * time.Second):
@@ -260,13 +261,13 @@ func TestAsyncProjectionLeavesAnOpenCallersRowAlonePostgres(t *testing.T) {
 func TestAsyncProjectionWaitsForAnOpenCallerItMustOverwritePostgres(t *testing.T) {
 	db, workspace, ids, _ := boundaryFixture(t, 2)
 	t.Setenv("READ_MODEL_REFRESH_TIMEOUT_SECONDS", "1")
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, workspace.ID, ids); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, workspace.ID, ids); err != nil {
 		t.Fatal(err)
 	}
 	// Committed evidence the projection has not seen yet.
 	earlier := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	setBoundaryEvidence(t, db, workspace, ids[:1], false, earlier)
-	QueueReadModelRefreshForProxyIDs(ids[:1])
+	readmodel.QueueReadModelRefreshForProxyIDs(ids[:1])
 
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	caller := openBoundaryCaller(t, db, workspace, ids[0], at)
@@ -284,7 +285,7 @@ func TestAsyncProjectionWaitsForAnOpenCallerItMustOverwritePostgres(t *testing.T
 	case <-time.After(10 * time.Second):
 		t.Fatal("the drain did not finish after the caller committed")
 	}
-	QueueReadModelRefreshForProxyIDs(ids[:1])
+	readmodel.QueueReadModelRefreshForProxyIDs(ids[:1])
 	select {
 	case <-startDrain():
 	case <-time.After(10 * time.Second):

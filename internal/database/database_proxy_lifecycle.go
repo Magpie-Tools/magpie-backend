@@ -10,6 +10,7 @@ import (
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -34,7 +35,7 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 			return
 		}
 		err = errors.Join(err,
-			refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(pg.DB, workspaceID, committedProxyIDs),
+			readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(pg.DB, workspaceID, committedProxyIDs),
 			refreshWorkspaceUsageActiveRoutes(pg.DB, workspaceID))
 		if checkerChanged {
 			checkerconfig.Notify(workspaceID)
@@ -179,7 +180,7 @@ func DeleteActiveManagedProxy(workspaceID uint, proxyID uint64) (bool, []domain.
 				return err
 			}
 		}
-		if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, []uint64{proxyID}); err != nil {
+		if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, []uint64{proxyID}); err != nil {
 			return err
 		}
 		return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
@@ -270,10 +271,10 @@ func ensureWorkspaceActivationAvailable(tx *gorm.DB, workspaceID uint) error {
 }
 
 func refreshManagedProxyLifecycleReadModels(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
-	return refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs)
+	return readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs)
 }
 
 func DeleteProxiesWithSettings(workspaceID uint, settings dto.DeleteSettings) (int64, []domain.Proxy, error) {

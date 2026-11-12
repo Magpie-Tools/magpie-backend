@@ -28,6 +28,7 @@ import (
 	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/jobs/scraper"
 	"magpie/internal/mail"
+	"magpie/internal/readmodel"
 	"magpie/internal/rotatingproxy"
 	"magpie/internal/scrapestore"
 	"magpie/internal/support"
@@ -103,7 +104,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		running.readModels.start(database.StartReadModelRefreshRoutine)
+		running.readModels.start(readmodel.StartReadModelRefreshRoutine)
 		running.producers.start(jobruntime.StartDashboardCacheRoutine)
 		startupQueueBootstrapCompleted.Store(true)
 		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
@@ -211,7 +212,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		return err
 	}
 	// Register final drains before opening listeners or starting check producers.
-	running.readModels.start(database.StartReadModelRefreshRoutine)
+	running.readModels.start(readmodel.StartReadModelRefreshRoutine)
 	running.consumers.start(jobruntime.StartProxyStatisticsRoutine)
 	running.consumers.start(jobruntime.StartWorkspaceUsageRoutine)
 	if err := ctx.Err(); err != nil {

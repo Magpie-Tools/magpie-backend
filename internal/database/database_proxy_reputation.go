@@ -11,6 +11,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 	"magpie/internal/support/reputation"
 
 	"github.com/charmbracelet/log"
@@ -485,7 +486,7 @@ func upsertProxyReputations(db *gorm.DB, reputations []domain.ProxyReputation) e
 		seen[rep.ProxyID] = struct{}{}
 		proxyIDs = append(proxyIDs, rep.ProxyID)
 	}
-	QueueReadModelRefreshForProxyIDs(proxyIDs)
+	readmodel.QueueReadModelRefreshForProxyIDs(proxyIDs)
 	return nil
 }
 

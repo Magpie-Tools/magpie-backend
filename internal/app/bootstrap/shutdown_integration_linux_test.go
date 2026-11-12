@@ -30,6 +30,7 @@ import (
  "magpie/internal/domain"
  jobs "magpie/internal/jobs/runtime"
  "magpie/internal/platform/pg"
+ "magpie/internal/readmodel"
  "net/http"
  "os"
  "syscall"
@@ -65,7 +66,7 @@ func main() {
   }); err != nil { panic(err) }
   snapshot, err := database.LoadCheckerWorkspace(context.Background(), workspace.ID)
   if err != nil { panic(err) }
-  if err := database.RefreshReadModelIndexes(context.Background()); err != nil { panic(err) }
+  if err := readmodel.RefreshReadModelIndexes(context.Background()); err != nil { panic(err) }
   jobs.AddWorkspaceManagedTraffic(workspace.ID, 1, 123)
   jobs.AddProxyStatistic(domain.ProxyStatistic{CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: workspace.ID, ConfigKey: snapshot.Default.Keys[protocol.ID-1], Alive: true}}, Alive: true, Attempt: 1, ResponseTime: 10, TransportProtocol: "tcp", ProxyID: proxy.ID, JudgeID: judge.ID, ProtocolID: protocol.ID, CreatedAt: time.Now().UTC()})
   fmt.Println("SHUTDOWN_PROBE submitted usage and statistic")

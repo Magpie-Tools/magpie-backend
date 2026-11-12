@@ -287,7 +287,7 @@ check/usage counters, latest evidence and durable reputation-refresh requests
 in one PostgreSQL transaction. Latest pointers use workspace, configuration
 key, route and protocol. A delayed older result cannot replace newer evidence;
 obsolete configuration evidence remains history without defining current health.
-Filter/source read models, reputation calculation and dashboard cache refreshes
+Filter/source read models (`internal/readmodel`), reputation calculation and dashboard cache refreshes
 run asynchronously after this boundary and can lag it.
 During shutdown, producers stop first. Checker workers are producers; once the
 dispatcher has joined them, the checker's failure-tracking and ownership

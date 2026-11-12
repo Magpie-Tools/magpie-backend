@@ -5,6 +5,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/readmodel"
 
 	"gorm.io/gorm"
 )
@@ -106,7 +107,7 @@ func TestRefreshWorkspaceScrapeSourceStatsForWorkspaceSitesRollsBackWithItsCalle
 	if tx.Error != nil {
 		t.Fatal(tx.Error)
 	}
-	if err := RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, workspace.ID, []uint64{site.ID}); err != nil {
+	if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, workspace.ID, []uint64{site.ID}); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}

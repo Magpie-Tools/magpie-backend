@@ -17,6 +17,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 )
 
 func seedCheckerTag(t *testing.T, db *gorm.DB, workspaceID uint, name string) domain.ProxyTag {
@@ -67,7 +68,7 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 	}
 	// Give the tag-removal path genuine current health to invalidate. Without
 	// evidence, unknown-to-unknown reconciliation correctly performs no update.
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, a.ID, []uint64{proxy.ID}); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, a.ID, []uint64{proxy.ID}); err != nil {
 		t.Fatal(err)
 	}
 	assertHealth := func(healthy bool) {

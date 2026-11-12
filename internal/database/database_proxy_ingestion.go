@@ -10,6 +10,7 @@ import (
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -354,10 +355,10 @@ func createWorkspaceAssociations(tx *gorm.DB, proxies []domain.Proxy, workspaceI
 			return err
 		}
 	}
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
-	if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+	if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
 	if inserted.RowsAffected == 0 {

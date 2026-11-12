@@ -8,6 +8,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
@@ -182,7 +183,7 @@ func applyProxyGeoUpdates(ctx context.Context, updates []database.ProxyMetadataU
 		for _, update := range batch {
 			proxyIDs = append(proxyIDs, update.ID)
 		}
-		database.QueueReadModelRefreshForProxyIDs(proxyIDs)
+		readmodel.QueueReadModelRefreshForProxyIDs(proxyIDs)
 	}
 
 	return nil

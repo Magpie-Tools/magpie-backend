@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 
 	"gorm.io/gorm"
 )
@@ -31,7 +32,7 @@ func drainReadModel(t testing.TB) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		StartReadModelRefreshRoutine(ctx)
+		readmodel.StartReadModelRefreshRoutine(ctx)
 	}()
 	select {
 	case <-done:
@@ -75,7 +76,7 @@ func ingestionReadModelFixture(t *testing.T) (db *gorm.DB, workspace domain.Work
 			t.Fatal(err)
 		}
 	}
-	if err := RefreshReadModelIndexes(context.Background()); err != nil {
+	if err := readmodel.RefreshReadModelIndexes(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	return db, workspace, judge, checked, unchecked, site
@@ -143,7 +144,7 @@ func TestIngestionQueuesExactlyItsRoutesForTheReadModelPostgres(t *testing.T) {
 	}
 
 	// The unannounced evidence was projectable: queued, it is projected.
-	QueueReadModelRefreshForProxyIDs([]uint64{unchecked.ID})
+	readmodel.QueueReadModelRefreshForProxyIDs([]uint64{unchecked.ID})
 	drainReadModel(t)
 	if row := filterRow(t, db, workspace.ID, unchecked.ID); !row.Alive || !row.LatestCheck.Equal(checkedAt) {
 		t.Fatalf("the queued route was not projected: %+v", row)

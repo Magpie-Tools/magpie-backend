@@ -12,7 +12,7 @@
 # Import, reimport usage, lifecycle and failure actions.
 ./internal/database ^(TestProxyIngestionBatchesPostgres|TestProxyReimportPreservesUsagePostgres|TestProxyReimportMixedRowsRefreshUsagePostgres|TestFailureActionsPostgresLifecycleAndOperationBudget|TestBulkProxyDeletionPostgres)$
 # Read-model refresh and rebuild.
-./internal/database ^(TestReadModelBackgroundOperationCountsPostgres|TestReadModelNoopFilterRepairsEveryContentFieldPostgres|TestReadModelSubprefixOrdinaryPassLimitAndOperationCountsPostgres|TestReadModelExplicitRebuildRemovesCommittedOrphansPostgres)$
+./internal/readmodel ^(TestReadModelBackgroundOperationCountsPostgres|TestReadModelNoopFilterRepairsEveryContentFieldPostgres|TestReadModelSubprefixOrdinaryPassLimitAndOperationCountsPostgres|TestReadModelExplicitRebuildRemovesCommittedOrphansPostgres)$
 # Scrape-source settings and source tag assignments.
 ./internal/scrapestore ^(TestSourceTagsPostgresMigrationAndLifecycle)$
 # Development seed.

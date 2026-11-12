@@ -10,6 +10,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/ipgeolocation"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -419,7 +420,7 @@ func ApplyIPGeolocationBatch(ctx context.Context, cfg config.IPGeolocationPlugin
 		return tx.Model(&row).Updates(map[string]any{"apply_cursor": row.ApplyCursor, "apply_pending": len(proxies) == ipGeolocationBatchSize}).Error
 	})
 	if err == nil && len(ids) > 0 {
-		QueueReadModelRefreshForProxyIDs(ids)
+		readmodel.QueueReadModelRefreshForProxyIDs(ids)
 	}
 	return worked, err
 }

@@ -10,6 +10,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -118,7 +119,7 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 		return err
 	}
 
-	QueueReadModelRefreshForProxyIDs(proxyIDs)
+	readmodel.QueueReadModelRefreshForProxyIDs(proxyIDs)
 	return nil
 }
 

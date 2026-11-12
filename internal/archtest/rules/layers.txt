@@ -25,6 +25,10 @@ forbid features: transport bootstrap auth
 # import the core.
 forbid alerts: core
 forbid workspace: core
+# The read model sits below the core: the core calls it, some of it inside
+# the core's transactions, and it never imports the core, a feature, transport,
+# bootstrap or the checker.
+forbid readmodel: core features transport bootstrap auth checker-execution listeners
 # geolite, blacklist, scrapestore and devseed sit above the core: they may
 # call the core, the core never imports them.
 forbid core: geolite blacklist scrapestore devseed

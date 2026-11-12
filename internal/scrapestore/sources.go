@@ -15,6 +15,7 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 	"magpie/internal/support"
 )
 
@@ -130,7 +131,7 @@ func SaveScrapingSourcesWithSettings(userID uint, sources []string, mode string,
 			}
 			sites = loaded
 
-			if err := database.RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, userID, siteIDs); err != nil {
+			if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, userID, siteIDs); err != nil {
 				return err
 			}
 		}

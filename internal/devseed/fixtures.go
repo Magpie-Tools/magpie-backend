@@ -13,6 +13,7 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/readmodel"
 	"magpie/internal/security"
 	"magpie/internal/support/reputation"
 
@@ -270,10 +271,10 @@ func seedDevelopmentWorkspace(tx *gorm.DB, workspace *domain.Workspace, index in
 	if err := seedDevelopmentAlerts(tx, *workspace, index, options, result); err != nil {
 		return err
 	}
-	if err := database.RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID); err != nil {
 		return err
 	}
-	if err := database.RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID); err != nil {
+	if err := readmodel.RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID); err != nil {
 		return err
 	}
 	result.Proxies += len(proxies)

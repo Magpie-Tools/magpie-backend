@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/readmodel"
 
 	"gorm.io/gorm"
 )
@@ -77,7 +78,7 @@ func TestRefreshWorkspaceProxyFilterIndexesRollsBackWithItsCallerPostgres(t *tes
 		return rows
 	}
 	rollBackCaller(t, db, func(tx *gorm.DB) error {
-		return RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID)
+		return readmodel.RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspace.ID)
 	}, count, count, 1)
 }
 
@@ -99,6 +100,6 @@ func TestRefreshWorkspaceScrapeSourceStatsRollsBackWithItsCallerPostgres(t *test
 		return rows
 	}
 	rollBackCaller(t, db, func(tx *gorm.DB) error {
-		return RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID)
+		return readmodel.RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspace.ID)
 	}, count, count, 1)
 }

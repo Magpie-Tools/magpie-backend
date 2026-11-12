@@ -14,6 +14,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 
 	"gorm.io/gorm"
 )
@@ -71,7 +72,7 @@ func TestReadModelComparisonPostgres(t *testing.T) {
 	drainReadModel(t)
 	owners, judge := seedComparisonInventory(t, db, shape)
 	seedStart := time.Now()
-	if err := RefreshReadModelIndexes(context.Background()); err != nil {
+	if err := readmodel.RefreshReadModelIndexes(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec("ANALYZE").Error; err != nil {
@@ -123,7 +124,7 @@ func TestReadModelComparisonPostgres(t *testing.T) {
 	routineDone := make(chan struct{})
 	go func() {
 		defer close(routineDone)
-		StartReadModelRefreshRoutine(ctx)
+		readmodel.StartReadModelRefreshRoutine(ctx)
 	}()
 	for round := 0; round < shape.LagRounds; round++ {
 		batch, sentinel, at, alive := comparisonBatch(shape, owners, judge, shape.Rounds+round, &next)

@@ -1,4 +1,4 @@
-package database
+package readmodel
 
 import (
 	"fmt"
@@ -84,7 +84,7 @@ func TestReadModelBackfillStoresHostAndLiteralIPProjection(t *testing.T) {
 		t.Fatalf("create proxy access rows: %v", err)
 	}
 
-	if err := ensureReadModelBackfill(db); err != nil {
+	if err := EnsureReadModelBackfill(db); err != nil {
 		t.Fatalf("backfill read model: %v", err)
 	}
 

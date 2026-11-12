@@ -7,6 +7,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -101,7 +102,7 @@ func SetupDB(opts ...Option) (*gorm.DB, error) {
 		if err := schema.EnsureProxyListPerformanceSchema(pg.DB); err != nil {
 			return nil, err
 		}
-		if err := ensureReadModelBackfill(pg.DB); err != nil {
+		if err := readmodel.EnsureReadModelBackfill(pg.DB); err != nil {
 			return nil, err
 		}
 	}

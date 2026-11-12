@@ -18,7 +18,7 @@ auth: 6
 blacklist: 6
 checkerconfig: 4
 config: 18
-database: 16
+database: 9
 domain: 9
 evidence: 2
 geolite: 18
@@ -32,6 +32,7 @@ jobs/runtime: 12
 jobs/scraper: 11
 platform/pg: 2
 platform/schema: 1
+readmodel: 7
 rotatingproxy: 10
 security: 6
 support: 17

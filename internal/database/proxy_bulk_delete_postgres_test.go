@@ -15,6 +15,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 )
 
 type bulkDeleteQueryLog struct {
@@ -103,7 +104,7 @@ SELECT workspace_id,proxy_id,? FROM user_proxies WHERE workspace_id=? AND proxy_
 	if err := db.Exec("ANALYZE").Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := RefreshWorkspaceScrapeSourceStats(db, ""); err != nil {
+	if err := readmodel.RefreshWorkspaceScrapeSourceStats(db, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshWorkspaceUsageActiveRoutes(db, a.ID); err != nil {

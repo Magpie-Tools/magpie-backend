@@ -1,4 +1,4 @@
-package database
+package readmodel
 
 import (
 	"context"
@@ -47,7 +47,7 @@ type sourceStatsKey struct {
 	ScrapeSiteID uint64
 }
 
-func ensureReadModelBackfill(db *gorm.DB) error {
+func EnsureReadModelBackfill(db *gorm.DB) error {
 	if db == nil || !pg.IsPostgresDialect(db) {
 		return nil
 	}
@@ -414,7 +414,7 @@ func refreshWorkspaceProxyFilterIndexesForProxyIDs(tx *gorm.DB, proxyIDs []uint6
 	return tx.Statement.Context.Err()
 }
 
-func refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
+func RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
 	if workspaceID == 0 || len(proxyIDs) == 0 {
 		return nil
 	}
@@ -653,7 +653,7 @@ func refreshAllWorkspaceScrapeSourceStats(db *gorm.DB) error {
 	return RefreshWorkspaceScrapeSourceStats(db, "")
 }
 
-func refreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) error {
+func RefreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) error {
 	if tx == nil || len(siteIDs) == 0 {
 		return nil
 	}
@@ -775,7 +775,7 @@ func flushDirtySourceStats(ctx context.Context) bool {
 	return true
 }
 
-func refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
+func RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
 	if tx == nil || workspaceID == 0 || len(proxyIDs) == 0 || !tx.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
 		return nil
 	}
