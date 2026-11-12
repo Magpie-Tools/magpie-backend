@@ -30,7 +30,7 @@ func setupSettingsAPITest(t *testing.T) (uint, uint) {
 	t.Setenv("JWT_SECRET", "settings-api-test-secret")
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
 	user, _ := createWorkspaceMiddlewareTestUser(t, "settings@example.test")
-	workspace, err := workspace.CreateWorkspace(user.ID, "Shared settings")
+	workspace, err := workspace.CreateWorkspace(user.ID, "Shared settings", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

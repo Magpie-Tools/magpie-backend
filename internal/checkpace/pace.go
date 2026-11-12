@@ -1,17 +1,17 @@
 // Package checkpace turns each workspace's monthly check and scrape allowances
 // into cadences. Snapshots are computed off the hot path from aggregated usage
 // rows; checker and scraper workers only read an immutable published map.
+//
+// A Pacer owns all of the package's state: the published snapshot, the check
+// usage meter, its flush state and its health. app constructs one per process
+// and hands it to both queues, app/bootstrap (which configures and runs it and
+// passes it to the checker and the scraper) and the API.
 package checkpace
 
 import (
 	"context"
-	"fmt"
 	"math"
-	"sync"
-	"sync/atomic"
 	"time"
-
-	"github.com/charmbracelet/log"
 )
 
 const (
@@ -277,27 +277,6 @@ func (s *Snapshot) Len() int {
 	return len(s.paces)
 }
 
-var (
-	current   atomic.Pointer[Snapshot]
-	refreshCh = make(chan struct{}, 1)
-)
-
-// Current returns the latest published snapshot, or nil before the first one.
-func Current() *Snapshot { return current.Load() }
-
-// Publish replaces the current snapshot. Tests may publish nil to restore the
-// startup state.
-func Publish(snapshot *Snapshot) { current.Store(snapshot) }
-
-// RequestRefresh asks the refresh routine to recompute soon. It never blocks,
-// so the checker may call it when it meets a workspace the snapshot lacks.
-func RequestRefresh() {
-	select {
-	case refreshCh <- struct{}{}:
-	default:
-	}
-}
-
 // Loader reads every workspace's allowance and current-period usage.
 type Loader func(ctx context.Context, now time.Time) ([]Allowance, error)
 
@@ -305,124 +284,4 @@ type Loader func(ctx context.Context, now time.Time) ([]Allowance, error)
 type Store struct {
 	Load       Loader
 	FlushUsage Flusher
-}
-
-var (
-	storeValue atomic.Pointer[Store]
-	// refreshMu serializes flushes with snapshot loads, which keeps flushed
-	// marks consistent with the usage a snapshot read.
-	refreshMu sync.Mutex
-	// reloadPending records that a load was skipped because a flush failed.
-	// Guarded by refreshMu.
-	reloadPending bool
-)
-
-// Configure sets the store used by Refresh, Flush and Run.
-func Configure(store Store) { storeValue.Store(&store) }
-
-// Refresh flushes metered check usage, loads allowances and publishes a new
-// snapshot. A failed load keeps the previous snapshot. API handlers call it
-// after changing an allowance or interval, so the response already reflects
-// the change on this instance.
-//
-// A failed flush also keeps the previous snapshot. The batch may have
-// committed without an acknowledgement, and a load would then count it both
-// in the database usage and in this instance's unflushed counters. The kept
-// snapshot still counts every local request through its counters, and the
-// next flush that commits the batch reloads.
-func Refresh(ctx context.Context) error {
-	store := storeValue.Load()
-	if store == nil || store.Load == nil {
-		return nil
-	}
-	refreshMu.Lock()
-	defer refreshMu.Unlock()
-	if err := flushLocked(ctx, store.FlushUsage); err != nil {
-		reloadPending = true
-		return fmt.Errorf("flush workspace check usage; keeping the current snapshot: %w", err)
-	}
-	return loadLocked(ctx, store)
-}
-
-// loadLocked loads allowances and publishes a snapshot. The caller holds
-// refreshMu and has just flushed successfully.
-func loadLocked(ctx context.Context, store *Store) error {
-	now := time.Now()
-	allowances, err := store.Load(ctx, now)
-	if err != nil {
-		return err
-	}
-	snapshot := Compute(now, allowances)
-	attachMeter(snapshot)
-	Publish(snapshot)
-	reloadPending = false
-	return nil
-}
-
-// Flush writes metered check usage without reloading allowances, unless an
-// earlier load was skipped because a flush failed.
-func Flush(ctx context.Context) error {
-	store := storeValue.Load()
-	if store == nil {
-		return nil
-	}
-	refreshMu.Lock()
-	defer refreshMu.Unlock()
-	if err := flushLocked(ctx, store.FlushUsage); err != nil {
-		return err
-	}
-	if reloadPending && store.Load != nil {
-		return loadLocked(ctx, store)
-	}
-	return nil
-}
-
-// Run refreshes immediately, then on RefreshInterval and on RequestRefresh,
-// and flushes metered usage every FlushInterval. Explicit requests are
-// coalesced to at most one load per five seconds. Usage is flushed once more
-// when ctx ends, so ctx must end only after the checker has stopped charging.
-func Run(ctx context.Context) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	refresh := func() {
-		loadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		if err := Refresh(loadCtx); err != nil && ctx.Err() == nil {
-			log.Warn("refresh workspace check allowances", "error", err)
-		}
-	}
-	refresh()
-	ticker := time.NewTicker(RefreshInterval)
-	defer ticker.Stop()
-	flushTicker := time.NewTicker(FlushInterval)
-	defer flushTicker.Stop()
-	var last time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := Flush(flushCtx); err != nil {
-				log.Warn("final flush of workspace check usage", "error", err)
-			}
-			cancel()
-			return
-		case <-ticker.C:
-			refresh()
-			last = time.Now()
-		case <-flushTicker.C:
-			flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			if err := Flush(flushCtx); err != nil && ctx.Err() == nil {
-				log.Warn("flush workspace check usage", "error", err)
-			}
-			cancel()
-			logPauseOnce()
-		case <-refreshCh:
-			if time.Since(last) < 5*time.Second {
-				continue
-			}
-			refresh()
-			last = time.Now()
-		}
-	}
 }

@@ -47,6 +47,10 @@ type RedisScrapeSiteQueue struct {
 	queueShardKeys []string
 	popQueueKeys   []string
 	leaseDuration  time.Duration
+	// pace supplies the allowance snapshot that spreads RequeueAll. A nil
+	// Pacer has no snapshot, so RequeueAll uses checkpace.FallbackInterval,
+	// as before the first allowance load.
+	pace *checkpace.Pacer
 }
 
 type scrapePopResult struct {
@@ -63,10 +67,12 @@ type scrapePopResult struct {
 var PublicScrapeSiteQueue RedisScrapeSiteQueue
 
 func init() {
-	PublicScrapeSiteQueue = *NewRedisScrapeSiteQueue(nil)
+	PublicScrapeSiteQueue = *NewRedisScrapeSiteQueue(nil, nil)
 }
 
-func NewRedisScrapeSiteQueue(client *redis.Client) *RedisScrapeSiteQueue {
+// NewRedisScrapeSiteQueue returns a queue on client that spreads RequeueAll
+// with pace's allowance snapshot. pace may be nil for tools that pace nothing.
+func NewRedisScrapeSiteQueue(client *redis.Client, pace *checkpace.Pacer) *RedisScrapeSiteQueue {
 	shards := support.GetEnvInt("SCRAPE_QUEUE_SHARDS", defaultScrapeQueueShards)
 	if shards <= 0 {
 		shards = defaultScrapeQueueShards
@@ -84,6 +90,7 @@ func NewRedisScrapeSiteQueue(client *redis.Client) *RedisScrapeSiteQueue {
 		popScript:      redis.NewScript(luaScrapePopScript),
 		queueShardKeys: shardKeys,
 		popQueueKeys:   popKeys,
+		pace:           pace,
 	}
 	if client != nil {
 		if err := queue.refreshQueueHeads(); err != nil {
@@ -541,7 +548,7 @@ func (rssq *RedisScrapeSiteQueue) RequeueAll() (int64, error) {
 		return 0, err
 	}
 	ctx := rssq.baseContext()
-	interval := requeueAllWindow(checkpace.Current())
+	interval := requeueAllWindow(rssq.pace.Current())
 
 	const batchSize int64 = 500
 

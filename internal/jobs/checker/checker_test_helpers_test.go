@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/security"
@@ -69,7 +70,7 @@ func createCheckerWorkspace(t *testing.T, db *gorm.DB, user domain.User) {
 // them when the test ends. Each test gets its own batchers.
 func startTestRuntime(t *testing.T) *Runtime {
 	t.Helper()
-	r := NewRuntime()
+	r := NewRuntime(checkpace.NewPacer())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

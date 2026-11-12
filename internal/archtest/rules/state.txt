@@ -17,7 +17,6 @@ app/version: 2
 auth: 6
 blacklist: 6
 checkerconfig: 4
-checkpace: 16
 config: 18
 database: 16
 domain: 9
@@ -25,7 +24,7 @@ evidence: 2
 geolite: 18
 instanceid: 2
 ipgeolocation: 1
-jobs/checker: 16
+jobs/checker: 14
 jobs/checker/judges: 5
 jobs/queue/proxy: 1
 jobs/queue/sites: 1

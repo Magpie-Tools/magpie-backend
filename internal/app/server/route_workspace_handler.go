@@ -11,7 +11,6 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/auth"
-	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
@@ -23,13 +22,13 @@ import (
 	"gorm.io/gorm"
 )
 
-func listWorkspaces(w http.ResponseWriter, r *http.Request) {
+func (p pacedRoutes) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.GetUserIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	workspaces, err := workspace.ListWorkspaces(userID)
+	workspaces, err := workspace.ListWorkspaces(userID, p.pace.Current())
 	if err != nil {
 		writeError(w, "Failed to list workspaces", http.StatusInternalServerError)
 		return
@@ -37,7 +36,7 @@ func listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"workspaces": workspaces})
 }
 
-func createWorkspace(w http.ResponseWriter, r *http.Request) {
+func (p pacedRoutes) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.GetUserIDFromRequest(r)
 	if err != nil {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
@@ -47,7 +46,7 @@ func createWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	workspace, err := workspace.CreateWorkspace(userID, payload.Name)
+	workspace, err := workspace.CreateWorkspace(userID, payload.Name, p.pace.Current())
 	if err != nil {
 		writeError(w, err.Error(), http.StatusBadRequest)
 		return
@@ -63,12 +62,12 @@ func createWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, workspace)
 }
 
-func getWorkspace(w http.ResponseWriter, r *http.Request) {
+func (p pacedRoutes) getWorkspace(w http.ResponseWriter, r *http.Request) {
 	workspaceID, access, ok := requirePathWorkspaceAccess(w, r, domain.WorkspaceRoleViewer)
 	if !ok {
 		return
 	}
-	workspace, err := workspace.GetWorkspace(workspaceID, access.UserID)
+	workspace, err := workspace.GetWorkspace(workspaceID, access.UserID, p.pace.Current())
 	if err != nil {
 		writeWorkspaceAccessError(w, err)
 		return
@@ -215,7 +214,7 @@ func parsePositivePathUint(w http.ResponseWriter, r *http.Request, name string) 
 
 // updateWorkspaceAllowances lets a global administrator set one workspace's
 // monthly check and scrape allowances. Zero inherits the instance default.
-func updateWorkspaceAllowances(w http.ResponseWriter, r *http.Request) {
+func (p pacedRoutes) updateWorkspaceAllowances(w http.ResponseWriter, r *http.Request) {
 	workspaceID, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
 	if err != nil || workspaceID == 0 {
 		writeError(w, "Invalid workspace id", http.StatusBadRequest)
@@ -234,7 +233,7 @@ func updateWorkspaceAllowances(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Failed to update workspace allowances", http.StatusInternalServerError)
 		return
 	}
-	refreshCheckPace(r.Context())
+	p.refreshCheckPace(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace_id":      workspaceID,
 		"monthly_checks":    payload.MonthlyChecks,
@@ -249,7 +248,7 @@ func updateWorkspaceAllowances(w http.ResponseWriter, r *http.Request) {
 // fixed interval runs until the monthly allowance is used up; the response
 // warns when the interval needs more than the allowance. A workspace without a
 // monthly limit must choose fixed intervals.
-func updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
+func (p pacedRoutes) updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
 	workspaceID, err := workspaceIDFromRequest(r)
 	if err != nil {
 		writeWorkspaceAccessError(w, err)
@@ -272,13 +271,13 @@ func updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	refreshCheckPace(r.Context())
+	p.refreshCheckPace(r.Context())
 	var subscription domain.WorkspaceSubscription
 	pg.DB.WithContext(r.Context()).Where("workspace_id = ?", workspaceID).Limit(1).Find(&subscription)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"check_interval_seconds":  payload.CheckIntervalSeconds,
 		"scrape_interval_seconds": payload.ScrapeIntervalSeconds,
-		"warnings":                database.CadenceWarnings(workspaceID, subscription, payload),
+		"warnings":                database.CadenceWarnings(p.pace.Current(), workspaceID, subscription, payload),
 	})
 }
 
@@ -286,11 +285,11 @@ func updateWorkspaceCadence(w http.ResponseWriter, r *http.Request) {
 // or interval before the handler responds, so the workspace data the client
 // reloads next already shows the new cadence. If the load fails, the regular
 // refresh picks the change up within a minute.
-func refreshCheckPace(ctx context.Context) {
+func (p pacedRoutes) refreshCheckPace(ctx context.Context) {
 	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := checkpace.Refresh(refreshCtx); err != nil {
+	if err := p.pace.Refresh(refreshCtx); err != nil {
 		log.Warn("refresh check pacing after a workspace change", "error", err)
-		checkpace.RequestRefresh()
+		p.pace.RequestRefresh()
 	}
 }

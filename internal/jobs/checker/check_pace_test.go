@@ -13,11 +13,12 @@ import (
 	"magpie/internal/support"
 )
 
-func withPace(t *testing.T, snapshot *checkpace.Snapshot) {
-	t.Helper()
-	previous := currentPace
-	currentPace = func() *checkpace.Snapshot { return snapshot }
-	t.Cleanup(func() { currentPace = previous })
+// withPace returns a runtime whose Pacer publishes snapshot, which may be nil
+// to stand for the time before the first allowance load.
+func withPace(snapshot *checkpace.Snapshot) *Runtime {
+	pace := checkpace.NewPacer()
+	pace.Publish(snapshot)
+	return NewRuntime(pace)
 }
 
 func paceFor(now time.Time, allowances ...checkpace.Allowance) *checkpace.Snapshot {
@@ -26,13 +27,13 @@ func paceFor(now time.Time, allowances ...checkpace.Allowance) *checkpace.Snapsh
 
 func TestSelectDueWorkspacesKeepsSingleOwnerRouteWithoutCopy(t *testing.T) {
 	now := time.Now()
-	withPace(t, paceFor(now, checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: 1_000_000, ChecksPerCycle: 10}))
+	r := withPace(paceFor(now, checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: 1_000_000, ChecksPerCycle: 10}))
 	proxy := domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}
-	got, anyDue := selectDueWorkspaces(proxy, now)
+	got, anyDue := r.selectDueWorkspaces(proxy, now)
 	if !anyDue || len(got.Workspaces) != 1 || &got.Workspaces[0] != &proxy.Workspaces[0] {
 		t.Fatalf("single-owner route should be due without copying: due=%v workspaces=%v", anyDue, got.Workspaces)
 	}
-	if allocations := testing.AllocsPerRun(100, func() { _, _ = selectDueWorkspaces(proxy, now) }); allocations != 0 {
+	if allocations := testing.AllocsPerRun(100, func() { _, _ = r.selectDueWorkspaces(proxy, now) }); allocations != 0 {
 		t.Fatalf("due selection allocated %.0f times per cycle", allocations)
 	}
 }
@@ -41,7 +42,7 @@ func TestSelectDueWorkspacesSkipsExhaustedAndSlowOwners(t *testing.T) {
 	now := time.Now()
 	_, end := checkpace.UsagePeriod(now)
 	remaining := end.Sub(now)
-	withPace(t, paceFor(now,
+	r := withPace(paceFor(now,
 		checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: uint64(remaining/time.Minute) + 1, ChecksPerCycle: 1},
 		checkpace.Allowance{WorkspaceID: 2, MonthlyChecks: 10, UsedChecks: 10, ChecksPerCycle: 1},
 		checkpace.Allowance{WorkspaceID: 3, MonthlyChecks: uint64(remaining/(30*time.Minute)) + 1, ChecksPerCycle: 1},
@@ -50,7 +51,7 @@ func TestSelectDueWorkspacesSkipsExhaustedAndSlowOwners(t *testing.T) {
 	slowDue := 0
 	scheduled := now
 	for cycle := 0; cycle < 300; cycle++ {
-		got, anyDue := selectDueWorkspaces(proxy, scheduled)
+		got, anyDue := r.selectDueWorkspaces(proxy, scheduled)
 		if !anyDue {
 			t.Fatal("the fastest owner must be due every cycle")
 		}
@@ -74,16 +75,16 @@ func TestSelectDueWorkspacesSkipsExhaustedAndSlowOwners(t *testing.T) {
 
 func TestSelectDueWorkspacesReportsIdleCycle(t *testing.T) {
 	now := time.Now()
-	withPace(t, paceFor(now, checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: 5, UsedChecks: 5, ChecksPerCycle: 1}))
-	if _, anyDue := selectDueWorkspaces(domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}, now); anyDue {
+	r := withPace(paceFor(now, checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: 5, UsedChecks: 5, ChecksPerCycle: 1}))
+	if _, anyDue := r.selectDueWorkspaces(domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}, now); anyDue {
 		t.Fatal("a route whose only owner is out of allowance must not be checked")
 	}
 }
 
 func TestSelectDueWorkspacesChecksEveryoneBeforeFirstSnapshot(t *testing.T) {
-	withPace(t, nil)
+	r := withPace(nil)
 	proxy := domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}, {ID: 2}}}
-	if got, anyDue := selectDueWorkspaces(proxy, time.Now()); !anyDue || len(got.Workspaces) != 2 {
+	if got, anyDue := r.selectDueWorkspaces(proxy, time.Now()); !anyDue || len(got.Workspaces) != 2 {
 		t.Fatalf("startup selection = %v, %v", got.Workspaces, anyDue)
 	}
 }
@@ -105,44 +106,33 @@ func BenchmarkSelectDueWorkspaces(b *testing.B) {
 			}
 			// Refresh attaches the check meter, so the measurement includes
 			// reading each owner's metered usage.
-			checkpace.Configure(checkpace.Store{Load: func(context.Context, time.Time) ([]checkpace.Allowance, error) { return allowances, nil }})
-			if err := checkpace.Refresh(context.Background()); err != nil {
-				b.Fatal(err)
-			}
-			snapshot := checkpace.Current()
-			b.Cleanup(func() { checkpace.Configure(checkpace.Store{}); checkpace.Publish(nil) })
-			previous := currentPace
-			currentPace = func() *checkpace.Snapshot { return snapshot }
-			b.Cleanup(func() { currentPace = previous })
+			r := useMeteredPace(b, allowances...)
 			// Cycles stay within one month, as live routes do.
 			scheduled, _ := checkpace.UsagePeriod(now)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = selectDueWorkspaces(proxy, scheduled.Add(time.Duration(i%8000)*5*time.Minute))
+				_, _ = r.selectDueWorkspaces(proxy, scheduled.Add(time.Duration(i%8000)*5*time.Minute))
 			}
 		})
 	}
 }
 
-// useMeteredPace publishes a snapshot connected to the check meter. The meter
-// lives for the process, so each test uses its own workspace IDs.
-func useMeteredPace(t testing.TB, allowances ...checkpace.Allowance) {
+// useMeteredPace returns a runtime whose own Pacer has loaded allowances, so
+// its snapshot is connected to that Pacer's check meter.
+func useMeteredPace(t testing.TB, allowances ...checkpace.Allowance) *Runtime {
 	t.Helper()
-	checkpace.Configure(checkpace.Store{Load: func(context.Context, time.Time) ([]checkpace.Allowance, error) { return allowances, nil }})
-	if err := checkpace.Refresh(context.Background()); err != nil {
+	pace := checkpace.NewPacer()
+	pace.Configure(checkpace.Store{Load: func(context.Context, time.Time) ([]checkpace.Allowance, error) { return allowances, nil }})
+	if err := pace.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	snapshot := checkpace.Current()
-	t.Cleanup(func() { checkpace.Configure(checkpace.Store{}); checkpace.Publish(nil) })
-	previous := currentPace
-	currentPace = func() *checkpace.Snapshot { return snapshot }
-	t.Cleanup(func() { currentPace = previous })
+	return NewRuntime(pace)
 }
 
-func usedChecks(t *testing.T, workspaceID uint) uint64 {
+func usedChecks(t *testing.T, r *Runtime, workspaceID uint) uint64 {
 	t.Helper()
-	pace, ok := currentPace().Pace(workspaceID)
+	pace, ok := r.pace.Current().Pace(workspaceID)
 	if !ok {
 		t.Fatalf("workspace %d has no pace", workspaceID)
 	}
@@ -173,11 +163,11 @@ func failingAssignment(protocol string, retries uint8, checks ...workspaceCheck)
 
 func TestRequestsAreChargedBeforeTheyAreSentAndStopAtTheAllowance(t *testing.T) {
 	// One check left, and two protocol tests with five retries each.
-	useMeteredPace(t, checkpace.Allowance{WorkspaceID: 201, MonthlyChecks: 10, UsedChecks: 9, ChecksPerCycle: 1})
+	r := useMeteredPace(t, checkpace.Allowance{WorkspaceID: 201, MonthlyChecks: 10, UsedChecks: 9, ChecksPerCycle: 1})
 	sent := 0
 	failingJudge(t, func() {
 		sent++
-		if used := usedChecks(t, 201); used != 9+uint64(sent) {
+		if used := usedChecks(t, r, 201); used != 9+uint64(sent) {
 			t.Errorf("request %d went out with %d checks charged", sent, used)
 		}
 	})
@@ -191,11 +181,11 @@ func TestRequestsAreChargedBeforeTheyAreSentAndStopAtTheAllowance(t *testing.T) 
 		"https": failingAssignment("https", 5, workspaceCheck{workspaceID: 201, regex: "default"}),
 	}
 	hasChecks := map[uint]bool{201: true}
-	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, hasChecks, 1000, 5, false); err != nil {
+	if err := r.processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, hasChecks, 1000, 5, false); err != nil {
 		t.Fatal(err)
 	}
-	if sent != 1 || usedChecks(t, 201) != 10 {
-		t.Fatalf("sent %d requests and charged %d checks with one check left; want 1 and 10", sent, usedChecks(t, 201))
+	if sent != 1 || usedChecks(t, r, 201) != 10 {
+		t.Fatalf("sent %d requests and charged %d checks with one check left; want 1 and 10", sent, usedChecks(t, r, 201))
 	}
 	if hasChecks[201] {
 		t.Fatal("an unfinished test would count as a failed check")
@@ -203,7 +193,7 @@ func TestRequestsAreChargedBeforeTheyAreSentAndStopAtTheAllowance(t *testing.T) 
 }
 
 func TestSharedRequestDropsOnlyTheExhaustedWorkspace(t *testing.T) {
-	useMeteredPace(t,
+	r := useMeteredPace(t,
 		checkpace.Allowance{WorkspaceID: 202, MonthlyChecks: 10, UsedChecks: 9, ChecksPerCycle: 1},
 		checkpace.Allowance{WorkspaceID: 203, MonthlyChecks: 1_000, ChecksPerCycle: 1},
 		checkpace.Allowance{WorkspaceID: 206, MonthlyChecks: 1_000, ChecksPerCycle: 1},
@@ -218,11 +208,11 @@ func TestSharedRequestDropsOnlyTheExhaustedWorkspace(t *testing.T) {
 	shared := []workspaceCheck{{workspaceID: 202, regex: "a"}, {workspaceID: 203, regex: "a"}, {workspaceID: 206, regex: "b"}}
 	assignments := map[string]*requestAssignment{"http": failingAssignment("http", 2, shared...)}
 	hasChecks := map[uint]bool{202: true, 203: true, 206: true}
-	if err := processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, hasChecks, 1000, 2, false); err != nil {
+	if err := r.processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, hasChecks, 1000, 2, false); err != nil {
 		t.Fatal(err)
 	}
-	if sent != 3 || usedChecks(t, 202) != 10 || usedChecks(t, 203) != 3 || usedChecks(t, 206) != 3 {
-		t.Fatalf("sent %d, charged %d, %d and %d; want 3 requests, 10, 3 and 3 checks", sent, usedChecks(t, 202), usedChecks(t, 203), usedChecks(t, 206))
+	if sent != 3 || usedChecks(t, r, 202) != 10 || usedChecks(t, r, 203) != 3 || usedChecks(t, r, 206) != 3 {
+		t.Fatalf("sent %d, charged %d, %d and %d; want 3 requests, 10, 3 and 3 checks", sent, usedChecks(t, r, 202), usedChecks(t, r, 203), usedChecks(t, r, 206))
 	}
 	if len(reported) != 2 || reported[0] != 203 || reported[1] != 206 || hasChecks[202] || !hasChecks[203] || !hasChecks[206] {
 		t.Fatalf("reported to %v with eligibility %v; only workspaces 203 and 206 finished the test", reported, hasChecks)
@@ -233,12 +223,12 @@ func TestSharedRequestDropsOnlyTheExhaustedWorkspace(t *testing.T) {
 }
 
 func TestRequestMeterDoesNotAllocateWhileAllowanceLasts(t *testing.T) {
-	useMeteredPace(t,
+	r := useMeteredPace(t,
 		checkpace.Allowance{WorkspaceID: 204, MonthlyChecks: 1 << 40, ChecksPerCycle: 1},
 		checkpace.Allowance{WorkspaceID: 205, MonthlyChecks: 1 << 40, ChecksPerCycle: 1},
 	)
 	checks := []workspaceCheck{{workspaceID: 204}, {workspaceID: 205}}
-	meter := &requestMeter{}
+	meter := &requestMeter{pace: r.pace}
 	if allocations := testing.AllocsPerRun(100, func() {
 		meter.reset(checks)
 		if !meter.admit() || !meter.admit() {
@@ -250,22 +240,34 @@ func TestRequestMeterDoesNotAllocateWhileAllowanceLasts(t *testing.T) {
 }
 
 // One request costs one charge per workspace, and workspaces that run out are
-// removed in the same pass, whichever of them it is and however many.
+// removed in the same pass, whichever of them it is and however many. The
+// charges are read from the batch the Pacer flushes after each request, so
+// they are the counts the usage meter would write.
 func TestRequestMeterChargesEachWorkspaceOncePerRequest(t *testing.T) {
 	const owners = 9
-	exhausted := map[uint]bool{}
-	charges := map[uint]int{}
-	original := chargeRequest
-	t.Cleanup(func() { chargeRequest = original })
-	chargeRequest = func(_ *checkpace.Snapshot, workspaceID uint, _ bool, _ time.Time) bool {
-		charges[workspaceID]++
-		return !exhausted[workspaceID]
-	}
+	allowances := make([]checkpace.Allowance, 0, owners)
 	assignment := make([]workspaceCheck, 0, owners)
 	for id := uint(1); id <= owners; id++ {
+		allowances = append(allowances, checkpace.Allowance{WorkspaceID: id, MonthlyChecks: 1 << 40, ChecksPerCycle: 1})
 		assignment = append(assignment, workspaceCheck{workspaceID: id})
 	}
-	meter := &requestMeter{}
+	type charge struct{ attempts, protocolChecks uint64 }
+	var flushed map[uint]charge
+	pace := checkpace.NewPacer()
+	pace.Configure(checkpace.Store{
+		Load: func(context.Context, time.Time) ([]checkpace.Allowance, error) {
+			return append([]checkpace.Allowance(nil), allowances...), nil
+		},
+		FlushUsage: func(_ context.Context, batch checkpace.UsageBatch) error {
+			for _, usage := range batch.Usage {
+				got := flushed[usage.WorkspaceID]
+				flushed[usage.WorkspaceID] = charge{got.attempts + usage.Attempts, got.protocolChecks + usage.ProtocolChecks}
+			}
+			return nil
+		},
+	})
+	ctx := context.Background()
+	meter := &requestMeter{pace: pace}
 	meter.reset(assignment)
 	served := func() []uint {
 		ids := make([]uint, 0, len(meter.checks))
@@ -274,7 +276,7 @@ func TestRequestMeterChargesEachWorkspaceOncePerRequest(t *testing.T) {
 		}
 		return ids
 	}
-	for _, step := range []struct {
+	for index, step := range []struct {
 		runOut []uint
 		want   []uint
 		admit  bool
@@ -285,19 +287,32 @@ func TestRequestMeterChargesEachWorkspaceOncePerRequest(t *testing.T) {
 		{[]uint{2, 6, 7}, nil, false},
 	} {
 		for _, id := range step.runOut {
-			exhausted[id] = true
+			allowances[id-1].UsedChecks = allowances[id-1].MonthlyChecks
 		}
-		asked := len(meter.checks)
-		clear(charges)
+		// The reload publishes the exhaustion; its flush carries the
+		// previous request's charges, which were checked already.
+		flushed = map[uint]charge{}
+		if err := pace.Refresh(ctx); err != nil {
+			t.Fatal(err)
+		}
+		flushed = map[uint]charge{}
 		if meter.admit() != step.admit || fmt.Sprint(served()) != fmt.Sprint(step.want) {
 			t.Fatalf("after %v ran out the request serves %v, want %v", step.runOut, served(), step.want)
 		}
-		if len(charges) != asked {
-			t.Fatalf("%d workspaces were charged for a request serving %d", len(charges), asked)
+		if err := pace.Flush(ctx); err != nil {
+			t.Fatal(err)
 		}
-		for id, count := range charges {
-			if count != 1 {
-				t.Fatalf("workspace %d was charged %d times for one request", id, count)
+		if len(flushed) != len(step.want) {
+			t.Fatalf("%d workspaces were charged for a request serving %v: %v", len(flushed), step.want, flushed)
+		}
+		for _, id := range step.want {
+			// Only the first request of the assignment starts a protocol check.
+			want := charge{attempts: 1}
+			if index == 0 {
+				want.protocolChecks = 1
+			}
+			if flushed[id] != want {
+				t.Fatalf("workspace %d was charged %+v for one request, want %+v", id, flushed[id], want)
 			}
 		}
 	}
@@ -305,6 +320,49 @@ func TestRequestMeterChargesEachWorkspaceOncePerRequest(t *testing.T) {
 		if check.workspaceID != uint(index+1) {
 			t.Fatalf("dropping workspaces changed the assignment's own checks: %v", assignment)
 		}
+	}
+}
+
+// A checker runtime reads snapshots from and charges requests to the Pacer it
+// was constructed with, and only that one. There is no package-level Pacer to
+// fall back on, so a runtime without one is refused.
+func TestCheckerRuntimeChargesOnlyItsOwnPacer(t *testing.T) {
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("NewRuntime accepted a nil Pacer")
+			}
+		}()
+		NewRuntime(nil)
+	}()
+	allowance := checkpace.Allowance{WorkspaceID: 207, MonthlyChecks: 1_000, ChecksPerCycle: 1}
+	first, second := useMeteredPace(t, allowance), useMeteredPace(t, allowance)
+	if first.pace == second.pace {
+		t.Fatal("two runtimes share a Pacer")
+	}
+	failingJudge(t, func() {})
+	originalEnqueue := enqueueProxyStatistic
+	t.Cleanup(func() { enqueueProxyStatistic = originalEnqueue })
+	enqueueProxyStatistic = func(domain.ProxyStatistic, []uint) {}
+	assignments := map[string]*requestAssignment{"http": failingAssignment("http", 2, workspaceCheck{workspaceID: 207, regex: "default"})}
+	if err := first.processJudgeAssignments(domain.Proxy{ID: 9}, assignments, map[uint]bool{}, map[uint]bool{207: true}, 1000, 2, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := usedChecks(t, first, 207); got != 3 {
+		t.Fatalf("the runtime's own Pacer counts %d of its 3 requests", got)
+	}
+	if got := usedChecks(t, second, 207); got != 0 {
+		t.Fatalf("another runtime's Pacer counts %d requests it never sent", got)
+	}
+	// Due selection reads the same Pacer's snapshot: an exhausted owner on
+	// one Pacer is not exhausted on another.
+	exhausted := withPace(paceFor(time.Now(), checkpace.Allowance{WorkspaceID: 207, MonthlyChecks: 3, UsedChecks: 3, ChecksPerCycle: 1}))
+	route := domain.Proxy{ID: 9, Workspaces: []domain.Workspace{{ID: 207}}}
+	if _, due := exhausted.selectDueWorkspaces(route, time.Now()); due {
+		t.Fatal("due selection ignored its Pacer's exhausted owner")
+	}
+	if _, due := second.selectDueWorkspaces(route, time.Now()); !due {
+		t.Fatal("due selection read another runtime's snapshot")
 	}
 }
 
@@ -321,8 +379,8 @@ func BenchmarkRequestMeterAdmit(b *testing.B) {
 				allowances = append(allowances, checkpace.Allowance{WorkspaceID: id, MonthlyChecks: 1 << 62, ChecksPerCycle: 1})
 				checks = append(checks, workspaceCheck{workspaceID: id})
 			}
-			useMeteredPace(b, allowances...)
-			meter := &requestMeter{}
+			r := useMeteredPace(b, allowances...)
+			meter := &requestMeter{pace: r.pace}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {

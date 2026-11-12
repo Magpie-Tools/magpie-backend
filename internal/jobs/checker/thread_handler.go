@@ -86,7 +86,7 @@ func (r *Runtime) ThreadDispatcher(ctx context.Context) {
 
 		var targetThreads uint32
 		if cfg.Checker.DynamicThreads {
-			targetThreads = getAutoThreads(cfg)
+			targetThreads = getAutoThreads(cfg, r.pace.Current())
 		} else {
 			targetThreads = cfg.Checker.Threads
 		}
@@ -139,7 +139,9 @@ func requestCheckerWorkerStop() bool {
 	}
 }
 
-func getAutoThreads(cfg config.Config) uint32 {
+// getAutoThreads sizes the worker pool from the route count and the planned
+// check rate in snapshot, which is nil before the first allowance load.
+func getAutoThreads(cfg config.Config, snapshot *checkpace.Snapshot) uint32 {
 	totalProxies, err := proxyqueue.PublicProxyQueue.GetProxyCount()
 	if err != nil {
 		log.Error("Failed to get proxy count", "error", err)
@@ -160,8 +162,8 @@ func getAutoThreads(cfg config.Config) uint32 {
 	// Workspace allowances set the planned check rate. Before the first
 	// allowance snapshot, assume one protocol per route at the fallback cadence.
 	checksPerSecond := float64(totalProxies) / checkpace.FallbackInterval.Seconds()
-	if pace := currentPace(); pace != nil {
-		checksPerSecond = pace.ChecksPerSecond
+	if snapshot != nil {
+		checksPerSecond = snapshot.ChecksPerSecond
 	}
 	perInstanceRate := checksPerSecond / float64(activeInstances)
 	worstCaseSeconds := float64(cfg.Checker.Retries+1) * float64(cfg.Checker.Timeout) / 1000
@@ -215,7 +217,7 @@ func (r *Runtime) work(parent context.Context) {
 		var payloadChanged bool
 		proxy, payloadChanged = refreshProxyWorkspaces(proxy)
 
-		dueProxy, anyDue := selectDueWorkspaces(proxy, scheduledTime)
+		dueProxy, anyDue := r.selectDueWorkspaces(proxy, scheduledTime)
 		if !anyDue {
 			// Every owner is between cadence boundaries or out of allowance.
 			// Revisit later without outbound requests or database work.
@@ -227,7 +229,7 @@ func (r *Runtime) work(parent context.Context) {
 
 		judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries := buildRequestAssignments(dueProxy)
 		saveResponses := config.GetConfig().Checker.SaveResponses
-		if err := processJudgeAssignments(proxy, judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries, saveResponses); err != nil {
+		if err := r.processJudgeAssignments(proxy, judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries, saveResponses); err != nil {
 			continue
 		}
 		if err := proxyqueue.PublicProxyQueue.RenewLeaseIfNeeded(ctx, proxy); err != nil {
@@ -278,15 +280,16 @@ func (r *Runtime) work(parent context.Context) {
 // this cycle. The route's fastest owner is always due, so single-owner routes
 // return the proxy unchanged without allocating. The decision uses only the
 // in-memory allowance snapshot: no Redis, database, JSON or cryptographic work.
-func selectDueWorkspaces(proxy domain.Proxy, scheduled time.Time) (domain.Proxy, bool) {
-	pace := currentPace()
-	if pace == nil || len(proxy.Workspaces) == 0 {
+// Before the first snapshot every owner is due.
+func (r *Runtime) selectDueWorkspaces(proxy domain.Proxy, scheduled time.Time) (domain.Proxy, bool) {
+	snapshot := r.pace.Current()
+	if snapshot == nil || len(proxy.Workspaces) == 0 {
 		return proxy, len(proxy.Workspaces) > 0
 	}
-	routeInterval := pace.RouteCheckInterval(proxy.Workspaces)
+	routeInterval := r.pace.RouteCheckInterval(snapshot, proxy.Workspaces)
 	var due []domain.Workspace
 	for index, workspace := range proxy.Workspaces {
-		if pace.CheckDue(workspace.ID, proxy.ID, scheduled, routeInterval) {
+		if r.pace.CheckDue(snapshot, workspace.ID, proxy.ID, scheduled, routeInterval) {
 			if due != nil {
 				due = append(due, workspace)
 			}
@@ -304,8 +307,6 @@ func selectDueWorkspaces(proxy domain.Proxy, scheduled time.Time) (domain.Proxy,
 	filtered.Workspaces = due
 	return filtered, len(due) > 0
 }
-
-var currentPace = checkpace.Current
 
 // requeueCheckedProxy rewrites the payload only when queued ownership changed.
 // Refreshed checker settings live in runtime snapshots and do not need a payload
@@ -564,12 +565,12 @@ func determineJudgeScheme(protocol string, protocolID int, useHTTPSForSocks bool
 // loss or cancellation aborts the cycle; statistics already handed off are not
 // undone. A nil error does not mean those statistics have committed to
 // PostgreSQL.
-func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, workspaceSuccess, workspaceHasChecks map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
+func (r *Runtime) processJudgeAssignments(proxy domain.Proxy, assignments map[string]*requestAssignment, workspaceSuccess, workspaceHasChecks map[uint]bool, maxTimeout uint16, maxRetries uint8, saveResponses bool) error {
 	for workspaceID := range workspaceHasChecks {
 		workspaceHasChecks[workspaceID] = false
 	}
 	// One meter per cycle, reused by its assignments.
-	meter := &requestMeter{}
+	meter := &requestMeter{pace: r.pace}
 	for _, item := range assignments {
 		timeout, retries := item.timeout, item.retries
 		if !item.budgetSet {
@@ -643,11 +644,12 @@ func processJudgeAssignments(proxy domain.Proxy, assignments map[string]*request
 // its workspaces has checks left.
 var errAllowanceExhausted = errors.New("workspace check allowance exhausted")
 
-// requestMeter admits and charges one assignment's requests. checks starts as
-// the assignment's own slice and is copied only when a workspace drops out, so
-// the common path does not allocate. It relies on the assignment listing each
-// workspace once.
+// requestMeter admits and charges one assignment's requests to its Pacer.
+// checks starts as the assignment's own slice and is copied only when a
+// workspace drops out, so the common path does not allocate. It relies on the
+// assignment listing each workspace once.
 type requestMeter struct {
+	pace    *checkpace.Pacer
 	checks  []workspaceCheck
 	owned   bool
 	started bool
@@ -665,12 +667,12 @@ func (m *requestMeter) admit() bool {
 	if m == nil {
 		return true
 	}
-	snapshot, at, first := currentPace(), time.Now(), !m.started
+	snapshot, at, first := m.pace.Current(), time.Now(), !m.started
 	checks := m.checks
 	kept, dropping := checks, false
 	for index := range checks {
 		workspaceID := checks[index].workspaceID
-		if workspaceID == 0 || chargeRequest(snapshot, workspaceID, first, at) {
+		if workspaceID == 0 || m.pace.ChargeRequest(snapshot, workspaceID, first, at) {
 			if dropping {
 				kept = append(kept, checks[index])
 			}
@@ -696,10 +698,6 @@ func (m *requestMeter) admit() bool {
 	}
 	m.started = true
 	return true
-}
-
-var chargeRequest = func(snapshot *checkpace.Snapshot, workspaceID uint, firstOfCheck bool, at time.Time) bool {
-	return snapshot.ChargeRequest(workspaceID, firstOfCheck, at)
 }
 
 func collectCheckWorkspaceIDs(checks []workspaceCheck) []uint {

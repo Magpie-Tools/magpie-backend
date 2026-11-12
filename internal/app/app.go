@@ -13,10 +13,12 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/app/server"
 	"magpie/internal/auth"
+	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/database"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
@@ -99,11 +101,10 @@ func Run() error {
 	if err != nil {
 		log.Warn("Redis unavailable at startup; continuing in degraded mode", "error", err)
 	}
-	proxyqueue.PublicProxyQueue = *proxyqueue.NewRedisProxyQueue(redisClient)
-	sitequeue.PublicScrapeSiteQueue = *sitequeue.NewRedisScrapeSiteQueue(redisClient)
+	pace := installPacedQueues(redisClient)
 
 	heartbeatCancel := runtime.LaunchInstanceHeartbeat(rootCtx, redisClient)
-	running, setupErr := bootstrap.Setup(rootCtx)
+	running, setupErr := bootstrap.Setup(rootCtx, pace)
 	defer func() {
 		heartbeatCancel()
 		if err := proxyqueue.PublicProxyQueue.Close(); err != nil {
@@ -114,7 +115,7 @@ func Run() error {
 		}
 	}()
 
-	err = serveAfterSetup(rootCtx, backendPort, setupErr)
+	err = serveAfterSetup(rootCtx, backendPort, setupErr, pace)
 	stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), resolveBackgroundShutdownTimeout())
 	defer cancel()
@@ -122,7 +123,18 @@ func Run() error {
 	return errors.Join(err, running.Shutdown(shutdownCtx))
 }
 
-func serveAfterSetup(ctx context.Context, port int, setupErr error) error {
+// installPacedQueues constructs the process's one Pacer and installs the
+// proxy and scrape queues that schedule with it. Nothing starts here:
+// bootstrap.Setup configures and runs the Pacer, and the caller passes the same
+// Pacer to it and to the API.
+func installPacedQueues(redisClient *redis.Client) *checkpace.Pacer {
+	pace := checkpace.NewPacer()
+	proxyqueue.PublicProxyQueue = *proxyqueue.NewRedisProxyQueue(redisClient, pace)
+	sitequeue.PublicScrapeSiteQueue = *sitequeue.NewRedisScrapeSiteQueue(redisClient, pace)
+	return pace
+}
+
+func serveAfterSetup(ctx context.Context, port int, setupErr error, pace *checkpace.Pacer) error {
 	// A signal during optional startup work follows the normal graceful shutdown
 	// path. Preserve any separate setup failure, including a joined error.
 	if setupErr == context.Canceled && ctx.Err() == context.Canceled {
@@ -137,7 +149,7 @@ func serveAfterSetup(ctx context.Context, port int, setupErr error) error {
 		}
 		return err
 	}
-	err := server.OpenRoutes(ctx, port)
+	err := server.OpenRoutes(ctx, port, pace)
 	if err == context.Canceled && ctx.Err() == context.Canceled {
 		return nil
 	}

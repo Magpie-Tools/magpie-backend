@@ -242,7 +242,7 @@ func workspaceUsageDeltaRows(periods []domain.WorkspaceUsagePeriod) []map[string
 }
 
 // FlushWorkspaceCheckUsage adds a batch of check usage metered in memory by a
-// checker process (checkpace.Snapshot.ChargeRequest). It runs every
+// checker process (checkpace.Pacer.ChargeRequest). It runs every
 // checkpace.FlushInterval, never per check: one transaction with one mark
 // upsert and one usage upsert row per workspace and month. A batch whose
 // sequence the process already applied changes nothing.

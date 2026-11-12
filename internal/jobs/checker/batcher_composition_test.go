@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
@@ -99,7 +100,7 @@ var batcherLoops = []string{
 // per test) do not share batchers. Workers submit to their own runtime's
 // batchers, which is what turns K concurrent cycles into shared statements.
 func TestCheckerRuntimeOwnsOneOfEachBatcher(t *testing.T) {
-	first, second := NewRuntime(), NewRuntime()
+	first, second := NewRuntime(checkpace.NewPacer()), NewRuntime(checkpace.NewPacer())
 	if first.failures == nil || first.ownership == nil {
 		t.Fatal("checker batchers are not constructed")
 	}
@@ -190,7 +191,7 @@ func TestStoppedBatchersProcessReceivedRequests(t *testing.T) {
 	if err := db.Create(&domain.ManagedProxy{WorkspaceID: user.ID, ProxyID: proxy.ID, ConsecutiveFailures: 2}).Error; err != nil {
 		t.Fatal(err)
 	}
-	r := NewRuntime()
+	r := NewRuntime(checkpace.NewPacer())
 	request := &failureRequest{
 		ctx:     context.Background(),
 		proxyID: proxy.ID,

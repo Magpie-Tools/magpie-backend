@@ -20,7 +20,7 @@ func scheduleQueue(t *testing.T) (*RedisScrapeSiteQueue, *redis.Client, domain.S
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { client.Close() })
-	queue := NewRedisScrapeSiteQueue(client)
+	queue := NewRedisScrapeSiteQueue(client, nil)
 	site := domain.ScrapeSite{ID: 1, URL: "https://example.com/list"}
 	if err := queue.AddToQueue([]domain.ScrapeSite{site}); err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestScrapeScheduleSharesModeProgressAndProviderDeadlineAcrossReplicas(t *te
 	if got, _ := client.Get(ctx, scrapesiteKeyPrefix+site.URL).Result(); got != payload {
 		t.Fatal("scheduling rewrote the source payload")
 	}
-	other := NewRedisScrapeSiteQueue(client)
+	other := NewRedisScrapeSiteQueue(client, nil)
 	next, reason, err := other.GetScrapeSchedule(ctx, site.URL, domain.ScrapeFetchHTTP)
 	if err != nil || next.UnixMilli() != now.Add(job.Interval).UnixMilli() || reason != "Configured scrape interval" {
 		t.Fatalf("HTTP next=%v reason=%s error=%v", next, reason, err)
@@ -209,7 +209,7 @@ func TestScrapeLeaseRenewalRetainsProgressAfterLongWork(t *testing.T) {
 	if err != nil || int64(score) <= time.Now().UnixMilli() || int64(score) <= job.leaseScoreMS {
 		t.Fatalf("processing lease was not renewed: score=%f error=%v", score, err)
 	}
-	other := NewRedisScrapeSiteQueue(client)
+	other := NewRedisScrapeSiteQueue(client, nil)
 	limited, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if _, err := other.GetNextScrapeSiteContext(limited); !errors.Is(err, context.DeadlineExceeded) {

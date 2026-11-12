@@ -402,19 +402,17 @@ func TestWorkspaceCadenceValidationLoadingAndWarnings(t *testing.T) {
 	}
 
 	// 100 routes every 10 minutes needs about 432,000 checks a month.
-	previous := checkpace.Current()
-	t.Cleanup(func() { checkpace.Publish(previous) })
 	allowances[0].ChecksPerCycle = 100
-	checkpace.Publish(checkpace.Compute(time.Now(), allowances))
+	snapshot := checkpace.Compute(time.Now(), allowances)
 	var subscription domain.WorkspaceSubscription
 	if err := db.Where("workspace_id = ?", workspace.ID).First(&subscription).Error; err != nil {
 		t.Fatal(err)
 	}
-	warnings := CadenceWarnings(workspace.ID, subscription, request)
+	warnings := CadenceWarnings(snapshot, workspace.ID, subscription, request)
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "more than the allowance of 10000") {
 		t.Fatalf("warnings = %q", warnings)
 	}
-	if got := CadenceWarnings(workspace.ID, subscription, dto.WorkspaceCadenceUpdateRequest{}); len(got) != 0 {
+	if got := CadenceWarnings(snapshot, workspace.ID, subscription, dto.WorkspaceCadenceUpdateRequest{}); len(got) != 0 {
 		t.Fatalf("automatic cadence produced warnings: %q", got)
 	}
 }
@@ -458,19 +456,17 @@ func TestUnlimitedWorkspaceRequiresFixedIntervalAndInheritsInstanceDefault(t *te
 	if len(allowances) != 1 || !allowances[0].UnlimitedChecks || allowances[0].UnlimitedScrapes {
 		t.Fatalf("unlimited flags not loaded: %+v", allowances)
 	}
-	previous := checkpace.Current()
-	t.Cleanup(func() { checkpace.Publish(previous) })
 	allowances[0].ChecksPerCycle = 1_000_000
-	checkpace.Publish(checkpace.Compute(time.Now(), allowances))
+	snapshot := checkpace.Compute(time.Now(), allowances)
 	var subscription domain.WorkspaceSubscription
 	if err := db.Where("workspace_id = ?", workspace.ID).First(&subscription).Error; err != nil {
 		t.Fatal(err)
 	}
-	if warnings := CadenceWarnings(workspace.ID, subscription, request); len(warnings) != 0 {
+	if warnings := CadenceWarnings(snapshot, workspace.ID, subscription, request); len(warnings) != 0 {
 		t.Fatalf("an unlimited workspace was warned about its allowance: %q", warnings)
 	}
 	stored := domain.Workspace{ID: workspace.ID, CheckIntervalSeconds: 60}
-	if got := workspaces.WorkspaceAllowancesDTO(stored, subscription); !got.UnlimitedChecks || got.NeedsCheckInterval || got.InheritsChecks || got.ChecksRunOutAt != nil {
+	if got := workspaces.WorkspaceAllowancesDTO(snapshot, stored, subscription); !got.UnlimitedChecks || got.NeedsCheckInterval || got.InheritsChecks || got.ChecksRunOutAt != nil {
 		t.Fatalf("allowance view = %+v", got)
 	}
 
@@ -483,7 +479,7 @@ func TestUnlimitedWorkspaceRequiresFixedIntervalAndInheritsInstanceDefault(t *te
 	if err := UpdateWorkspaceCadence(ctx, workspace.ID, request); !errors.Is(err, ErrUnlimitedNeedsInterval) {
 		t.Fatalf("automatic scrapes under an unlimited default: err = %v", err)
 	}
-	if got := workspaces.WorkspaceAllowancesDTO(stored, subscription); !got.UnlimitedScrapes || !got.NeedsScrapeInterval {
+	if got := workspaces.WorkspaceAllowancesDTO(snapshot, stored, subscription); !got.UnlimitedScrapes || !got.NeedsScrapeInterval {
 		t.Fatalf("inherited unlimited scrapes = %+v", got)
 	}
 	// An explicit monthly allowance overrides the unlimited default.

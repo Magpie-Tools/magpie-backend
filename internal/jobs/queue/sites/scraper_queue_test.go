@@ -72,7 +72,7 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	defer client.Close()
 
-	queue := NewRedisScrapeSiteQueue(client)
+	queue := NewRedisScrapeSiteQueue(client, nil)
 	ctx := context.Background()
 
 	members := []string{
@@ -91,9 +91,9 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 		}
 	}
 
-	previous := checkpace.Current()
-	checkpace.Publish(checkpace.Uniform(time.Minute, time.Minute))
-	t.Cleanup(func() { checkpace.Publish(previous) })
+	pace := checkpace.NewPacer()
+	pace.Publish(checkpace.Uniform(time.Minute, time.Minute))
+	queue.pace = pace
 
 	before := time.Now().UnixMilli()
 	count, err := queue.RequeueAll()
@@ -143,7 +143,7 @@ func TestAddToQueue_DoesNotRescheduleExistingMember(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	defer client.Close()
 
-	queue := NewRedisScrapeSiteQueue(client)
+	queue := NewRedisScrapeSiteQueue(client, nil)
 	ctx := context.Background()
 
 	site := "https://example.com/list.txt"
@@ -176,7 +176,7 @@ func TestNewSourcesAreImmediatelyDue(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	defer client.Close()
-	queue := NewRedisScrapeSiteQueue(client)
+	queue := NewRedisScrapeSiteQueue(client, nil)
 	sources := []domain.ScrapeSite{{ID: 1, URL: "https://example.com/1"}, {ID: 2, URL: "https://example.com/2"}, {ID: 3, URL: "https://example.com/3"}}
 	if err := queue.AddToQueue(sources); err != nil {
 		t.Fatal(err)

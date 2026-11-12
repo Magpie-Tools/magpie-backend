@@ -134,7 +134,9 @@ func CreatePersonalWorkspaceForUser(tx *gorm.DB, user domain.User) (domain.Works
 	return workspace, nil
 }
 
-func CreateWorkspace(userID uint, name string) (dto.Workspace, error) {
+// CreateWorkspace creates a workspace owned by userID and returns it with
+// allowance usage from snapshot as in ListWorkspaces.
+func CreateWorkspace(userID uint, name string, snapshot *checkpace.Snapshot) (dto.Workspace, error) {
 	name = normalizeWorkspaceName(name)
 	if name == "" {
 		return dto.Workspace{}, errors.New("workspace name is required")
@@ -179,7 +181,7 @@ func CreateWorkspace(userID uint, name string) (dto.Workspace, error) {
 			return err
 		}
 		workspace.Subscription = subscription
-		result = workspaceDTO(workspace, membership, 0, 0)
+		result = workspaceDTO(snapshot, workspace, membership, 0, 0)
 		return nil
 	})
 	if err == nil {
@@ -188,7 +190,10 @@ func CreateWorkspace(userID uint, name string) (dto.Workspace, error) {
 	return result, err
 }
 
-func ListWorkspaces(userID uint) ([]dto.Workspace, error) {
+// ListWorkspaces lists the user's workspaces. Allowance usage comes from
+// snapshot, the caller's current pacing snapshot, which is nil before the first
+// load; the list then carries the configured allowances only.
+func ListWorkspaces(userID uint, snapshot *checkpace.Snapshot) ([]dto.Workspace, error) {
 	var memberships []domain.WorkspaceMembership
 	if err := pg.DB.Where("user_id = ?", userID).
 		Preload("Workspace.Subscription").
@@ -225,12 +230,14 @@ func ListWorkspaces(userID uint) ([]dto.Workspace, error) {
 	}
 	for _, membership := range memberships {
 		count := counts[membership.WorkspaceID]
-		result = append(result, workspaceDTO(membership.Workspace, membership, count.Active, count.Stored))
+		result = append(result, workspaceDTO(snapshot, membership.Workspace, membership, count.Active, count.Stored))
 	}
 	return result, nil
 }
 
-func GetWorkspace(workspaceID, userID uint) (dto.Workspace, error) {
+// GetWorkspace returns one of the user's workspaces, with allowance usage from
+// snapshot as in ListWorkspaces.
+func GetWorkspace(workspaceID, userID uint, snapshot *checkpace.Snapshot) (dto.Workspace, error) {
 	var membership domain.WorkspaceMembership
 	if err := pg.DB.Where("workspace_id = ? AND user_id = ?", workspaceID, userID).
 		Preload("Workspace.Subscription").First(&membership).Error; err != nil {
@@ -243,7 +250,7 @@ func GetWorkspace(workspaceID, userID uint) (dto.Workspace, error) {
 	if err != nil {
 		return dto.Workspace{}, err
 	}
-	return workspaceDTO(membership.Workspace, membership, active, stored), nil
+	return workspaceDTO(snapshot, membership.Workspace, membership, active, stored), nil
 }
 
 func RenameWorkspace(workspaceID uint, name string) error {
@@ -444,7 +451,7 @@ func WorkspaceManagedProxyCounts(tx *gorm.DB, workspaceID uint) (active, stored 
 	return uint64(activeCount), uint64(storedCount), nil
 }
 
-func workspaceDTO(workspace domain.Workspace, membership domain.WorkspaceMembership, active, stored uint64) dto.Workspace {
+func workspaceDTO(snapshot *checkpace.Snapshot, workspace domain.Workspace, membership domain.WorkspaceMembership, active, stored uint64) dto.Workspace {
 	subscription := workspace.Subscription
 	limit, unlimited := subscription.ActivationLimit()
 	var activationLimit *uint64
@@ -481,14 +488,15 @@ func workspaceDTO(workspace domain.Workspace, membership domain.WorkspaceMembers
 			CurrentPeriodEnd:            subscription.CurrentPeriodEnd,
 			CancelAtPeriodEnd:           subscription.CancelAtPeriodEnd,
 		},
-		Allowances: WorkspaceAllowancesDTO(workspace, subscription),
+		Allowances: WorkspaceAllowancesDTO(snapshot, workspace, subscription),
 		CreatedAt:  workspace.CreatedAt,
 	}
 }
 
-// workspaceAllowancesDTO reads the published pacing snapshot rather than
-// metering tables, so listing workspaces adds no queries.
-func WorkspaceAllowancesDTO(workspace domain.Workspace, subscription domain.WorkspaceSubscription) dto.WorkspaceAllowances {
+// WorkspaceAllowancesDTO reads the caller's pacing snapshot rather than
+// metering tables, so listing workspaces adds no queries. A nil snapshot, before
+// the first load, leaves the usage fields empty.
+func WorkspaceAllowancesDTO(snapshot *checkpace.Snapshot, workspace domain.Workspace, subscription domain.WorkspaceSubscription) dto.WorkspaceAllowances {
 	workspaceID := workspace.ID
 	cfg := config.GetConfig()
 	now := time.Now()
@@ -511,7 +519,6 @@ func WorkspaceAllowancesDTO(workspace domain.Workspace, subscription domain.Work
 		PeriodStart:                    start,
 		PeriodEnd:                      end,
 	}
-	snapshot := checkpace.Current()
 	pace, ok := snapshot.Pace(workspaceID)
 	if !ok {
 		return result

@@ -159,7 +159,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		t.Fatalf("migrated lifecycle state = %q, want active", managed.State)
 	}
 
-	shared, err := workspaces.CreateWorkspace(legacyUser.ID, "Shared production")
+	shared, err := workspaces.CreateWorkspace(legacyUser.ID, "Shared production", nil)
 	if err != nil {
 		t.Fatalf("create shared workspace after migration: %v", err)
 	}

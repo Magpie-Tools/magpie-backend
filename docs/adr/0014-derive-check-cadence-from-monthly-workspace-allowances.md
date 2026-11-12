@@ -38,7 +38,7 @@ Each workspace has a monthly check allowance and a monthly scrape allowance:
 The statistics pipeline may drop or delay results under overload, so it
 cannot be the source of allowance usage. The checker charges each request
 just before sending it, after the lease renewal for that attempt
-(`checkpace.Snapshot.ChargeRequest`). The charge first compares the
+(`checkpace.Pacer.ChargeRequest`). The charge first compares the
 snapshot's usage plus this instance's unseen checks with the allowance and
 refuses the request when nothing is left. Otherwise it adds to an in-memory
 per-workspace, per-month counter. A refused workspace leaves the assignment:

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/security"
@@ -54,7 +55,7 @@ func BenchmarkCheckerBatchedCycle(b *testing.B) {
 	pg.DB = db
 	b.Cleanup(func() { pg.DB = previous })
 
-	r := NewRuntime()
+	r := NewRuntime(checkpace.NewPacer())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); r.RunBatchers(ctx) }()

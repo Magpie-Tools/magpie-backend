@@ -19,7 +19,7 @@ func TestResolveRequestWorkspaceAccessUsesDefaultAndExplicitMembership(t *testin
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
 
 	user, personal := createWorkspaceMiddlewareTestUser(t, "member@example.test")
-	shared, err := workspaces.CreateWorkspace(user.ID, "Shared workspace")
+	shared, err := workspaces.CreateWorkspace(user.ID, "Shared workspace", nil)
 	if err != nil {
 		t.Fatalf("create shared workspace: %v", err)
 	}

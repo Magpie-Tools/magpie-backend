@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"magpie/internal/checkpace"
 )
 
 type routineGroup struct {
@@ -47,6 +49,9 @@ type Runtime struct {
 	batchers   *routineGroup
 	consumers  *routineGroup
 	readModels *routineGroup
+	// pace is the process's Pacer, constructed by app. Setup configures it,
+	// runs it among the consumers and hands it to the checker and scraper.
+	pace *checkpace.Pacer
 }
 
 func newRuntime(parent context.Context) *Runtime {

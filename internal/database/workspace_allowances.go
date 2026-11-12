@@ -339,11 +339,11 @@ func UpdateWorkspaceCadence(ctx context.Context, workspaceID uint, request dto.W
 }
 
 // CadenceWarnings explains when a requested interval needs more than the
-// monthly allowance, using the current snapshot's route and source counts.
-func CadenceWarnings(workspaceID uint, subscription domain.WorkspaceSubscription, request dto.WorkspaceCadenceUpdateRequest) []string {
+// monthly allowance, using snapshot's route and source counts (none if nil).
+func CadenceWarnings(snapshot *checkpace.Snapshot, workspaceID uint, subscription domain.WorkspaceSubscription, request dto.WorkspaceCadenceUpdateRequest) []string {
 	cfg := config.GetConfig()
 	warnings := []string{}
-	pace, ok := checkpace.Current().Pace(workspaceID)
+	pace, ok := snapshot.Pace(workspaceID)
 	if !ok {
 		return warnings
 	}

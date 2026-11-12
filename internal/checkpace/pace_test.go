@@ -13,6 +13,10 @@ var testNow = time.Date(2026, time.November, 16, 0, 0, 0, 0, time.UTC)
 
 const testRemaining = 15 * 24 * time.Hour
 
+// noPacer reads snapshots without a meter: it never pauses and counts nothing,
+// which is what the pure cadence tests need.
+var noPacer *Pacer
+
 func TestComputeSpreadsRemainingAllowanceOverRemainingPeriod(t *testing.T) {
 	snapshot := Compute(testNow, []Allowance{{
 		WorkspaceID: 1, MonthlyChecks: 1_000_000, UsedChecks: 280_000, ChecksPerCycle: 1_000,
@@ -117,22 +121,22 @@ func TestRouteCheckIntervalUsesFastestActiveOwner(t *testing.T) {
 		}
 		return out
 	}
-	if got := snapshot.RouteCheckInterval(owners(1, 2)); got != 2*time.Minute {
+	if got := noPacer.RouteCheckInterval(snapshot, owners(1, 2)); got != 2*time.Minute {
 		t.Fatalf("shared route interval = %s, want 2m", got)
 	}
-	if got := snapshot.RouteCheckInterval(owners(3)); got != MaxRouteInterval {
+	if got := noPacer.RouteCheckInterval(snapshot, owners(3)); got != MaxRouteInterval {
 		t.Fatalf("exhausted route interval = %s, want the revisit cap", got)
 	}
-	if got := snapshot.RouteCheckInterval(owners(4)); got != MaxRouteInterval {
+	if got := noPacer.RouteCheckInterval(snapshot, owners(4)); got != MaxRouteInterval {
 		t.Fatalf("slow route interval = %s, want the revisit cap", got)
 	}
-	if got := snapshot.RouteCheckInterval(owners(4, 99)); got != FallbackInterval {
+	if got := noPacer.RouteCheckInterval(snapshot, owners(4, 99)); got != FallbackInterval {
 		t.Fatalf("unknown owner interval = %s, want fallback", got)
 	}
-	if got := snapshot.RouteCheckInterval(owners(1, 99)); got != 10*time.Minute {
+	if got := noPacer.RouteCheckInterval(snapshot, owners(1, 99)); got != 10*time.Minute {
 		t.Fatalf("a faster known owner must win over the fallback: %s", got)
 	}
-	if got := (*Snapshot)(nil).RouteCheckInterval(owners(1)); got != FallbackInterval {
+	if got := (*Pacer)(nil).RouteCheckInterval(nil, owners(1)); got != FallbackInterval {
 		t.Fatalf("startup interval = %s, want fallback", got)
 	}
 }
@@ -144,7 +148,7 @@ func TestCheckDueMatchesEachOwnersCadenceOnSharedRoute(t *testing.T) {
 		{WorkspaceID: 3, MonthlyChecks: 1, UsedChecks: 1, ChecksPerCycle: 1},
 	})
 	owners := []domain.Workspace{{ID: 1}, {ID: 2}, {ID: 3}}
-	route := snapshot.RouteCheckInterval(owners)
+	route := noPacer.RouteCheckInterval(snapshot, owners)
 	if route != time.Minute {
 		t.Fatalf("route interval = %s", route)
 	}
@@ -154,7 +158,7 @@ func TestCheckDueMatchesEachOwnersCadenceOnSharedRoute(t *testing.T) {
 		scheduled := testNow.Add(time.Duration(routeID) * 7 * time.Second)
 		for cycle := 0; cycle < cycles; cycle++ {
 			for _, owner := range owners {
-				if snapshot.CheckDue(owner.ID, routeID, scheduled, route) {
+				if noPacer.CheckDue(snapshot, owner.ID, routeID, scheduled, route) {
 					counts[owner.ID]++
 				}
 			}
@@ -178,7 +182,7 @@ func TestCheckDueSpreadsSlowSingleOwnerAcrossRevisits(t *testing.T) {
 	// roughly one revisit in eight.
 	snapshot := Compute(testNow, []Allowance{{WorkspaceID: 1, MonthlyChecks: 7, ChecksPerCycle: 1}})
 	pace, _ := snapshot.Pace(1)
-	route := snapshot.RouteCheckInterval([]domain.Workspace{{ID: 1}})
+	route := noPacer.RouteCheckInterval(snapshot, []domain.Workspace{{ID: 1}})
 	if route != MaxRouteInterval || pace.CheckInterval <= route {
 		t.Fatalf("route=%s cadence=%s", route, pace.CheckInterval)
 	}
@@ -187,7 +191,7 @@ func TestCheckDueSpreadsSlowSingleOwnerAcrossRevisits(t *testing.T) {
 	for routeID := uint64(1); routeID <= routes; routeID++ {
 		scheduled := testNow
 		for i := 0; i < revisits; i++ {
-			if snapshot.CheckDue(1, routeID, scheduled, route) {
+			if noPacer.CheckDue(snapshot, 1, routeID, scheduled, route) {
 				due++
 			}
 			scheduled = scheduled.Add(route)
@@ -201,10 +205,10 @@ func TestCheckDueSpreadsSlowSingleOwnerAcrossRevisits(t *testing.T) {
 
 func TestUnknownWorkspaceStaysDueUntilRefresh(t *testing.T) {
 	snapshot := Compute(testNow, nil)
-	if !snapshot.CheckDue(7, 1, testNow, time.Minute) || !snapshot.ScrapeDue(7, 1, testNow, time.Minute) {
+	if !noPacer.CheckDue(snapshot, 7, 1, testNow, time.Minute) || !snapshot.ScrapeDue(7, 1, testNow, time.Minute) {
 		t.Fatal("new workspaces must not be skipped before the next refresh")
 	}
-	if !(*Snapshot)(nil).CheckDue(7, 1, testNow, time.Minute) {
+	if !(*Pacer)(nil).CheckDue(nil, 7, 1, testNow, time.Minute) {
 		t.Fatal("checks must run before the first snapshot")
 	}
 }
@@ -215,7 +219,7 @@ func TestSourceScrapeIntervalAndDue(t *testing.T) {
 		{WorkspaceID: 2, MonthlyScrapes: uint64(testRemaining / (2 * time.Hour)), ScrapesPerCycle: 1},
 		{WorkspaceID: 3, MonthlyScrapes: 2, UsedScrapes: 2, ScrapesPerCycle: 1},
 	})
-	interval := snapshot.SourceScrapeInterval([]uint{1, 2, 3})
+	interval := noPacer.SourceScrapeInterval(snapshot, []uint{1, 2, 3})
 	if interval != 30*time.Minute {
 		t.Fatalf("source interval = %s", interval)
 	}
@@ -235,11 +239,12 @@ func TestSourceScrapeIntervalAndDue(t *testing.T) {
 }
 
 func TestRequestRefreshNeverBlocks(t *testing.T) {
+	p := NewPacer()
 	for i := 0; i < 10; i++ {
-		RequestRefresh()
+		p.RequestRefresh()
 	}
 	select {
-	case <-refreshCh:
+	case <-p.refreshCh:
 	default:
 		t.Fatal("refresh request was dropped")
 	}

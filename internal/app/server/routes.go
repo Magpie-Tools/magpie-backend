@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"magpie/internal/auth"
+	"magpie/internal/checkpace"
 )
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -54,17 +55,30 @@ func enableCORS(next http.Handler) http.Handler {
 	})
 }
 
-func OpenRoutes(ctx context.Context, port int) error {
+// pacedRoutes serves the routes that read or refresh the process's Pacer: the
+// workspace views that show allowance usage, the handlers that change an
+// allowance or interval, and the readiness probe.
+type pacedRoutes struct {
+	pace *checkpace.Pacer
+}
+
+// OpenRoutes serves the API on port until ctx ends. pace is the process's
+// Pacer, the one bootstrap runs.
+func OpenRoutes(ctx context.Context, port int, pace *checkpace.Pacer) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if pace == nil {
+		return errors.New("server: OpenRoutes needs the process's Pacer")
+	}
+	paced := pacedRoutes{pace: pace}
 
 	router := http.NewServeMux()
 	router.Handle("GET /healthz", withObservabilityProtection(http.HandlerFunc(healthz)))
-	router.Handle("GET /readyz", withObservabilityProtection(http.HandlerFunc(readyz)))
+	router.Handle("GET /readyz", withObservabilityProtection(http.HandlerFunc(paced.readyz)))
 	router.Handle("GET /metrics", withObservabilityProtection(metricsHandler()))
 
 	gqlHandler, err := getGraphQLHandler()
@@ -90,11 +104,11 @@ func OpenRoutes(ctx context.Context, port int) error {
 	apiMux.Handle("POST /global/proxies/{id}/requeue", auth.IsAdmin(http.HandlerFunc(requeueProxy)))
 	apiMux.Handle("POST /global/scrapeSources/requeue", auth.IsAdmin(http.HandlerFunc(requeueAllScrapeSources)))
 	apiMux.Handle("POST /global/scrapeSources/{id}/requeue", auth.IsAdmin(http.HandlerFunc(requeueScrapeSource)))
-	apiMux.Handle("PUT /global/workspaces/{id}/allowances", auth.IsAdmin(http.HandlerFunc(updateWorkspaceAllowances)))
+	apiMux.Handle("PUT /global/workspaces/{id}/allowances", auth.IsAdmin(http.HandlerFunc(paced.updateWorkspaceAllowances)))
 	apiMux.Handle("GET /releases", http.HandlerFunc(getReleases))
-	apiMux.Handle("GET /workspaces", auth.RequireAuth(http.HandlerFunc(listWorkspaces)))
-	apiMux.Handle("POST /workspaces", auth.RequireAuth(http.HandlerFunc(createWorkspace)))
-	apiMux.Handle("GET /workspaces/{id}", auth.RequireAuth(http.HandlerFunc(getWorkspace)))
+	apiMux.Handle("GET /workspaces", auth.RequireAuth(http.HandlerFunc(paced.listWorkspaces)))
+	apiMux.Handle("POST /workspaces", auth.RequireAuth(http.HandlerFunc(paced.createWorkspace)))
+	apiMux.Handle("GET /workspaces/{id}", auth.RequireAuth(http.HandlerFunc(paced.getWorkspace)))
 	apiMux.Handle("PATCH /workspaces/{id}", auth.RequireAuth(http.HandlerFunc(updateWorkspace)))
 	apiMux.Handle("POST /workspaces/{id}/select", auth.RequireAuth(http.HandlerFunc(selectWorkspace)))
 	apiMux.Handle("GET /workspaces/{id}/members", auth.RequireAuth(http.HandlerFunc(listWorkspaceMembers)))
@@ -146,7 +160,7 @@ func OpenRoutes(ctx context.Context, port int) error {
 	apiMux.Handle("POST /user/settings", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(saveUserSettings))))
 	apiMux.Handle("GET /workspace/settings", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getUserSettings))))
 	apiMux.Handle("POST /workspace/settings", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(saveUserSettings))))
-	apiMux.Handle("PUT /workspace/cadence", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(updateWorkspaceCadence))))
+	apiMux.Handle("PUT /workspace/cadence", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(paced.updateWorkspaceCadence))))
 	apiMux.Handle("GET /user/profile", auth.RequireAuth(http.HandlerFunc(getUserProfile)))
 	apiMux.Handle("GET /user/role", auth.RequireAuth(http.HandlerFunc(getUserRole)))
 	apiMux.Handle("POST /user/export", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(exportProxies))))

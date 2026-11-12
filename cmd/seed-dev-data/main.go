@@ -112,14 +112,16 @@ func run() error {
 		return fmt.Errorf("development reset rolled back: %w", err)
 	}
 	// Reconcile only affected runtime entries. Never flush a shared Redis DB.
-	queue := proxyqueue.NewRedisProxyQueue(client)
+	// The tool runs no Pacer, so refreshed routes are spread over the
+	// fallback interval, as before a backend's first allowance load.
+	queue := proxyqueue.NewRedisProxyQueue(client, nil)
 	if err := queue.RemoveFromQueue(result.RemovedProxies); err != nil {
 		return fmt.Errorf("fixtures committed but old proxy queue cleanup failed: %w", err)
 	}
 	if err := queue.AddToQueue(result.RefreshProxies); err != nil {
 		return fmt.Errorf("fixtures committed but shared proxy queue refresh failed: %w", err)
 	}
-	sites := sitequeue.NewRedisScrapeSiteQueue(client)
+	sites := sitequeue.NewRedisScrapeSiteQueue(client, nil)
 	if err := sites.RemoveFromQueue(result.RemovedSources); err != nil {
 		return fmt.Errorf("fixtures committed but old source queue cleanup failed: %w", err)
 	}

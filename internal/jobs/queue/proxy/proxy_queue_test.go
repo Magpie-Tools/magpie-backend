@@ -79,7 +79,7 @@ func TestMigrateDequeuedProxyMember_RekeysAndWritesCurrentPayload(t *testing.T) 
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	defer client.Close()
 
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	ctx := context.Background()
 	oldMember := "legacy-route-hash"
 	oldPayload := `{"ID":12,"IP":"192.0.2.10","Port":8080,"Username":"CaseUser","Password":"CaseSecret","Hash":"bGVnYWN5LXJvdXRlLWhhc2g=","UserIDs":[5]}`
@@ -187,7 +187,7 @@ func TestAddToQueue_SkipsRouteWithoutActiveWorkspace(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	defer client.Close()
 
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	pausedOnly := domain.Proxy{
 		ID:   31,
 		IP:   "192.0.2.31",
@@ -321,7 +321,7 @@ func TestGetNextProxy_RewritesEncryptedV1PayloadOnceWithoutRekeying(t *testing.T
 		t.Fatalf("marshal encrypted v1 payload: %v", err)
 	}
 
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	ctx := context.Background()
 	member := string(proxy.Hash)
 	if err := client.Set(ctx, proxyKeyPrefix+member, legacyPayload, 0).Err(); err != nil {
@@ -382,7 +382,7 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	defer client.Close()
 
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	ctx := context.Background()
 	proxy := domain.Proxy{
 		ID:         42,
@@ -398,7 +398,7 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 	if err := client.Set(ctx, proxyKey, originalPayload, 0).Err(); err != nil {
 		t.Fatalf("seed proxy payload: %v", err)
 	}
-	useUniformPace(t, time.Second)
+	useUniformPace(t, queue, time.Second)
 
 	if err := queue.RequeueProxy(proxy, time.Now()); err != nil {
 		t.Fatalf("schedule-only requeue: %v", err)
@@ -489,7 +489,7 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
 	defer client.Close()
 
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	ctx := context.Background()
 
 	members := []string{"member-a", "member-b", "member-c"}
@@ -506,7 +506,7 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 
 	// The fastest workspace cadence is below the burst guard, so requeue-all
 	// spreads members over the guard's window.
-	useUniformPace(t, time.Minute)
+	useUniformPace(t, queue, time.Minute)
 
 	before := time.Now().UnixMilli()
 	count, err := queue.RequeueAll()
@@ -546,11 +546,11 @@ func TestRequeueAll_ReschedulesQueuedMembersAcrossInterval(t *testing.T) {
 	}
 }
 
-// useUniformPace publishes one cadence for every workspace and restores the
-// previous allowance snapshot when the test ends.
-func useUniformPace(t testing.TB, interval time.Duration) {
+// useUniformPace gives queue a Pacer that publishes one cadence for every
+// workspace.
+func useUniformPace(t testing.TB, queue *RedisProxyQueue, interval time.Duration) {
 	t.Helper()
-	previous := checkpace.Current()
-	checkpace.Publish(checkpace.Uniform(interval, interval))
-	t.Cleanup(func() { checkpace.Publish(previous) })
+	pace := checkpace.NewPacer()
+	pace.Publish(checkpace.Uniform(interval, interval))
+	queue.pace = pace
 }
