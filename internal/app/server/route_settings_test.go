@@ -19,6 +19,9 @@ import (
 	"magpie/internal/domain"
 	gqlschema "magpie/internal/graphql"
 	"magpie/internal/jobs/checker/judges"
+	"magpie/internal/judgestore"
+	"magpie/internal/platform/pg"
+	"magpie/internal/workspace"
 )
 
 func setupSettingsAPITest(t *testing.T) (uint, uint) {
@@ -27,7 +30,7 @@ func setupSettingsAPITest(t *testing.T) (uint, uint) {
 	t.Setenv("JWT_SECRET", "settings-api-test-secret")
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
 	user, _ := createWorkspaceMiddlewareTestUser(t, "settings@example.test")
-	workspace, err := database.CreateWorkspace(user.ID, "Shared settings")
+	workspace, err := workspace.CreateWorkspace(user.ID, "Shared settings", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +84,7 @@ func TestSettingsAPIsPersistAndPreserveFailureAction(t *testing.T) {
 	for _, api := range []string{"REST", "GraphQL"} {
 		t.Run(api, func(t *testing.T) {
 			userID, workspaceID := setupSettingsAPITest(t)
-			if actual := database.GetWorkspaceByID(workspaceID).FailureAction; actual != domain.FailureActionPause {
+			if actual := workspace.GetWorkspaceByID(workspaceID).FailureAction; actual != domain.FailureActionPause {
 				t.Fatalf("default action = %q", actual)
 			}
 			name := "failureAction"
@@ -92,22 +95,22 @@ func TestSettingsAPIsPersistAndPreserveFailureAction(t *testing.T) {
 				if err := submitSettings(t, api, userID, workspaceID, map[string]any{name: action}); err != nil {
 					t.Fatal(err)
 				}
-				if actual := database.GetWorkspaceByID(workspaceID).FailureAction; actual != action {
+				if actual := workspace.GetWorkspaceByID(workspaceID).FailureAction; actual != action {
 					t.Fatalf("action = %q, want %q", actual, action)
 				}
 				if err := submitSettings(t, api, userID, workspaceID, map[string]any{"timeout": 1234}); err != nil {
 					t.Fatal(err)
 				}
-				if actual := database.GetWorkspaceByID(workspaceID).FailureAction; actual != action {
+				if actual := workspace.GetWorkspaceByID(workspaceID).FailureAction; actual != action {
 					t.Fatalf("omitted action reset %q to %q", action, actual)
 				}
 			}
 			for _, invalid := range []string{"archive", "DELETE", "remove"} {
-				before := database.GetWorkspaceByID(workspaceID)
+				before := workspace.GetWorkspaceByID(workspaceID)
 				if err := submitSettings(t, api, userID, workspaceID, map[string]any{name: invalid, "timeout": 4321}); err == nil {
 					t.Fatalf("accepted invalid action %q", invalid)
 				}
-				after := database.GetWorkspaceByID(workspaceID)
+				after := workspace.GetWorkspaceByID(workspaceID)
 				if after.FailureAction != before.FailureAction || after.Timeout != before.Timeout {
 					t.Fatal("invalid action partially saved settings")
 				}
@@ -125,7 +128,7 @@ func TestSettingsAPIsRefreshWorkspaceJudgeCache(t *testing.T) {
 			if err := submitSettings(t, api, userID, workspaceID, input); err != nil {
 				t.Fatal(err)
 			}
-			stored := database.GetWorkspaceJudges(workspaceID)
+			stored := judgestore.GetWorkspaceJudges(workspaceID)
 			cached, regex := judges.GetNextJudge(workspaceID, "https")
 			if len(stored) != 1 || stored[0].Url != "https://new.example.test" || cached == nil || cached.FullString != stored[0].Url || regex != "new" {
 				t.Fatalf("judge update not applied: database=%+v cache=%+v regex=%q", stored, cached, regex)
@@ -154,11 +157,11 @@ func TestSettingsAPIsRejectInvalidNumbersWithoutSaving(t *testing.T) {
 						if api == "REST" && name == "autoRemoveFailureThreshold" {
 							name = "auto_remove_failure_threshold"
 						}
-						before := database.GetWorkspaceByID(workspaceID)
+						before := workspace.GetWorkspaceByID(workspaceID)
 						if err := submitSettings(t, api, userID, workspaceID, map[string]any{name: value}); err == nil {
 							t.Fatal("invalid number accepted")
 						}
-						after := database.GetWorkspaceByID(workspaceID)
+						after := workspace.GetWorkspaceByID(workspaceID)
 						if before.Timeout != after.Timeout || before.Retries != after.Retries || before.AutoRemoveFailureThreshold != after.AutoRemoveFailureThreshold {
 							t.Fatal("rejected input changed persisted settings")
 						}
@@ -173,7 +176,7 @@ func TestSettingsAPIsRejectInvalidNumbersWithoutSaving(t *testing.T) {
 				if err := submitSettings(t, api, userID, workspaceID, map[string]any{"timeout": values[0], "retries": values[1], thresholdName: values[2]}); err != nil {
 					t.Fatal(err)
 				}
-				actual := database.GetWorkspaceByID(workspaceID)
+				actual := workspace.GetWorkspaceByID(workspaceID)
 				if int(actual.Timeout) != values[0] || int(actual.Retries) != values[1] || int(actual.AutoRemoveFailureThreshold) != values[2] {
 					t.Fatal("valid boundary did not persist")
 				}
@@ -184,12 +187,12 @@ func TestSettingsAPIsRejectInvalidNumbersWithoutSaving(t *testing.T) {
 
 func TestGraphQLRejectsUnsupportedScrapingSourcesInput(t *testing.T) {
 	userID, workspaceID := setupSettingsAPITest(t)
-	before := database.GetWorkspaceByID(workspaceID)
+	before := workspace.GetWorkspaceByID(workspaceID)
 	err := submitSettings(t, "GraphQL", userID, workspaceID, map[string]any{"timeout": 123, "scrapingSources": []any{"https://source.example.test"}})
 	if err == nil || !strings.Contains(err.Error(), "scrapingSources") {
 		t.Fatalf("expected unsupported-field error, got %v", err)
 	}
-	if after := database.GetWorkspaceByID(workspaceID); after.Timeout != before.Timeout {
+	if after := workspace.GetWorkspaceByID(workspaceID); after.Timeout != before.Timeout {
 		t.Fatal("invalid mutation partially saved")
 	}
 }
@@ -210,12 +213,12 @@ func TestSettingsAPIsRejectBlockedJudges(t *testing.T) {
 	for _, api := range []string{"REST", "GraphQL"} {
 		t.Run(api, func(t *testing.T) {
 			userID, workspaceID := setupSettingsAPITest(t)
-			before := database.GetWorkspaceByID(workspaceID)
+			before := workspace.GetWorkspaceByID(workspaceID)
 			err := submitSettings(t, api, userID, workspaceID, map[string]any{"timeout": 123, "judges": []any{map[string]any{"url": "https://blocked.example.test/judge", "regex": "blocked"}}})
 			if err == nil || !strings.Contains(err.Error(), "blocked websites") {
 				t.Fatalf("expected blocked-judge error, got %v", err)
 			}
-			if after := database.GetWorkspaceByID(workspaceID); after.Timeout != before.Timeout {
+			if after := workspace.GetWorkspaceByID(workspaceID); after.Timeout != before.Timeout {
 				t.Fatal("blocked judge input partially saved")
 			}
 		})
@@ -226,7 +229,7 @@ func TestSettingsAPIsPersistCheckerProfilesAndPreserveOmittedFields(t *testing.T
 	for _, api := range []string{"REST", "GraphQL"} {
 		t.Run(api, func(t *testing.T) {
 			userID, workspaceID := setupSettingsAPITest(t)
-			if err := database.DB.AutoMigrate(&domain.ProxyTag{}, &domain.ProxyTagAssignment{}); err != nil {
+			if err := pg.DB.AutoMigrate(&domain.ProxyTag{}, &domain.ProxyTagAssignment{}); err != nil {
 				t.Fatal(err)
 			}
 			tag, err := database.CreateProxyTag(workspaceID, "HTTP extra", "#22C55E")
@@ -247,7 +250,7 @@ func TestSettingsAPIsPersistCheckerProfilesAndPreserveOmittedFields(t *testing.T
 			if err := submitSettings(t, api, userID, workspaceID, input); err != nil {
 				t.Fatal(err)
 			}
-			before := database.GetWorkspaceByID(workspaceID)
+			before := workspace.GetWorkspaceByID(workspaceID)
 			if before.CheckerConfig == nil || len(before.CheckerConfig.Rules) != 1 || before.CheckerConfig.Rules[0].Retries == nil {
 				t.Fatal(before.CheckerConfig)
 			}
@@ -255,7 +258,7 @@ func TestSettingsAPIsPersistCheckerProfilesAndPreserveOmittedFields(t *testing.T
 			if err := submitSettings(t, api, userID, workspaceID, map[string]any{}); err != nil {
 				t.Fatal(err)
 			}
-			after := database.GetWorkspaceByID(workspaceID)
+			after := workspace.GetWorkspaceByID(workspaceID)
 			encodedBefore, _ := json.Marshal(before.CheckerConfig)
 			encodedAfter, _ := json.Marshal(after.CheckerConfig)
 			if !bytes.Equal(encodedBefore, encodedAfter) {

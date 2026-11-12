@@ -10,7 +10,9 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 	"magpie/internal/ipgeolocation"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -21,7 +23,7 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 	}
 
 	var proxy domain.Proxy
-	err := DB.
+	err := pg.DB.
 		Preload("Reputations").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
 		Where("up.workspace_id = ? AND proxies.id = ?", workspaceID, proxyId).
@@ -32,14 +34,14 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateProxyCredential(DB, &proxy, workspaceID); err != nil {
+	if err := hydrateProxyCredential(pg.DB, &proxy, workspaceID); err != nil {
 		return nil, err
 	}
 
 	var latestStat *dto.ProxyStatistic
 	var latestCheck *time.Time
 	var current []domain.ProxyLatestStatistic
-	if err := currentLatestStatistics(DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Order("pls.checked_at DESC, pls.statistic_id DESC").Find(&current).Error; err != nil {
+	if err := evidence.CurrentLatestStatistics(pg.DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Order("pls.checked_at DESC, pls.statistic_id DESC").Find(&current).Error; err != nil {
 		return nil, err
 	}
 	var alive *bool
@@ -51,7 +53,7 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 		alive = &value
 		latestCheck = &current[0].CheckedAt
 		var stat domain.ProxyStatistic
-		if err := DB.Preload("Protocol").Preload("Level").Preload("Judge").Where("id = ? AND created_at = ?", current[0].StatisticID, current[0].CheckedAt).First(&stat).Error; err == nil {
+		if err := pg.DB.Preload("Protocol").Preload("Level").Preload("Judge").Where("id = ? AND created_at = ?", current[0].StatisticID, current[0].CheckedAt).First(&stat).Error; err == nil {
 			mapped := mapProxyStatistic(&stat)
 			mapped.Alive, mapped.ConfigKey, mapped.Current = current[0].Alive, current[0].ConfigKey, true
 			latestStat = &mapped
@@ -78,7 +80,7 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 	detail.Reputation = mapReputationsToBreakdown(proxy.Reputations)
 	if cfg := config.GetConfig().Plugins.IPGeolocation; cfg.Active() && proxy.GetIPAddress() != "" {
 		var cached domain.IPGeolocationLookup
-		if err := DB.Where("ip = ? AND checked_at IS NOT NULL", proxy.GetIPAddress()).First(&cached).Error; err == nil {
+		if err := pg.DB.Where("ip = ? AND checked_at IS NOT NULL", proxy.GetIPAddress()).First(&cached).Error; err == nil {
 			var result ipgeolocation.Result
 			if json.Unmarshal([]byte(cached.Payload), &result) == nil {
 				detail.IPGeolocation = &dto.IPGeolocationInfo{Result: result, CheckedAt: cached.CheckedAt, ExpiresAt: cached.ExpiresAt, Fresh: freshIPGeolocation(cached, cfg, time.Now().UTC())}
@@ -86,13 +88,13 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 		}
 	}
 	var managed domain.ManagedProxy
-	if managedErr := DB.Select("state", "pause_reason").
+	if managedErr := pg.DB.Select("state", "pause_reason").
 		Where("workspace_id = ? AND proxy_id = ?", workspaceID, proxyId).
 		First(&managed).Error; managedErr == nil {
 		detail.State = managed.State
 		detail.PauseReason = managed.PauseReason
 	}
-	detail.Tags, err = getProxyTagsForProxy(workspaceID, proxyId)
+	detail.Tags, err = GetProxyTagsForProxy(workspaceID, proxyId)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +108,7 @@ func GetQueuedProxyForWorkspace(workspaceID uint, proxyId uint64) (*domain.Proxy
 	}
 
 	var proxy domain.Proxy
-	err := DB.
+	err := pg.DB.
 		Joins("JOIN user_proxies up ON up.proxy_id = proxies.id").
 		Where("up.workspace_id = ? AND up.state = ? AND proxies.id = ?", workspaceID, domain.ManagedProxyStateActive, proxyId).
 		First(&proxy).Error
@@ -117,11 +119,11 @@ func GetQueuedProxyForWorkspace(workspaceID uint, proxyId uint64) (*domain.Proxy
 		return nil, err
 	}
 	items := []domain.Proxy{proxy}
-	if err := hydrateActiveProxyWorkspaces(DB, items); err != nil {
+	if err := hydrateActiveProxyWorkspaces(pg.DB, items); err != nil {
 		return nil, err
 	}
 	proxy = items[0]
-	if err := hydrateProxyCredential(DB, &proxy, workspaceID); err != nil {
+	if err := hydrateProxyCredential(pg.DB, &proxy, workspaceID); err != nil {
 		return nil, err
 	}
 
@@ -133,18 +135,18 @@ func GetProxyQueueState(proxyID uint64) (*domain.Proxy, bool, error) {
 		return nil, false, nil
 	}
 	var proxy domain.Proxy
-	if err := DB.First(&proxy, proxyID).Error; err != nil {
+	if err := pg.DB.First(&proxy, proxyID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, false, nil
 		}
 		return nil, false, err
 	}
 	items := []domain.Proxy{proxy}
-	if err := hydrateActiveProxyWorkspaces(DB, items); err != nil {
+	if err := hydrateActiveProxyWorkspaces(pg.DB, items); err != nil {
 		return nil, false, err
 	}
 	proxy = items[0]
-	if err := hydrateProxyCredential(DB, &proxy, 0); err != nil {
+	if err := hydrateProxyCredential(pg.DB, &proxy, 0); err != nil {
 		return nil, false, err
 	}
 	return &proxy, len(proxy.Workspaces) > 0, nil
@@ -159,7 +161,7 @@ func GetProxyStatistics(workspaceID uint, proxyId uint64, limit int) ([]dto.Prox
 		limit = 500
 	}
 
-	query := DB.Model(&domain.ProxyStatistic{}).
+	query := pg.DB.Model(&domain.ProxyStatistic{}).
 		Preload("Protocol").
 		Preload("Level").
 		Preload("Judge").
@@ -174,7 +176,7 @@ func GetProxyStatistics(workspaceID uint, proxyId uint64, limit int) ([]dto.Prox
 		return nil, err
 	}
 	var current []domain.ProxyLatestStatistic
-	if err := currentLatestStatistics(DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Find(&current).Error; err != nil {
+	if err := evidence.CurrentLatestStatistics(pg.DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Find(&current).Error; err != nil {
 		return nil, err
 	}
 	keys := make(map[int]string, len(current))
@@ -209,7 +211,7 @@ func GetProxyStatisticResponseBody(workspaceID uint, proxyId uint64, statisticId
 	}
 
 	var row proxyStatisticBodyRow
-	query := DB.Table("proxy_statistics").
+	query := pg.DB.Table("proxy_statistics").
 		Select("proxy_statistics.response_body", "user_judges.regex").
 		Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
 		Joins("LEFT JOIN user_judges ON user_judges.judge_id = proxy_statistics.judge_id AND user_judges.workspace_id = up.workspace_id").

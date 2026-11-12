@@ -1,0 +1,21 @@
+# Tests recorded by scripts/sql-log.sh, one "package pattern" per line.
+# They were chosen because they are deterministic and cover the transactions
+# that package moves can disturb. A test moves between lines with its code;
+# its name stays. See docs/onboarding/sql-log.md.
+
+# Current evidence, rotator pools and snapshots.
+./internal/database ^(TestRotatorEvidenceScopesSharedInventoryPostgres|TestSnapshotAliveCountsScopeSharedInventoryPostgres)$
+# Alert measurements, transitions and delivery claims.
+./internal/alerts ^(TestAlertsPostgresEvidenceClaimsAndRetention|TestAlertsBatchedTransitionsPostgres|TestAlertsBatchRollsBackWhenOutboxWriteFailsPostgres|TestAlertRotatorNotificationScopePostgres)$
+# The statistics transaction and check usage.
+./internal/database ^(TestCheckerEvidencePersistenceOperationBudgetPostgres|TestStatisticsReorderingKeepsStatementCountsPostgres|TestStatisticsTailUsageFailureRollsBackAllEffectsPostgres|TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres)$
+# Import, reimport usage, lifecycle and failure actions.
+./internal/database ^(TestProxyIngestionBatchesPostgres|TestProxyReimportPreservesUsagePostgres|TestProxyReimportMixedRowsRefreshUsagePostgres|TestFailureActionsPostgresLifecycleAndOperationBudget|TestBulkProxyDeletionPostgres)$
+# Read-model refresh and rebuild.
+./internal/readmodel ^(TestReadModelBackgroundOperationCountsPostgres|TestReadModelNoopFilterRepairsEveryContentFieldPostgres|TestReadModelSubprefixOrdinaryPassLimitAndOperationCountsPostgres|TestReadModelExplicitRebuildRemovesCommittedOrphansPostgres)$
+# Scrape-source settings and source tag assignments.
+./internal/scrapestore ^(TestSourceTagsPostgresMigrationAndLifecycle)$
+# Development seed.
+./internal/devseed ^(TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres|TestDevelopmentSeedRollsBackAfterFixtureInsertFailurePostgres)$
+# Checker failure streak writes.
+./internal/jobs/checker ^(TestSaturatedFailureStreaksSkipWritesPostgres|TestFailureResetAvoidsZeroWritesAndLocksPostgres)$

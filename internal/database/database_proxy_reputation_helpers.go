@@ -8,6 +8,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -143,7 +144,7 @@ func scheduleReputationRecalculation(proxyIDs []uint64) {
 	}
 
 	ids := append([]uint64(nil), proxyIDs...)
-	db := DB
+	db := pg.DB
 
 	go func(values []uint64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

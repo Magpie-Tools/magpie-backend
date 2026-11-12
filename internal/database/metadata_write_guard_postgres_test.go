@@ -11,13 +11,16 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
 
 func TestMetadataWritesOnlyChangedValuesPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	if err := ensureProxyQueryIndexSchema(db); err != nil {
+	if err := schema.EnsureProxyQueryIndexSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	for _, sql := range []string{
@@ -33,9 +36,10 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 			t.Fatal(err)
 		}
 	}
-	batch := make([]proxyMetadataUpdate, enrichmentUpdateBatchSize)
+	// 512 is the batch size of GeoLite enrichment, the main local writer.
+	batch := make([]ProxyMetadataUpdate, 512)
 	for i := range batch {
-		batch[i] = proxyMetadataUpdate{ID: uint64(1 + 9999*i/(len(batch)-1)), Country: "N/A", EstimatedType: "N/A"}
+		batch[i] = ProxyMetadataUpdate{ID: uint64(1 + 9999*i/(len(batch)-1)), Country: "N/A", EstimatedType: "N/A"}
 	}
 	batch[1].Country = "DE"
 	batch[2].EstimatedType = "Residential"
@@ -47,20 +51,20 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 	if err := locked.Exec("SELECT id FROM proxies WHERE id=1 FOR UPDATE").Error; err != nil {
 		t.Fatal(err)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	DB = db.WithContext(ctx).Session(&gorm.Session{Logger: queries})
-	if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
+	pg.DB = db.WithContext(ctx).Session(&gorm.Session{Logger: queries})
+	if err := UpdateProxyMetadataBatch(pg.DB, batch, LocalProxyMetadata); err != nil {
 		t.Fatal("unchanged metadata waited for a locked route", err)
 	}
 	_ = locked.Rollback().Error
-	if len(queries.queries) != 1 {
-		t.Fatal("metadata guard added database statements", queries.queries)
+	if len(queries.Queries) != 1 {
+		t.Fatal("metadata guard added database statements", queries.Queries)
 	}
-	guardedSQL := queries.queries[0]
-	DB = db
-	if err := updateProxyMetadataBatch(DB, batch, localProxyMetadata); err != nil {
+	guardedSQL := queries.Queries[0]
+	pg.DB = db
+	if err := UpdateProxyMetadataBatch(pg.DB, batch, LocalProxyMetadata); err != nil {
 		t.Fatal(err)
 	}
 	var observed []uint64
@@ -135,7 +139,7 @@ func TestCheckUsageDoesNotWaitForSubscriptionLockPostgres(t *testing.T) {
 	if err := locked.Exec("SELECT workspace_id FROM workspace_subscriptions WHERE workspace_id=? FOR UPDATE", workspace.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -144,7 +148,7 @@ func TestCheckUsageDoesNotWaitForSubscriptionLockPostgres(t *testing.T) {
 	}); err != nil {
 		t.Fatal("check usage waited for a subscription lock", err)
 	}
-	for _, sql := range queries.queries {
+	for _, sql := range queries.Queries {
 		if strings.Contains(sql, "user_proxies") || strings.Contains(sql, "workspace_subscriptions") {
 			t.Fatal("check usage touched inventory or subscription locks", sql)
 		}

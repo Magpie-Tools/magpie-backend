@@ -37,25 +37,24 @@ func TestRequeueUsesWorkspaceAllowanceCadence(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	previous := checkpace.Current()
-	t.Cleanup(func() { checkpace.Publish(previous) })
+	pacer := checkpace.NewPacer()
 
 	now := time.Now()
 	_, periodEnd := checkpace.UsagePeriod(now)
 	const perCycle = 3
 	cycles := uint64(periodEnd.Sub(now)/(65*time.Minute)) + 1
-	checkpace.Publish(checkpace.Compute(now, []checkpace.Allowance{{
+	pacer.Publish(checkpace.Compute(now, []checkpace.Allowance{{
 		WorkspaceID: 1, MonthlyChecks: cycles * perCycle, ChecksPerCycle: perCycle,
 		MonthlyScrapes: 1, ScrapesPerCycle: 1,
 	}}))
-	pace, _ := checkpace.Current().Pace(1)
+	pace, _ := pacer.Current().Pace(1)
 	if pace.CheckInterval < 60*time.Minute || pace.CheckInterval > 65*time.Minute {
 		t.Fatalf("derived cadence = %s, want about 65m", pace.CheckInterval)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	queue := proxyqueue.NewRedisProxyQueue(client)
+	queue := proxyqueue.NewRedisProxyQueue(client, pacer)
 	proxy := domain.Proxy{ID: 42, IP: "192.0.2.42", Port: 40005, Hash: []byte("interval-regression-route"), Workspaces: []domain.Workspace{{ID: 1}}}
 	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)

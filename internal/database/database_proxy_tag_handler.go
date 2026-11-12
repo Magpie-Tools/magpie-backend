@@ -8,6 +8,7 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -20,12 +21,12 @@ var (
 )
 
 func GetProxyTags(workspaceID uint) ([]dto.ProxyTag, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database connection was not initialised")
 	}
 
 	var tags []domain.ProxyTag
-	if err := DB.
+	if err := pg.DB.
 		Where("workspace_id = ?", workspaceID).
 		Order("name_key ASC, id ASC").
 		Find(&tags).Error; err != nil {
@@ -36,14 +37,14 @@ func GetProxyTags(workspaceID uint) ([]dto.ProxyTag, error) {
 }
 
 func ValidateProxyTags(workspaceID uint, tagIDs []uint64) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database connection was not initialised")
 	}
-	return requireProxyTags(DB, workspaceID, normalizeUint64IDs(tagIDs))
+	return RequireProxyTags(pg.DB, workspaceID, NormalizeUint64IDs(tagIDs))
 }
 
 func CreateProxyTag(workspaceID uint, name, color string) (dto.ProxyTag, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return dto.ProxyTag{}, fmt.Errorf("database connection was not initialised")
 	}
 
@@ -53,7 +54,7 @@ func CreateProxyTag(workspaceID uint, name, color string) (dto.ProxyTag, error) 
 	}
 
 	var existing int64
-	if err := DB.Model(&domain.ProxyTag{}).
+	if err := pg.DB.Model(&domain.ProxyTag{}).
 		Where("workspace_id = ? AND name_key = ?", workspaceID, tag.NameKey).
 		Count(&existing).Error; err != nil {
 		return dto.ProxyTag{}, err
@@ -62,8 +63,8 @@ func CreateProxyTag(workspaceID uint, name, color string) (dto.ProxyTag, error) 
 		return dto.ProxyTag{}, ErrProxyTagNameConflict
 	}
 
-	if err := DB.Create(&tag).Error; err != nil {
-		if isUniqueConstraintError(err) {
+	if err := pg.DB.Create(&tag).Error; err != nil {
+		if pg.IsUniqueConstraintError(err) {
 			return dto.ProxyTag{}, ErrProxyTagNameConflict
 		}
 		return dto.ProxyTag{}, err
@@ -73,7 +74,7 @@ func CreateProxyTag(workspaceID uint, name, color string) (dto.ProxyTag, error) 
 }
 
 func UpdateProxyTag(workspaceID uint, tagID uint64, name, color string) (dto.ProxyTag, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return dto.ProxyTag{}, fmt.Errorf("database connection was not initialised")
 	}
 	if tagID == 0 {
@@ -81,7 +82,7 @@ func UpdateProxyTag(workspaceID uint, tagID uint64, name, color string) (dto.Pro
 	}
 
 	var updated domain.ProxyTag
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("id = ? AND workspace_id = ?", tagID, workspaceID).First(&updated).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrProxyTagNotFound
@@ -106,7 +107,7 @@ func UpdateProxyTag(workspaceID uint, tagID uint64, name, color string) (dto.Pro
 		}
 
 		if err := tx.Save(&updated).Error; err != nil {
-			if isUniqueConstraintError(err) {
+			if pg.IsUniqueConstraintError(err) {
 				return ErrProxyTagNameConflict
 			}
 			return err
@@ -121,7 +122,7 @@ func UpdateProxyTag(workspaceID uint, tagID uint64, name, color string) (dto.Pro
 }
 
 func DeleteProxyTag(workspaceID uint, tagID uint64) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database connection was not initialised")
 	}
 	if tagID == 0 {
@@ -129,7 +130,7 @@ func DeleteProxyTag(workspaceID uint, tagID uint64) error {
 	}
 
 	checkerChanged := false
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		var locked domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, workspaceID).Error; err != nil {
 			return err
@@ -181,20 +182,20 @@ func DeleteProxyTag(workspaceID uint, tagID uint64) error {
 }
 
 func ReplaceProxyTags(workspaceID uint, proxyID uint64, tagIDs []uint64) ([]dto.ProxyTag, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database connection was not initialised")
 	}
 	if proxyID == 0 {
 		return nil, ErrProxyAccessNotFound
 	}
 
-	normalizedTagIDs := normalizeUint64IDs(tagIDs)
+	normalizedTagIDs := NormalizeUint64IDs(tagIDs)
 	checkerChanged := false
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		if err := requireManagedProxies(tx, workspaceID, []uint64{proxyID}); err != nil {
 			return err
 		}
-		if err := requireProxyTags(tx, workspaceID, normalizedTagIDs); err != nil {
+		if err := RequireProxyTags(tx, workspaceID, normalizedTagIDs); err != nil {
 			return err
 		}
 
@@ -210,7 +211,7 @@ func ReplaceProxyTags(workspaceID uint, proxyID uint64, tagIDs []uint64) ([]dto.
 			return err
 		}
 		var err error
-		checkerChanged, err = markCheckerAssignmentsDirty(tx, workspaceID, changedProxyTagIDs(oldTagIDs, normalizedTagIDs), []uint64{proxyID})
+		checkerChanged, err = MarkCheckerAssignmentsDirty(tx, workspaceID, changedProxyTagIDs(oldTagIDs, normalizedTagIDs), []uint64{proxyID})
 		return err
 	})
 	if err != nil {
@@ -220,35 +221,35 @@ func ReplaceProxyTags(workspaceID uint, proxyID uint64, tagIDs []uint64) ([]dto.
 	if checkerChanged {
 		checkerconfig.TagAssignmentsChanged(workspaceID)
 	}
-	return getProxyTagsForProxy(workspaceID, proxyID)
+	return GetProxyTagsForProxy(workspaceID, proxyID)
 }
 
 // AddProxyTagsToProxies adds import-selected tags without removing assignments
 // already present on managed proxies that the workspace imported before.
 func AddProxyTagsToProxies(workspaceID uint, proxyIDs, tagIDs []uint64) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database connection was not initialised")
 	}
 
-	normalizedProxyIDs := normalizeUint64IDs(proxyIDs)
-	normalizedTagIDs := normalizeUint64IDs(tagIDs)
+	normalizedProxyIDs := NormalizeUint64IDs(proxyIDs)
+	normalizedTagIDs := NormalizeUint64IDs(tagIDs)
 	if len(normalizedProxyIDs) == 0 || len(normalizedTagIDs) == 0 {
 		return nil
 	}
 
 	checkerChanged := false
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		if err := requireManagedProxies(tx, workspaceID, normalizedProxyIDs); err != nil {
 			return err
 		}
-		if err := requireProxyTags(tx, workspaceID, normalizedTagIDs); err != nil {
+		if err := RequireProxyTags(tx, workspaceID, normalizedTagIDs); err != nil {
 			return err
 		}
 		if err := createProxyTagAssignments(tx, workspaceID, normalizedProxyIDs, normalizedTagIDs); err != nil {
 			return err
 		}
 		var err error
-		checkerChanged, err = markCheckerAssignmentsDirty(tx, workspaceID, normalizedTagIDs, normalizedProxyIDs)
+		checkerChanged, err = MarkCheckerAssignmentsDirty(tx, workspaceID, normalizedTagIDs, normalizedProxyIDs)
 		return err
 	})
 	if err == nil {
@@ -284,7 +285,7 @@ func AttachProxyTagsToInfos(workspaceID uint, proxies []dto.ProxyInfo) error {
 	return nil
 }
 
-func getProxyTagsForProxy(workspaceID uint, proxyID uint64) ([]dto.ProxyTag, error) {
+func GetProxyTagsForProxy(workspaceID uint, proxyID uint64) ([]dto.ProxyTag, error) {
 	tagsByProxy, err := loadProxyTagsByProxyID(workspaceID, []uint64{proxyID})
 	if err != nil {
 		return nil, err
@@ -297,7 +298,7 @@ func getProxyTagsForProxy(workspaceID uint, proxyID uint64) ([]dto.ProxyTag, err
 
 func loadProxyTagsByProxyID(workspaceID uint, proxyIDs []uint64) (map[uint64][]dto.ProxyTag, error) {
 	result := make(map[uint64][]dto.ProxyTag)
-	proxyIDs = normalizeUint64IDs(proxyIDs)
+	proxyIDs = NormalizeUint64IDs(proxyIDs)
 	if len(proxyIDs) == 0 {
 		return result, nil
 	}
@@ -308,7 +309,7 @@ func loadProxyTagsByProxyID(workspaceID uint, proxyIDs []uint64) (map[uint64][]d
 		Name    string `gorm:"column:name"`
 		Color   string `gorm:"column:color"`
 	}
-	err := DB.Table("proxy_tag_assignments pta").
+	err := pg.DB.Table("proxy_tag_assignments pta").
 		Select("pta.proxy_id, pt.id, pt.name, pt.color").
 		Joins("JOIN proxy_tags pt ON pt.id = pta.proxy_tag_id AND pt.workspace_id = pta.workspace_id").
 		Where("pta.workspace_id = ? AND pta.proxy_id IN ?", workspaceID, proxyIDs).
@@ -343,7 +344,7 @@ func requireManagedProxies(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) err
 	return nil
 }
 
-func requireProxyTags(tx *gorm.DB, workspaceID uint, tagIDs []uint64) error {
+func RequireProxyTags(tx *gorm.DB, workspaceID uint, tagIDs []uint64) error {
 	if len(tagIDs) == 0 {
 		return nil
 	}
@@ -378,7 +379,7 @@ func createProxyTagAssignments(tx *gorm.DB, workspaceID uint, proxyIDs, tagIDs [
 		CreateInBatches(assignments, 500).Error
 }
 
-func normalizeUint64IDs(values []uint64) []uint64 {
+func NormalizeUint64IDs(values []uint64) []uint64 {
 	if len(values) == 0 {
 		return nil
 	}

@@ -8,6 +8,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -26,7 +27,7 @@ type ProxyPageQueryOptions struct {
 
 func GetWorkspaceProxyCount(workspaceID uint) int64 {
 	var count int64
-	DB.Model(&domain.ManagedProxy{}).
+	pg.DB.Model(&domain.ManagedProxy{}).
 		Where("workspace_id = ?", workspaceID).
 		Count(&count)
 	return count
@@ -65,7 +66,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 
 	options = normalizeProxyPageQueryOptions(options)
 
-	query := DB.Table("user_proxy_filter_indexes ufi").
+	query := pg.DB.Table("user_proxy_filter_indexes ufi").
 		Select(
 			"ufi.proxy_id AS id, "+
 				"ufi.state AS state, "+
@@ -116,7 +117,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 		}
 
 		var total int64
-		if err := DB.Table("(?) AS filtered", filterQuery.Select("ufi.proxy_id").Group("ufi.proxy_id")).Count(&total).Error; err != nil {
+		if err := pg.DB.Table("(?) AS filtered", filterQuery.Select("ufi.proxy_id").Group("ufi.proxy_id")).Count(&total).Error; err != nil {
 			return proxies, 0
 		}
 		return proxies, total
@@ -126,7 +127,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 		matchedProxyIDs := buildProxySearchIDQuery(workspaceID, filterQuery, lowerSearch)
 
 		var total int64
-		if err := DB.Table("(?) AS matched", matchedProxyIDs).Count(&total).Error; err != nil {
+		if err := pg.DB.Table("(?) AS matched", matchedProxyIDs).Count(&total).Error; err != nil {
 			return []dto.ProxyInfo{}, 0
 		}
 
@@ -159,7 +160,7 @@ func GetProxyInfoPageWithFiltersAndOptions(
 	matchedProxyIDs := buildProxyIPSearchIDQuery(workspaceID, filterQuery, network, fallbackPrefix, lowerSearch, exact)
 
 	var total int64
-	if err := DB.Table("(?) AS matched", matchedProxyIDs).Count(&total).Error; err != nil {
+	if err := pg.DB.Table("(?) AS matched", matchedProxyIDs).Count(&total).Error; err != nil {
 		return []dto.ProxyInfo{}, 0
 	}
 	if total == 0 {

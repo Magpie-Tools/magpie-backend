@@ -12,6 +12,7 @@ import (
 )
 
 func TestFailureTrackerIncrementAndDefaultAutoPause(t *testing.T) {
+	r := startTestRuntime(t)
 	db := setupCheckerTestDB(t)
 
 	user := domain.User{
@@ -53,7 +54,7 @@ func TestFailureTrackerIncrementAndDefaultAutoPause(t *testing.T) {
 		HasEligibleChecks: true,
 	}
 
-	if _, _, err := processFailureEvents(ctx, proxy.ID, []failureEvent{event}); err != nil {
+	if _, _, err := r.processFailureEvents(ctx, proxy.ID, []failureEvent{event}); err != nil {
 		t.Fatalf("first failure: %v", err)
 	}
 
@@ -68,7 +69,7 @@ func TestFailureTrackerIncrementAndDefaultAutoPause(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
 
-	removed, orphaned, err := processFailureEvents(ctx2, proxy.ID, []failureEvent{event})
+	removed, orphaned, err := r.processFailureEvents(ctx2, proxy.ID, []failureEvent{event})
 	if err != nil {
 		t.Fatalf("second failure: %v", err)
 	}
@@ -104,6 +105,7 @@ func TestFailureTrackerIncrementAndDefaultAutoPause(t *testing.T) {
 }
 
 func TestHandleFailureTrackingUsesEachWorkspaceAction(t *testing.T) {
+	r := startTestRuntime(t)
 	db := setupCheckerTestDB(t)
 	workspaces := []domain.Workspace{
 		{Name: "Pause workspace", AutoRemoveFailingProxies: true, AutoRemoveFailureThreshold: 2},
@@ -122,7 +124,7 @@ func TestHandleFailureTrackingUsesEachWorkspaceAction(t *testing.T) {
 		}
 	}
 	proxy.Workspaces = workspaces
-	removed, inactive := handleFailureTracking(proxy, map[uint]bool{}, map[uint]bool{workspaces[0].ID: true, workspaces[1].ID: true})
+	removed, inactive := r.handleFailureTracking(proxy, map[uint]bool{}, map[uint]bool{workspaces[0].ID: true, workspaces[1].ID: true})
 	if len(removed) != 2 || len(inactive) != 1 || inactive[0].ID != proxy.ID {
 		t.Fatalf("failure actions returned removed=%v inactive=%v", removed, inactive)
 	}
@@ -143,6 +145,7 @@ func TestHandleFailureTrackingUsesEachWorkspaceAction(t *testing.T) {
 }
 
 func TestDeleteFailureActionRequiresEligibleFailureAndEnabledThreshold(t *testing.T) {
+	r := startTestRuntime(t)
 	for _, test := range []struct {
 		name         string
 		enabled      bool
@@ -172,7 +175,7 @@ func TestDeleteFailureActionRequiresEligibleFailureAndEnabledThreshold(t *testin
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			removed, inactive, err := processFailureEvents(ctx, proxy.ID, []failureEvent{{WorkspaceID: workspace.ID, AutoRemove: test.enabled, FailureThreshold: test.threshold, FailureAction: domain.FailureActionDelete, HasEligibleChecks: test.eligible, Success: test.success}})
+			removed, inactive, err := r.processFailureEvents(ctx, proxy.ID, []failureEvent{{WorkspaceID: workspace.ID, AutoRemove: test.enabled, FailureThreshold: test.threshold, FailureAction: domain.FailureActionDelete, HasEligibleChecks: test.eligible, Success: test.success}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -191,6 +194,7 @@ func TestDeleteFailureActionRequiresEligibleFailureAndEnabledThreshold(t *testin
 }
 
 func TestFailureTrackingRetainsCommittedDeletionsOnActionError(t *testing.T) {
+	r := startTestRuntime(t)
 	for _, failure := range []string{"later deletion", "inactive lookup"} {
 		t.Run(failure, func(t *testing.T) {
 			db := setupCheckerTestDB(t)
@@ -233,7 +237,7 @@ func TestFailureTrackingRetainsCommittedDeletionsOnActionError(t *testing.T) {
 				}
 			}
 			proxy.Workspaces = workspaces
-			removed, _ := handleFailureTracking(proxy, map[uint]bool{}, map[uint]bool{workspaces[0].ID: true, workspaces[1].ID: true})
+			removed, _ := r.handleFailureTracking(proxy, map[uint]bool{}, map[uint]bool{workspaces[0].ID: true, workspaces[1].ID: true})
 			if len(removed) != 1 {
 				t.Fatalf("committed removal lost after %s: %v", failure, removed)
 			}
@@ -253,6 +257,7 @@ func TestFailureTrackingRetainsCommittedDeletionsOnActionError(t *testing.T) {
 }
 
 func TestFailureTrackerResetsOnSuccess(t *testing.T) {
+	r := startTestRuntime(t)
 	db := setupCheckerTestDB(t)
 
 	user := domain.User{
@@ -298,7 +303,7 @@ func TestFailureTrackerResetsOnSuccess(t *testing.T) {
 		HasEligibleChecks: true,
 	}
 
-	if _, _, err := processFailureEvents(ctx, proxy.ID, []failureEvent{event}); err != nil {
+	if _, _, err := r.processFailureEvents(ctx, proxy.ID, []failureEvent{event}); err != nil {
 		t.Fatalf("reset event: %v", err)
 	}
 

@@ -10,9 +10,10 @@ import (
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	sitequeue "magpie/internal/jobs/queue/sites"
+	"magpie/internal/scrapestore"
 )
 
-var updateScrapeSourceSubscriptionSettings = database.UpdateScrapeSourceSettings
+var updateScrapeSourceSubscriptionSettings = scrapestore.UpdateScrapeSourceSettings
 
 var enqueueScrapeSites = func(sites []domain.ScrapeSite) error {
 	return sitequeue.PublicScrapeSiteQueue.AddToQueue(sites)
@@ -27,11 +28,11 @@ var getScrapeSourceDetailForUser = func(userID uint, sourceID uint64) (*dto.Scra
 	return database.GetScrapeSiteDetail(userID, sourceID)
 }
 
-var deleteScrapeSiteRelations = database.DeleteScrapeSiteRelation
+var deleteScrapeSiteRelations = scrapestore.DeleteScrapeSiteRelation
 var removeScrapeSitesFromQueue = func(sites []domain.ScrapeSite) error {
 	return sitequeue.PublicScrapeSiteQueue.RemoveFromQueue(sites)
 }
-var deleteOrphanScrapeSites = database.DeleteOrphanScrapeSites
+var deleteOrphanScrapeSites = scrapestore.DeleteOrphanScrapeSites
 
 func enqueueScrapeSitesOrRollback(userID uint, sites []domain.ScrapeSite) error {
 	if len(sites) == 0 {

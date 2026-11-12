@@ -3,23 +3,20 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/redis/go-redis/v9"
 
+	"magpie/internal/instanceid"
 	"magpie/internal/support"
 )
 
 const (
-	InstanceHeartbeatKeyPrefix = "magpie:instance:"
-	InstanceHeartbeatIndexKey  = "magpie:instances:active"
-	DefaultHeartbeatInterval   = 15 * time.Second
-	DefaultHeartbeatTTL        = 30 * time.Second
-	heartbeatScanBatchSize     = 200
-	heartbeatRetryInterval     = 5 * time.Second
+	DefaultHeartbeatInterval = 15 * time.Second
+	DefaultHeartbeatTTL      = 30 * time.Second
+	heartbeatRetryInterval   = 5 * time.Second
 )
 
 type ActiveInstance struct {
@@ -63,7 +60,7 @@ func StartInstanceHeartbeat(ctx context.Context, client *redis.Client, keyPrefix
 		expiresAt := time.Now().Add(ttl).UnixMilli()
 		pipe := client.Pipeline()
 		pipe.SetEx(ctx, heartbeatKey, heartbeatValue, ttl)
-		pipe.ZAdd(ctx, InstanceHeartbeatIndexKey, redis.Z{
+		pipe.ZAdd(ctx, instanceid.InstanceHeartbeatIndexKey, redis.Z{
 			Score:  float64(expiresAt),
 			Member: instanceID,
 		})
@@ -83,7 +80,7 @@ func StartInstanceHeartbeat(ctx context.Context, client *redis.Client, keyPrefix
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			pipe := client.Pipeline()
 			pipe.Del(cleanupCtx, heartbeatKey)
-			pipe.ZRem(cleanupCtx, InstanceHeartbeatIndexKey, instanceID)
+			pipe.ZRem(cleanupCtx, instanceid.InstanceHeartbeatIndexKey, instanceID)
 			if _, err := pipe.Exec(cleanupCtx); err != nil {
 				log.Warn("Failed to cleanup instance heartbeat", "instance_id", instanceID, "error", err)
 			}
@@ -126,7 +123,7 @@ func LaunchInstanceHeartbeat(parent context.Context, client *redis.Client) conte
 				}
 			}
 
-			StartInstanceHeartbeat(ctx, activeClient, InstanceHeartbeatKeyPrefix, DefaultHeartbeatInterval, DefaultHeartbeatTTL)
+			StartInstanceHeartbeat(ctx, activeClient, instanceid.InstanceHeartbeatKeyPrefix, DefaultHeartbeatInterval, DefaultHeartbeatTTL)
 			return
 		}
 	}()
@@ -137,45 +134,23 @@ func currentInstanceID() string {
 	return strings.TrimSpace(support.GetInstanceID())
 }
 
-func CountActiveInstances(ctx context.Context, client *redis.Client) (int, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := pruneExpiredInstanceIndex(ctx, client); err != nil {
-		return 0, err
-	}
-
-	count, err := client.ZCard(ctx, InstanceHeartbeatIndexKey).Result()
-	if err != nil {
-		return 0, err
-	}
-	if count == 0 {
-		count, err = rebuildInstanceIndexFromScan(ctx, client)
-		if err != nil {
-			return 0, err
-		}
-	}
-
-	return int(count), nil
-}
-
 func ListActiveInstances(ctx context.Context, client *redis.Client) ([]ActiveInstance, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := pruneExpiredInstanceIndex(ctx, client); err != nil {
+	if err := instanceid.PruneExpiredInstanceIndex(ctx, client); err != nil {
 		return nil, err
 	}
 
-	instanceIDs, err := client.ZRange(ctx, InstanceHeartbeatIndexKey, 0, -1).Result()
+	instanceIDs, err := client.ZRange(ctx, instanceid.InstanceHeartbeatIndexKey, 0, -1).Result()
 	if err != nil {
 		return nil, err
 	}
 	if len(instanceIDs) == 0 {
-		if _, rebuildErr := rebuildInstanceIndexFromScan(ctx, client); rebuildErr != nil {
+		if _, rebuildErr := instanceid.RebuildInstanceIndexFromScan(ctx, client); rebuildErr != nil {
 			return nil, rebuildErr
 		}
-		instanceIDs, err = client.ZRange(ctx, InstanceHeartbeatIndexKey, 0, -1).Result()
+		instanceIDs, err = client.ZRange(ctx, instanceid.InstanceHeartbeatIndexKey, 0, -1).Result()
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +165,7 @@ func ListActiveInstances(ctx context.Context, client *redis.Client) ([]ActiveIns
 		if id == "" {
 			continue
 		}
-		keys = append(keys, heartbeatKeyForInstance(id, InstanceHeartbeatKeyPrefix))
+		keys = append(keys, heartbeatKeyForInstance(id, instanceid.InstanceHeartbeatKeyPrefix))
 	}
 	if len(keys) == 0 {
 		return []ActiveInstance{}, nil
@@ -204,7 +179,7 @@ func ListActiveInstances(ctx context.Context, client *redis.Client) ([]ActiveIns
 	result := make([]ActiveInstance, 0, len(keys))
 	staleIDs := make([]string, 0)
 	for idx, key := range keys {
-		instanceID := strings.TrimPrefix(key, InstanceHeartbeatKeyPrefix)
+		instanceID := strings.TrimPrefix(key, instanceid.InstanceHeartbeatKeyPrefix)
 		instance := ActiveInstance{ID: instanceID}
 		if instance.ID == "" {
 			continue
@@ -246,7 +221,7 @@ func ListActiveInstances(ctx context.Context, client *redis.Client) ([]ActiveIns
 		for _, id := range staleIDs {
 			staleMembers = append(staleMembers, id)
 		}
-		_ = client.ZRem(ctx, InstanceHeartbeatIndexKey, staleMembers...).Err()
+		_ = client.ZRem(ctx, instanceid.InstanceHeartbeatIndexKey, staleMembers...).Err()
 	}
 
 	return result, nil
@@ -254,73 +229,4 @@ func ListActiveInstances(ctx context.Context, client *redis.Client) ([]ActiveIns
 
 func heartbeatKeyForInstance(id string, keyPrefix string) string {
 	return keyPrefix + id
-}
-
-func pruneExpiredInstanceIndex(ctx context.Context, client *redis.Client) error {
-	now := time.Now().UnixMilli()
-	return client.ZRemRangeByScore(ctx, InstanceHeartbeatIndexKey, "-inf", strconv.FormatInt(now, 10)).Err()
-}
-
-func rebuildInstanceIndexFromScan(ctx context.Context, client *redis.Client) (int64, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	var (
-		cursor uint64
-		total  int64
-	)
-
-	for {
-		keys, nextCursor, err := client.Scan(ctx, cursor, InstanceHeartbeatKeyPrefix+"*", heartbeatScanBatchSize).Result()
-		if err != nil {
-			return 0, err
-		}
-
-		if len(keys) > 0 {
-			ttlCmds := make([]*redis.DurationCmd, len(keys))
-			pipe := client.Pipeline()
-			for i, key := range keys {
-				ttlCmds[i] = pipe.TTL(ctx, key)
-			}
-			if _, err := pipe.Exec(ctx); err != nil {
-				return 0, err
-			}
-
-			addPipe := client.Pipeline()
-			batchAdds := int64(0)
-			for i, key := range keys {
-				id := strings.TrimPrefix(key, InstanceHeartbeatKeyPrefix)
-				if id == "" {
-					continue
-				}
-				ttl := ttlCmds[i].Val()
-				if ttl <= 0 {
-					continue
-				}
-				expiresAt := time.Now().Add(ttl).UnixMilli()
-				addPipe.ZAdd(ctx, InstanceHeartbeatIndexKey, redis.Z{
-					Score:  float64(expiresAt),
-					Member: id,
-				})
-				batchAdds++
-			}
-			if batchAdds > 0 {
-				if _, err := addPipe.Exec(ctx); err != nil {
-					return 0, err
-				}
-				total += batchAdds
-			}
-		}
-
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
-	}
-
-	if err := pruneExpiredInstanceIndex(ctx, client); err != nil {
-		return 0, err
-	}
-	return client.ZCard(ctx, InstanceHeartbeatIndexKey).Result()
 }

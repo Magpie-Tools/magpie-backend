@@ -1,0 +1,7 @@
+# Sites outside internal/platform that create a database or Redis connection.
+# The list only shrinks: each site moves into internal/platform. Every database
+# connection is created in internal/platform/pg.
+#
+# path/file.go: Function
+
+internal/support/redis_client.go: buildRedisClientFromEnv      # the Redis client and Sentinel failover client

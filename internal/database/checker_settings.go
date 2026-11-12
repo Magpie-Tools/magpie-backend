@@ -8,6 +8,8 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/domain"
 	"magpie/internal/jobs/checker/judges"
+	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 	"sort"
 	"time"
 
@@ -17,7 +19,7 @@ import (
 
 func ListCheckerWorkspaces(ctx context.Context) ([]uint, error) {
 	var ids []uint
-	err := DB.WithContext(ctx).Model(&domain.Workspace{}).Pluck("id", &ids).Error
+	err := pg.DB.WithContext(ctx).Model(&domain.Workspace{}).Pluck("id", &ids).Error
 	return ids, err
 }
 
@@ -26,7 +28,7 @@ func ListCheckerWorkspaces(ctx context.Context) ([]uint, error) {
 func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig.Workspace, error) {
 	var snapshot *checkerconfig.Workspace
 	projectionChanged := false
-	err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&workspace, workspaceID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -123,8 +125,8 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 			return err
 		}
 		// Rewrite only changed routes, including overrides that disappeared.
-		for start := 0; start < len(changedIDs); start += deleteChunkSize {
-			end := min(start+deleteChunkSize, len(changedIDs))
+		for start := 0; start < len(changedIDs); start += pg.DeleteChunkSize {
+			end := min(start+pg.DeleteChunkSize, len(changedIDs))
 			if err := tx.Where("workspace_id = ? AND proxy_id IN ?", workspaceID, changedIDs[start:end]).Delete(&domain.ProxyCheckerPlan{}).Error; err != nil {
 				return err
 			}
@@ -146,17 +148,17 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		}
 		if tx.Dialector.Name() == "postgres" {
 			if defaultChanged {
-				if err := refreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspaceID); err != nil {
+				if err := readmodel.RefreshWorkspaceProxyFilterIndexes(tx, "WHERE up.workspace_id = ?", workspaceID); err != nil {
 					return err
 				}
-			} else if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
+			} else if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
 				return err
 			}
 			if defaultChanged {
-				if err := refreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspaceID); err != nil {
+				if err := readmodel.RefreshWorkspaceScrapeSourceStats(tx, "WHERE uss.workspace_id = ?", workspaceID); err != nil {
 					return err
 				}
-			} else if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
+			} else if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, changedIDs); err != nil {
 				return err
 			}
 		}
@@ -197,8 +199,8 @@ func loadCheckerAssignments(tx *gorm.DB, workspaceID uint, tagIDs, affected []ui
 		err := load(nil)
 		return assignments, err
 	}
-	for start := 0; start < len(affected); start += deleteChunkSize {
-		if err := load(affected[start:min(start+deleteChunkSize, len(affected))]); err != nil {
+	for start := 0; start < len(affected); start += pg.DeleteChunkSize {
+		if err := load(affected[start:min(start+pg.DeleteChunkSize, len(affected))]); err != nil {
 			return nil, err
 		}
 	}
@@ -261,8 +263,8 @@ func checkerProjectionDelta(tx *gorm.DB, workspaceID uint, snapshot *checkerconf
 		return rows.Err()
 	}
 	if incremental {
-		for start := 0; start < len(affected); start += deleteChunkSize {
-			if err := load(affected[start:min(start+deleteChunkSize, len(affected))]); err != nil {
+		for start := 0; start < len(affected); start += pg.DeleteChunkSize {
+			if err := load(affected[start:min(start+pg.DeleteChunkSize, len(affected))]); err != nil {
 				return nil, err
 			}
 		}
@@ -281,53 +283,6 @@ func checkerProjectionDelta(tx *gorm.DB, workspaceID uint, snapshot *checkerconf
 	return ids, nil
 }
 
-// Current evidence uses the sparse override key, or the workspace default.
-// Generation zero is solely the compatibility path for unmigrated test data.
-const currentLatestStatisticsSQL = `
-SELECT pls.*, up.workspace_id AS checking_workspace_id
-FROM proxy_latest_statistics pls
-JOIN user_proxies up ON up.proxy_id = pls.proxy_id
-JOIN workspaces w ON w.id = up.workspace_id
-LEFT JOIN proxy_checker_plans cp ON cp.workspace_id = up.workspace_id AND cp.proxy_id = pls.proxy_id AND cp.protocol_id = pls.protocol_id
-WHERE NOT w.checker_dirty AND ((w.checker_generation = 0 AND pls.workspace_id = 0)
-OR (w.checker_generation > 0 AND pls.workspace_id = up.workspace_id AND pls.config_key = COALESCE(cp.config_key,
-CASE pls.protocol_id WHEN 1 THEN w.checker_http_key WHEN 2 THEN w.checker_https_key WHEN 3 THEN w.checker_socks4_key WHEN 4 THEN w.checker_socks5_key ELSE '' END) AND pls.config_key <> ''))
-`
-
-func currentLatestStatistics(tx *gorm.DB, workspaceID uint) *gorm.DB {
-	return workspaceLatestStatistics(tx, workspaceID, false)
-}
-
-const currentOverallStatusesSQL = `SELECT up.workspace_id, pos.proxy_id, pos.overall_alive, pos.last_checked_at
-FROM proxy_overall_statuses pos JOIN user_proxies up ON up.proxy_id = pos.proxy_id
-JOIN workspaces w ON w.id = up.workspace_id AND w.checker_generation = 0 AND NOT w.checker_dirty
-UNION ALL
-SELECT checking_workspace_id AS workspace_id, proxy_id,
-CASE WHEN MAX(CASE WHEN alive THEN 1 ELSE 0 END) > 0 THEN TRUE ELSE FALSE END AS overall_alive,
-MAX(checked_at) AS last_checked_at FROM (` + currentLatestStatisticsSQL + `) scoped WHERE scoped.workspace_id > 0 GROUP BY checking_workspace_id, proxy_id`
-
-// Correlate candidates before aggregation. A grouped workspace-wide subquery
-// cannot push an outer proxy filter down through GROUP BY.
-func currentOverallStatusForProxySQL(workspaceExpr, proxyExpr string) string {
-	return `SELECT legacy_up.workspace_id, pos.proxy_id, pos.overall_alive, pos.last_checked_at
-FROM proxy_overall_statuses pos JOIN user_proxies legacy_up ON legacy_up.proxy_id = pos.proxy_id
-JOIN workspaces w ON w.id = legacy_up.workspace_id AND w.checker_generation = 0 AND NOT w.checker_dirty
-WHERE legacy_up.workspace_id = ` + workspaceExpr + ` AND pos.proxy_id = ` + proxyExpr + `
-UNION ALL
-SELECT checking_workspace_id AS workspace_id, proxy_id,
-MAX(CASE WHEN alive THEN 1 ELSE 0 END) > 0 AS overall_alive, MAX(checked_at) AS last_checked_at
-FROM (` + currentLatestStatisticsSQL + `) evidence
-WHERE evidence.workspace_id > 0 AND evidence.checking_workspace_id = ` + workspaceExpr + ` AND evidence.proxy_id = ` + proxyExpr + `
-GROUP BY checking_workspace_id, proxy_id`
-}
-
-func currentOverallStatusJoin(tx *gorm.DB, kind, workspaceExpr, proxyExpr string) string {
-	if tx.Dialector.Name() == "postgres" {
-		return kind + " JOIN LATERAL (" + currentOverallStatusForProxySQL(workspaceExpr, proxyExpr) + ") pos ON TRUE"
-	}
-	return kind + " JOIN (" + currentOverallStatusesSQL + ") pos ON pos.proxy_id = " + proxyExpr + " AND pos.workspace_id = " + workspaceExpr
-}
-
 // Legacy history has no attribution. Keep it visible without treating it as
 // current evidence once a workspace has compiled settings.
 func filterWorkspaceStatisticEvidence(query *gorm.DB, workspaceID uint) *gorm.DB {
@@ -341,20 +296,20 @@ func filterWorkspaceStatisticEvidence(query *gorm.DB, workspaceID uint) *gorm.DB
 // historical rows. A delayed old event may recreate a pointer; the next sweep
 // drops it again, and current-health reads always reject it immediately.
 func PruneObsoleteCheckerEvidence(ctx context.Context, limit int) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("checker evidence pruning: database not initialised")
 	}
 	if limit <= 0 {
-		limit = deleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
-	result := DB.WithContext(ctx).Exec(`DELETE FROM proxy_latest_statistics WHERE (workspace_id, config_key, proxy_id, protocol_id) IN (
+	result := pg.DB.WithContext(ctx).Exec(`DELETE FROM proxy_latest_statistics WHERE (workspace_id, config_key, proxy_id, protocol_id) IN (
 SELECT candidate.workspace_id, candidate.config_key, candidate.proxy_id, candidate.protocol_id
 FROM proxy_latest_statistics candidate WHERE `+obsoleteCheckerEvidencePredicateSQL+` LIMIT ?)`, limit)
 	return result.RowsAffected, result.Error
 }
 
 // Only changes to tags used by checker rules invalidate the projection.
-func markCheckerAssignmentsDirty(tx *gorm.DB, workspaceID uint, tagIDs, proxyIDs []uint64) (bool, error) {
+func MarkCheckerAssignmentsDirty(tx *gorm.DB, workspaceID uint, tagIDs, proxyIDs []uint64) (bool, error) {
 	if len(tagIDs) == 0 || len(proxyIDs) == 0 {
 		return false, nil
 	}
@@ -372,10 +327,10 @@ func markCheckerAssignmentsDirty(tx *gorm.DB, workspaceID uint, tagIDs, proxyIDs
 			if err := tx.Model(&domain.Workspace{}).Where("id = ?", workspaceID).UpdateColumns(map[string]any{"checker_dirty": true, "checker_revision": workspace.CheckerRevision}).Error; err != nil {
 				return false, err
 			}
-			for start := 0; start < len(proxyIDs); start += deleteChunkSize {
+			for start := 0; start < len(proxyIDs); start += pg.DeleteChunkSize {
 				if err := tx.Exec(`INSERT INTO checker_proxy_changes (workspace_id,proxy_id,revision)
 SELECT workspace_id,proxy_id,CAST(? AS bigint) FROM user_proxies WHERE workspace_id=? AND proxy_id IN ?
-ON CONFLICT (workspace_id,proxy_id) DO UPDATE SET revision=excluded.revision, deleted=FALSE, updated_at=CURRENT_TIMESTAMP`, workspace.CheckerRevision, workspaceID, proxyIDs[start:min(start+deleteChunkSize, len(proxyIDs))]).Error; err != nil {
+ON CONFLICT (workspace_id,proxy_id) DO UPDATE SET revision=excluded.revision, deleted=FALSE, updated_at=CURRENT_TIMESTAMP`, workspace.CheckerRevision, workspaceID, proxyIDs[start:min(start+pg.DeleteChunkSize, len(proxyIDs))]).Error; err != nil {
 					return false, err
 				}
 			}
@@ -436,14 +391,14 @@ SELECT COUNT(*),(SELECT COUNT(*)>0 FROM recorded) FROM removed`, workspaceID, pr
 // Tombstones survive missed notifications. Once old deleted rows expire,
 // advance the full-refresh watermark so an older process cannot miss removal.
 func PruneDeletedCheckerRoutes(ctx context.Context, before time.Time, limit int) (int64, error) {
-	if DB == nil || DB.Dialector.Name() != "postgres" {
+	if pg.DB == nil || pg.DB.Dialector.Name() != "postgres" {
 		return 0, nil
 	}
 	if limit <= 0 {
-		limit = deleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 	var count int64
-	err := DB.WithContext(ctx).Raw(`WITH candidates AS MATERIALIZED (
+	err := pg.DB.WithContext(ctx).Raw(`WITH candidates AS MATERIALIZED (
 SELECT workspace_id,proxy_id FROM checker_proxy_changes
 WHERE deleted AND updated_at < ? ORDER BY updated_at,workspace_id,proxy_id LIMIT ?
 ), locked AS MATERIALIZED (
@@ -481,7 +436,7 @@ type checkerHealthVersion struct {
 // Read the committed generation on API cache reads, including across instances.
 // A refresh records it before querying and rechecks it before publishing.
 func currentCheckerHealthVersion(workspaceID uint) checkerHealthVersion {
-	version, err := currentCheckerHealthVersionWithDB(DB, workspaceID)
+	version, err := currentCheckerHealthVersionWithDB(pg.DB, workspaceID)
 	if err != nil {
 		version.Dirty = true
 	}

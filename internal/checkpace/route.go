@@ -6,11 +6,13 @@ import (
 	"magpie/internal/domain"
 )
 
-// RouteCheckInterval is the requeue delay for a route owned by workspaces. The
+// RouteCheckInterval is the requeue delay for a route owned by workspaces,
+// read from the snapshot the caller holds (nil before the first load). The
 // fastest owner sets it, capped at MaxRouteInterval. Exhausted owners never
-// shorten it. This is in-memory arithmetic: no Redis, database, JSON or
-// cryptographic work is added to a requeue.
-func (s *Snapshot) RouteCheckInterval(workspaces []domain.Workspace) time.Duration {
+// shorten it, and an owner the snapshot lacks asks the Pacer for a refresh.
+// This is in-memory arithmetic: no Redis, database, JSON or cryptographic work
+// is added to a requeue.
+func (p *Pacer) RouteCheckInterval(s *Snapshot, workspaces []domain.Workspace) time.Duration {
 	if s == nil {
 		return FallbackInterval
 	}
@@ -27,7 +29,7 @@ func (s *Snapshot) RouteCheckInterval(workspaces []domain.Workspace) time.Durati
 		pace := s.lookup(workspace.ID)
 		switch {
 		case pace == nil:
-			RequestRefresh()
+			p.RequestRefresh()
 			route = min(route, FallbackInterval)
 		case !pace.checksExhausted():
 			route = min(route, pace.CheckInterval)
@@ -42,9 +44,10 @@ func (s *Snapshot) RouteCheckInterval(workspaces []domain.Workspace) time.Durati
 // own cadence boundaries fell inside the cycle's window, so it is checked about
 // once per its own interval without per-workspace state. Each route has its
 // own phase, which spreads a workspace's routes across its interval. Nothing
-// is due while checking is paused because usage could not be written.
-func (s *Snapshot) CheckDue(workspaceID uint, routeID uint64, scheduled time.Time, routeInterval time.Duration) bool {
-	if checksPaused() {
+// is due while checking is paused because usage could not be written. s is
+// the snapshot the caller holds; nil before the first load.
+func (p *Pacer) CheckDue(s *Snapshot, workspaceID uint, routeID uint64, scheduled time.Time, routeInterval time.Duration) bool {
+	if p.checksPaused() {
 		return false
 	}
 	if s == nil {
@@ -54,15 +57,16 @@ func (s *Snapshot) CheckDue(workspaceID uint, routeID uint64, scheduled time.Tim
 	if pace == nil {
 		return true
 	}
-	if pace.exhaustedIn(monthOf(scheduled)) {
+	if p.exhaustedIn(pace, p.monthOf(scheduled)) {
 		return false
 	}
 	return due(pace.CheckInterval, routeInterval, scheduled, routeID, workspaceID)
 }
 
 // SourceScrapeInterval is the delay before a scrape source's fetch mode is
-// revisited for its subscribed workspaces.
-func (s *Snapshot) SourceScrapeInterval(workspaceIDs []uint) time.Duration {
+// revisited for its subscribed workspaces, read from the snapshot the caller
+// holds (nil before the first load).
+func (p *Pacer) SourceScrapeInterval(s *Snapshot, workspaceIDs []uint) time.Duration {
 	if s == nil {
 		return FallbackInterval
 	}
@@ -71,7 +75,7 @@ func (s *Snapshot) SourceScrapeInterval(workspaceIDs []uint) time.Duration {
 		pace, ok := s.Pace(workspaceID)
 		switch {
 		case !ok:
-			RequestRefresh()
+			p.RequestRefresh()
 			interval = min(interval, FallbackInterval)
 		case !pace.ScrapesExhausted:
 			interval = min(interval, pace.ScrapeInterval)

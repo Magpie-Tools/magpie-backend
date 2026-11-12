@@ -1,0 +1,12 @@
+# Limits on internal/database, the persistence core.
+#
+# line_ceiling: non-test lines. A change that adds core code raises this number
+# in the same diff, which makes the growth a review item. The ceiling may exceed
+# the current size by at most 100 lines, so a move out of the core lowers it.
+#
+# importers: app app/bootstrap app/server blacklist cmd/seed-dev-data devseed geolite graphql jobs/checker jobs/maintenance jobs/runtime jobs/scraper rotatingproxy scrapestore settings
+# list only shrinks. The one exception is a package created by moving code out
+# of internal/database.
+
+line_ceiling: 11202
+importers: app app/bootstrap app/server blacklist cmd/seed-dev-data devseed geolite graphql jobs/checker jobs/maintenance jobs/runtime jobs/scraper rotatingproxy scrapestore settings

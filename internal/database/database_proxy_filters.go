@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -16,7 +17,7 @@ func buildProxyListFilterQuery(workspaceID uint, filters dto.ProxyListFilters) *
 
 	selectedProtocols := normalizeProtocolFilters(filters.Protocols)
 
-	query := DB.Table("user_proxy_filter_indexes ufi").
+	query := pg.DB.Table("user_proxy_filter_indexes ufi").
 		Select("ufi.proxy_id").
 		Where("ufi.workspace_id = ?", workspaceID)
 
@@ -157,13 +158,13 @@ func hasProxyHealthFilters(filters dto.ProxyListFilters) bool {
 }
 
 func GetProxyFilterOptions(workspaceID uint) (dto.ProxyFilterOptions, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return dto.ProxyFilterOptions{}, fmt.Errorf("database connection was not initialised")
 	}
 
-	query, args := proxyFilterOptionValuesQuery(DB, workspaceID)
+	query, args := proxyFilterOptionValuesQuery(pg.DB, workspaceID)
 	var rows []proxyFilterValueRow
-	err := DB.Raw(query, args...).Scan(&rows).Error
+	err := pg.DB.Raw(query, args...).Scan(&rows).Error
 	if err != nil {
 		return dto.ProxyFilterOptions{}, err
 	}
@@ -209,7 +210,7 @@ func proxyFilterOptionValuesQuery(db *gorm.DB, workspaceID uint) (string, []any)
 	args := make([]any, 0, len(sources)*2)
 	for _, source := range sources {
 		value := "COALESCE(NULLIF(ufi." + source.column + ", ''), 'N/A')"
-		if !isPostgresDialect(db) {
+		if !pg.IsPostgresDialect(db) {
 			branches = append(branches, fmt.Sprintf("SELECT DISTINCT '%s' AS kind, %s AS value FROM user_proxy_filter_indexes ufi WHERE ufi.workspace_id = ?", source.kind, value))
 			args = append(args, workspaceID)
 			continue

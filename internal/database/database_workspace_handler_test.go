@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	workspaces "magpie/internal/workspace"
 
 	"gorm.io/gorm"
 )
@@ -100,14 +101,14 @@ func TestManagedProxyCapacityStoresOverflowAndBlocksActivation(t *testing.T) {
 	if err := db.Create(&member).Error; err != nil {
 		t.Fatalf("create member: %v", err)
 	}
-	if _, err := AddWorkspaceMember(workspace.ID, member.Email, domain.WorkspaceRoleOperator, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, member.Email, domain.WorkspaceRoleOperator, false); err != nil {
 		t.Fatalf("add workspace member: %v", err)
 	}
-	if err := RemoveWorkspaceMember(workspace.ID, member.ID); err != nil {
+	if err := workspaces.RemoveWorkspaceMember(workspace.ID, member.ID); err != nil {
 		t.Fatalf("remove workspace member: %v", err)
 	}
 
-	active, stored, err := workspaceManagedProxyCounts(db, workspace.ID)
+	active, stored, err := workspaces.WorkspaceManagedProxyCounts(db, workspace.ID)
 	if err != nil {
 		t.Fatalf("load capacity after member removal: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestDeleteUserAccountRequiresSharedWorkspaceOwnershipTransfer(t *testing.T)
 		t.Fatalf("create successor: %v", err)
 	}
 	workspace := createTestWorkspaceForUser(t, db, owner)
-	if _, err := AddWorkspaceMember(workspace.ID, successor.Email, domain.WorkspaceRoleOperator, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, successor.Email, domain.WorkspaceRoleOperator, false); err != nil {
 		t.Fatalf("add successor: %v", err)
 	}
 
@@ -262,7 +263,7 @@ func TestDeleteUserAccountRequiresSharedWorkspaceOwnershipTransfer(t *testing.T)
 		t.Fatalf("account deletion error = %v, want transfer required", err)
 	}
 
-	if err := UpdateWorkspaceMember(workspace.ID, successor.ID, domain.WorkspaceRoleOwner, true); err != nil {
+	if err := workspaces.UpdateWorkspaceMember(workspace.ID, successor.ID, domain.WorkspaceRoleOwner, true); err != nil {
 		t.Fatalf("promote successor to owner: %v", err)
 	}
 	result, err := DeleteUserAccountWithResult(context.Background(), owner.ID)
@@ -283,11 +284,11 @@ func TestDeleteUserAccountRequiresSharedWorkspaceOwnershipTransfer(t *testing.T)
 	if retainedWorkspace.Personal {
 		t.Fatal("shared workspace remained marked personal")
 	}
-	active, stored, err := workspaceManagedProxyCounts(db, workspace.ID)
+	active, stored, err := workspaces.WorkspaceManagedProxyCounts(db, workspace.ID)
 	if err != nil || active != 1 || stored != 1 {
 		t.Fatalf("shared route capacity changed: active/stored=%d/%d error=%v", active, stored, err)
 	}
-	access, err := ResolveWorkspaceAccess(successor.ID, workspace.ID)
+	access, err := workspaces.ResolveWorkspaceAccess(successor.ID, workspace.ID)
 	if err != nil || !access.IsOwner() || !access.CanManageBilling() {
 		t.Fatalf("successor ownership = %#v, error=%v", access, err)
 	}

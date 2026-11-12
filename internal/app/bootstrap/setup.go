@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/redis/go-redis/v9"
 
+	"magpie/internal/alerts"
 	"magpie/internal/blacklist"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/checkpace"
@@ -26,7 +27,10 @@ import (
 	sitequeue "magpie/internal/jobs/queue/sites"
 	jobruntime "magpie/internal/jobs/runtime"
 	"magpie/internal/jobs/scraper"
+	"magpie/internal/mail"
+	"magpie/internal/readmodel"
 	"magpie/internal/rotatingproxy"
+	"magpie/internal/scrapestore"
 	"magpie/internal/support"
 )
 
@@ -38,11 +42,18 @@ const startupQueueBootstrapRetryDelay = 10 * time.Second
 var startupQueueBootstrapCompleted atomic.Bool
 var startupQueueBootstrapRunning atomic.Bool
 
-func Setup(ctx context.Context) (*Runtime, error) {
+// Setup starts the process's background routines. pace is the process's
+// Pacer: Setup configures and runs it and gives it to every routine that paces
+// work. The caller passes the same Pacer to the queues and the API.
+func Setup(ctx context.Context, pace *checkpace.Pacer) (*Runtime, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	running := newRuntime(ctx)
+	if pace == nil {
+		return running, errors.New("bootstrap: Setup needs the process's Pacer")
+	}
+	running.pace = pace
 	return running, running.setup(ctx)
 }
 
@@ -93,7 +104,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		running.readModels.start(database.StartReadModelRefreshRoutine)
+		running.readModels.start(readmodel.StartReadModelRefreshRoutine)
 		running.producers.start(jobruntime.StartDashboardCacheRoutine)
 		startupQueueBootstrapCompleted.Store(true)
 		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
@@ -201,7 +212,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		return err
 	}
 	// Register final drains before opening listeners or starting check producers.
-	running.readModels.start(database.StartReadModelRefreshRoutine)
+	running.readModels.start(readmodel.StartReadModelRefreshRoutine)
 	running.consumers.start(jobruntime.StartProxyStatisticsRoutine)
 	running.consumers.start(jobruntime.StartWorkspaceUsageRoutine)
 	if err := ctx.Err(); err != nil {
@@ -217,6 +228,12 @@ func (running *Runtime) setup(ctx context.Context) error {
 		rotatingproxy.GlobalManager.StopAll()
 	})
 
+	// One checker runtime and one scraper dispatcher per process, both paced
+	// by the process's Pacer. The checker's batchers start before its
+	// dispatcher and stop after it has joined its workers.
+	checkers := checker.NewRuntime(running.pace)
+	scrapers := scraper.NewDispatcher(running.pace)
+	running.batchers.start(checkers.RunBatchers)
 	for _, routine := range []func(context.Context){
 		judges.StartJudgeRoutine,
 		jobruntime.StartDashboardCacheRoutine,
@@ -224,20 +241,20 @@ func (running *Runtime) setup(ctx context.Context) error {
 		jobruntime.StartProxyTimelineRetentionRoutine,
 		jobruntime.StartProxyHistoryRoutine,
 		jobruntime.StartProxySnapshotRoutine,
-		jobruntime.StartProxyGeoRefreshRoutine,
+		geolite.StartProxyGeoRefreshRoutine,
 		maintenance.StartOrphanCleanupRoutine,
 		maintenance.StartPasswordResetCleanupRoutine,
 		maintenance.StartWorkspaceInvitationCleanupRoutine,
-		jobruntime.StartGeoLiteUpdateRoutine,
+		geolite.StartGeoLiteUpdateRoutine,
 		jobruntime.StartAbuseIPDBRoutine,
 		jobruntime.StartIPGeolocationRoutine,
-		jobruntime.StartEmailDeliveryRoutine,
-		jobruntime.StartAlertEvaluationRoutine,
-		jobruntime.StartAlertDeliveryRoutine,
-		jobruntime.StartEmailDeliveryMaintenanceRoutine,
+		mail.StartEmailDeliveryRoutine,
+		alerts.StartAlertEvaluationRoutine,
+		alerts.StartAlertDeliveryRoutine,
+		mail.StartEmailDeliveryMaintenanceRoutine,
 		blacklist.StartRefreshRoutine,
-		checker.ThreadDispatcher,
-		scraper.ThreadDispatcher,
+		checkers.ThreadDispatcher,
+		scrapers.ThreadDispatcher,
 	} {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -251,8 +268,9 @@ func (running *Runtime) setup(ctx context.Context) error {
 // startCheckPacing publishes workspace cadences before any route is queued,
 // so startup imports already spread routes over their workspaces' intervals.
 func startCheckPacing(ctx context.Context, running *Runtime) {
-	checkpace.SetPauseAfter(checkUsagePauseAfter())
-	checkpace.Configure(checkpace.Store{
+	pace := running.pace
+	pace.SetPauseAfter(checkUsagePauseAfter())
+	pace.Configure(checkpace.Store{
 		Load:       database.LoadWorkspaceAllowances,
 		FlushUsage: database.FlushWorkspaceCheckUsage,
 	})
@@ -260,17 +278,17 @@ func startCheckPacing(ctx context.Context, running *Runtime) {
 	if err := database.PruneWorkspaceUsageFlushes(ctx); err != nil {
 		log.Warn("prune workspace check usage batch marks", "error", err)
 	}
-	if err := checkpace.Refresh(ctx); err != nil {
+	if err := pace.Refresh(ctx); err != nil {
 		log.Warn("initial workspace check allowance load failed; using fallback cadence", "error", err)
 	}
-	config.OnConfigApplied(checkpace.RequestRefresh)
+	config.OnConfigApplied(pace.RequestRefresh)
 	running.startCheckUsageMeter()
 }
 
-// startCheckUsageMeter runs the pacer with the consumers. Checker workers
-// charge requests until the producers have stopped, and the pacer's last usage
-// flush must follow the last charge.
-func (r *Runtime) startCheckUsageMeter() { r.consumers.start(checkpace.Run) }
+// startCheckUsageMeter runs the process's Pacer with the consumers. Checker
+// workers charge requests until the producers have stopped, and the Pacer's
+// last usage flush must follow the last charge.
+func (r *Runtime) startCheckUsageMeter() { r.consumers.start(r.pace.Run) }
 
 // envCheckUsagePauseAfter sets how long check usage may stay unwritten before
 // this instance pauses checking. Zero never pauses.
@@ -420,9 +438,9 @@ func queueStartupProxies(ctx context.Context) error {
 				return err
 			}
 		}
-		missingGeo := database.FilterProxiesMissingGeo(proxies)
+		missingGeo := geolite.FilterProxiesMissingGeo(proxies)
 		if len(missingGeo) > 0 {
-			database.AsyncEnrichProxyMetadata(missingGeo)
+			geolite.AsyncEnrichProxyMetadata(missingGeo)
 		}
 
 		if err := proxyqueue.PublicProxyQueue.AddToQueue(proxies); err != nil {
@@ -446,7 +464,7 @@ func queueStartupScrapeSites(ctx context.Context) error {
 			return err
 		}
 	}
-	scrapeSites, err := database.GetAllScrapeSites()
+	scrapeSites, err := scrapestore.GetAllScrapeSites()
 	if err != nil {
 		return fmt.Errorf("load startup scrape sites: %w", err)
 	}
@@ -509,7 +527,7 @@ func maintainRuntimeCaches(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
-		database.PruneDNSCache(time.Now())
+		geolite.PruneDNSCache(time.Now())
 		scraper.PruneRobotsCache(time.Now())
 		select {
 		case <-ctx.Done():

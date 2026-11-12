@@ -3,169 +3,20 @@ package database
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"magpie/internal/api/dto"
-	"magpie/internal/config"
-	"magpie/internal/support"
-
-	"github.com/charmbracelet/log"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 )
-
-const (
-	scrapeSitesPerPage    = 40
-	maxScrapeSitesPerPage = 100
-)
-
-var ErrNoScrapeSourcesSelected = errors.New("no scraping sources selected for deletion")
-
-// GetScrapingSourcesOfUsers returns all URLs associated with the given user.
-func GetScrapingSourcesOfUsers(userID uint) []string {
-	var sources []string
-	if err := DB.Table("scrape_sites").
-		Select("scrape_sites.url").
-		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id").
-		Where("uss.workspace_id = ?", userID).
-		Order("uss.created_at DESC").
-		Scan(&sources).Error; err != nil {
-		return nil
-	}
-
-	return sources
-}
-
-// SaveScrapingSourcesOfUsers appends new sources to the user without removing existing ones.
-func SaveScrapingSourcesOfUsers(userID uint, sources []string) ([]domain.ScrapeSite, error) {
-	return SaveScrapingSourcesWithMode(userID, sources, domain.ScrapeFetchHTTP)
-}
-
-func SaveScrapingSourcesWithMode(userID uint, sources []string, mode string) ([]domain.ScrapeSite, error) {
-	return SaveScrapingSourcesWithSettings(userID, sources, mode, nil)
-}
-
-func SaveScrapingSourcesWithSettings(userID uint, sources []string, mode string, tagIDs []uint64) ([]domain.ScrapeSite, error) {
-	if !domain.ValidScrapeFetchMode(mode) {
-		return nil, fmt.Errorf("invalid fetch mode")
-	}
-	var sites []domain.ScrapeSite
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		for _, id := range tagIDs {
-			if id == 0 {
-				return ErrProxyTagNotFound
-			}
-		}
-		tagIDs = normalizeUint64IDs(tagIDs)
-		if err := validateScrapeSourceTags(tx, userID, tagIDs); err != nil {
-			return err
-		}
-		sites = make([]domain.ScrapeSite, 0, len(sources))
-		siteIDs := make([]uint64, 0, len(sources))
-
-		// Load the user and existing associations
-		var user domain.Workspace
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Preload("ScrapeSites").First(&user, userID).Error; err != nil {
-			return err
-		}
-
-		existing := make(map[string]struct{}, len(user.ScrapeSites))
-		for _, s := range user.ScrapeSites {
-			existing[s.URL] = struct{}{}
-		}
-
-		seen := make(map[string]struct{}, len(sources))
-
-		// Create or find each ScrapeSite that is not already associated
-		for _, raw := range sources {
-			trimmed := strings.TrimSpace(raw)
-			if trimmed == "" || !support.IsValidURL(trimmed) {
-				continue
-			}
-			if config.IsWebsiteBlocked(trimmed) {
-				log.Info("Skipped blocked scrape source", "url", trimmed)
-				continue
-			}
-			if _, ok := existing[trimmed]; ok {
-				continue
-			}
-			if _, ok := seen[trimmed]; ok {
-				continue
-			}
-			seen[trimmed] = struct{}{}
-
-			var site domain.ScrapeSite
-			if err := tx.Where("url = ?", trimmed).
-				FirstOrCreate(&site, &domain.ScrapeSite{URL: trimmed}).Error; err != nil {
-				return err
-			}
-			sites = append(sites, site)
-			siteIDs = append(siteIDs, site.ID)
-		}
-
-		// Append only new associations
-		if len(sites) > 0 {
-			associations := make([]domain.WorkspaceScrapeSite, 0, len(sites))
-			for _, site := range sites {
-				associations = append(associations, domain.WorkspaceScrapeSite{WorkspaceID: userID, ScrapeSiteID: site.ID, FetchMode: mode})
-			}
-			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&associations, 500).Error; err != nil {
-				return err
-			}
-			if err := createScrapeSourceTags(tx, userID, siteIDs, tagIDs); err != nil {
-				return err
-			}
-
-			// Reload newly touched sites with Users preloaded
-			var loaded []domain.ScrapeSite
-			if err := tx.
-				Preload("Workspaces", preloadWorkspaceIDsOnly).
-				Where("id IN ?", siteIDs).
-				Find(&loaded).Error; err != nil {
-				return err
-			}
-			sites = loaded
-
-			if err := refreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx, userID, siteIDs); err != nil {
-				return err
-			}
-		}
-
-		return nil
-	})
-
-	return sites, err
-}
-
-func GetAllScrapeSites() ([]domain.ScrapeSite, error) {
-	var allProxies []domain.ScrapeSite
-	const batchSize = maxParamsPerBatch
-
-	collectedProxies := make([]domain.ScrapeSite, 0)
-
-	err := DB.
-		Model(&domain.ScrapeSite{}).
-		Distinct("scrape_sites.*").
-		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = scrape_sites.id").
-		Preload("Workspaces", preloadWorkspaceIDsOnly).
-		Order("scrape_sites.id").
-		FindInBatches(&allProxies, batchSize, func(tx *gorm.DB, batch int) error {
-			collectedProxies = append(collectedProxies, allProxies...)
-			return nil
-		})
-
-	if err.Error != nil {
-		return nil, err.Error
-	}
-
-	return collectedProxies, nil
-}
 
 func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
 	if len(proxies) == 0 {
@@ -174,12 +25,12 @@ func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
 
 	// ProxyScrapeSite inserts touch proxy_id, scrape_site_id and created_at columns.
 	const paramsPerRow = 3
-	chunkSize := maxParamsPerBatch / paramsPerRow
+	chunkSize := MaxParamsPerBatch / paramsPerRow
 	if chunkSize > len(proxies) {
 		chunkSize = len(proxies)
 	}
 
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		for start := 0; start < len(proxies); start += chunkSize {
 			end := start + chunkSize
 			if end > len(proxies) {
@@ -211,240 +62,8 @@ func AssociateProxiesToScrapeSite(siteID uint64, proxies []domain.Proxy) error {
 			}
 		}
 
-		return refreshWorkspaceScrapeSourceStatsForSites(tx, []uint64{siteID})
+		return readmodel.RefreshWorkspaceScrapeSourceStatsForSites(tx, []uint64{siteID})
 	})
-}
-
-func GetAllScrapeSiteCountOfUser(userId uint) int64 {
-	return GetAllScrapeSiteCountOfUserWithSearch(userId, "")
-}
-
-func GetAllScrapeSiteCountOfUserWithSearch(userId uint, search string) int64 {
-	return GetAllScrapeSiteCountOfUserWithSearchAndFilters(userId, search, dto.ScrapeSourceListFilters{})
-}
-
-func GetAllScrapeSiteCountOfUserWithSearchAndFilters(userId uint, search string, filters dto.ScrapeSourceListFilters) int64 {
-	var count int64
-	query := buildScrapeSiteInfoQuery(userId)
-	query = applyScrapeSiteSearch(query, search)
-	query = applyScrapeSiteListFilters(query, filters)
-	query.Count(&count)
-	return count
-}
-
-func GetScrapeSiteInfoPage(userId uint, page int) []dto.ScrapeSiteInfo {
-	return GetScrapeSiteInfoPageWithSearch(userId, page, "")
-}
-
-func GetScrapeSiteInfoPageWithSearch(userId uint, page int, search string) []dto.ScrapeSiteInfo {
-	return GetScrapeSiteInfoPageWithSearchAndFilters(userId, page, search, dto.ScrapeSourceListFilters{})
-}
-
-func GetScrapeSiteInfoPageWithSearchAndFilters(userId uint, page int, search string, filters dto.ScrapeSourceListFilters) []dto.ScrapeSiteInfo {
-	return GetScrapeSiteInfoPageWithOptions(userId, page, scrapeSitesPerPage, search, filters, ScrapeSourcePageQueryOptions{})
-}
-
-type ScrapeSourcePageQueryOptions struct {
-	SortField string
-	SortOrder string
-}
-
-func GetScrapeSiteInfoPageWithOptions(userId uint, page int, pageSize int, search string, filters dto.ScrapeSourceListFilters, options ScrapeSourcePageQueryOptions) []dto.ScrapeSiteInfo {
-	page, pageSize = normalizeScrapeSitePage(page, pageSize)
-	offset := (page - 1) * pageSize
-
-	var results []dto.ScrapeSiteInfo
-
-	query := buildScrapeSiteInfoQuery(userId).Select(
-		"usss.scrape_site_id AS id, " +
-			"usss.url AS url, " +
-			"usss.proxy_count AS proxy_count, " +
-			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END AS alive_count, " +
-			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.dead_count END AS dead_count, " +
-			"CASE WHEN cw.checker_dirty THEN usss.proxy_count ELSE usss.unknown_count END AS unknown_count, " +
-			"usss.added_at AS added_at, uss.fetch_mode, uss.last_scraped_at, uss.last_scrape_status, uss.last_scrape_error, uss.last_scrape_proxy_count",
-	)
-
-	query = applyScrapeSiteSearch(query, search)
-	query = applyScrapeSiteListFilters(query, filters)
-
-	applyScrapeSourcePageSort(query, options).
-		Offset(offset).
-		Limit(pageSize).
-		Scan(&results)
-
-	return results
-}
-
-func applyScrapeSourcePageSort(query *gorm.DB, options ScrapeSourcePageQueryOptions) *gorm.DB {
-	expression := ""
-	switch options.SortField {
-	case "url":
-		expression = "LOWER(usss.url)"
-	case "proxy_count":
-		expression = "usss.proxy_count"
-	case "alive_count":
-		expression = "CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END"
-	case "health":
-		// Keep sources without data below zero health, and avoid integer division.
-		expression = "CASE WHEN cw.checker_dirty THEN -1 WHEN usss.proxy_count > 0 THEN 1.0 * usss.alive_count / usss.proxy_count ELSE -1 END"
-	}
-	direction := strings.ToLower(strings.TrimSpace(options.SortOrder))
-	if expression == "" || (direction != "asc" && direction != "desc") {
-		return query.Order("usss.added_at DESC, usss.scrape_site_id ASC")
-	}
-	// Only allowlisted expressions and directions enter SQL. A unique tie-breaker
-	// keeps equal values in a stable order across pages.
-	return query.Order(expression + " " + strings.ToUpper(direction) + ", usss.scrape_site_id ASC")
-}
-
-func normalizeScrapeSitePage(page int, pageSize int) (int, int) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize <= 0 || pageSize > maxScrapeSitesPerPage {
-		pageSize = scrapeSitesPerPage
-	}
-	return page, pageSize
-}
-
-func GetScrapeSiteInfoForExport(userId uint, settings dto.ScrapeSourceExportSettings) ([]dto.ScrapeSiteInfo, error) {
-	var results []dto.ScrapeSiteInfo
-
-	query := buildScrapeSiteInfoQuery(userId).Select(
-		"usss.scrape_site_id AS id, " +
-			"usss.url AS url, " +
-			"usss.proxy_count AS proxy_count, " +
-			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END AS alive_count, " +
-			"CASE WHEN cw.checker_dirty THEN 0 ELSE usss.dead_count END AS dead_count, " +
-			"CASE WHEN cw.checker_dirty THEN usss.proxy_count ELSE usss.unknown_count END AS unknown_count, " +
-			"usss.added_at AS added_at, uss.fetch_mode, uss.last_scraped_at, uss.last_scrape_status, uss.last_scrape_error, uss.last_scrape_proxy_count",
-	)
-
-	if len(settings.ScrapeSources) > 0 {
-		query = query.Where("usss.scrape_site_id IN ?", settings.ScrapeSources)
-	}
-
-	if settings.Filter {
-		protocols := scrapeSourceProtocolsForExport(settings)
-		if len(protocols) > 0 {
-			query = query.Where("usss.protocol_key IN ?", protocols)
-		}
-		proxyCount := settings.ProxyCount
-		if proxyCount == 0 {
-			proxyCount = settings.MinProxyCount
-		}
-		if proxyCount > 0 {
-			if exportCountOperator(settings.ProxyCountOperator, settings.ProxyCountMode) == "<" {
-				query = query.Where("usss.proxy_count < ?", proxyCount)
-			} else {
-				query = query.Where("usss.proxy_count > ?", proxyCount)
-			}
-		}
-		aliveCount := settings.AliveCount
-		if aliveCount == 0 {
-			aliveCount = settings.MinAliveCount
-		}
-		if aliveCount > 0 {
-			if exportCountOperator(settings.AliveCountOperator, "") == "<" {
-				query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END < ?", aliveCount)
-			} else {
-				query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END > ?", aliveCount)
-			}
-		}
-	}
-
-	err := query.Order("usss.added_at DESC").Scan(&results).Error
-	return results, err
-}
-
-func scrapeSourceProtocolsForExport(settings dto.ScrapeSourceExportSettings) []string {
-	if !settings.Filter {
-		return nil
-	}
-
-	protocols := make([]string, 0, 2)
-	if settings.Http {
-		protocols = append(protocols, "http")
-	}
-	if settings.Https {
-		protocols = append(protocols, "https")
-	}
-
-	return protocols
-}
-
-func applyScrapeSiteSearch(query *gorm.DB, search string) *gorm.DB {
-	normalized := strings.TrimSpace(search)
-	if normalized == "" {
-		return query
-	}
-
-	return query.Where("usss.url ILIKE ?", "%"+normalized+"%")
-}
-
-func applyScrapeSiteListFilters(query *gorm.DB, filters dto.ScrapeSourceListFilters) *gorm.DB {
-	protocols := normalizeScrapeSourceProtocolFilters(filters.Protocols)
-	if len(protocols) > 0 {
-		query = query.Where("usss.protocol_key IN ?", protocols)
-	}
-
-	if filters.ProxyCount > 0 {
-		if exportCountOperator(filters.ProxyCountOperator, "") == "<" {
-			query = query.Where("usss.proxy_count < ?", filters.ProxyCount)
-		} else {
-			query = query.Where("usss.proxy_count > ?", filters.ProxyCount)
-		}
-	}
-
-	if filters.AliveCount > 0 {
-		if exportCountOperator(filters.AliveCountOperator, "") == "<" {
-			query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END < ?", filters.AliveCount)
-		} else {
-			query = query.Where("CASE WHEN cw.checker_dirty THEN 0 ELSE usss.alive_count END > ?", filters.AliveCount)
-		}
-	}
-
-	return query
-}
-
-func normalizeScrapeSourceProtocolFilters(protocols []string) []string {
-	if len(protocols) == 0 {
-		return nil
-	}
-
-	seen := make(map[string]struct{}, len(protocols))
-	out := make([]string, 0, len(protocols))
-	for _, protocol := range protocols {
-		trimmed := strings.ToLower(strings.TrimSpace(protocol))
-		if trimmed != "http" && trimmed != "https" {
-			continue
-		}
-		if _, exists := seen[trimmed]; exists {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-	return out
-}
-
-func exportCountOperator(operator string, legacyMode string) string {
-	trimmed := strings.TrimSpace(operator)
-	if trimmed == "<" || trimmed == ">" {
-		return trimmed
-	}
-	if strings.EqualFold(legacyMode, "max") {
-		return "<"
-	}
-	return ">"
-}
-
-func buildScrapeSiteInfoQuery(userId uint) *gorm.DB {
-	return DB.Table("user_scrape_source_stats usss").
-		Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = usss.scrape_site_id AND uss.workspace_id = usss.workspace_id").
-		Joins("JOIN workspaces cw ON cw.id = usss.workspace_id").
-		Where("usss.workspace_id = ?", userId)
 }
 
 type scrapeSiteAggregateRow struct {
@@ -475,7 +94,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 	}
 
 	var base scrapeSiteBaseRow
-	baseResult := DB.Model(&domain.ScrapeSite{}).
+	baseResult := pg.DB.Model(&domain.ScrapeSite{}).
 		Select(
 			"scrape_sites.id AS id, "+
 				"scrape_sites.url AS url, "+
@@ -493,7 +112,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 	}
 
 	var stats scrapeSiteAggregateRow
-	statsResult := DB.Table("proxy_scrape_site pss").
+	statsResult := pg.DB.Table("proxy_scrape_site pss").
 		Select(
 			"COUNT(DISTINCT pss.proxy_id) AS proxy_count, "+
 				"COALESCE(SUM(CASE WHEN pos.overall_alive IS TRUE THEN 1 ELSE 0 END), 0) AS alive_count, "+
@@ -504,7 +123,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 				"MAX(pos.last_checked_at) AS last_checked_at",
 		).
 		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.workspace_id = ?", userId).
-		Joins(currentOverallStatusJoin(DB, "LEFT", "up.workspace_id", "pss.proxy_id")).
+		Joins(evidence.CurrentOverallStatusJoin(pg.DB, "LEFT", "up.workspace_id", "pss.proxy_id")).
 		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = pss.proxy_id AND pr.kind = ?", domain.ProxyReputationKindOverall).
 		Where("pss.scrape_site_id = ?", scrapeSiteId).
 		Scan(&stats)
@@ -518,7 +137,7 @@ func GetScrapeSiteDetail(userId uint, scrapeSiteId uint64) (*dto.ScrapeSiteDetai
 	}
 
 	var repCounts []reputationCount
-	repResult := DB.Table("proxy_scrape_site pss").
+	repResult := pg.DB.Table("proxy_scrape_site pss").
 		Select("LOWER(COALESCE(NULLIF(pr.label, ''), 'unknown')) AS label, COUNT(*) AS count").
 		Joins("JOIN user_proxies up ON up.proxy_id = pss.proxy_id AND up.workspace_id = ?", userId).
 		Joins("LEFT JOIN proxy_reputations pr ON pr.proxy_id = pss.proxy_id AND pr.kind = ?", domain.ProxyReputationKindOverall).
@@ -605,7 +224,7 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 
 	options = normalizeProxyPageQueryOptions(options)
 
-	query := DB.Table("user_proxy_filter_indexes ufi").
+	query := pg.DB.Table("user_proxy_filter_indexes ufi").
 		Select(
 			"ufi.proxy_id AS id, "+
 				"ufi.state AS state, "+
@@ -655,7 +274,7 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 		}
 
 		var total int64
-		countQuery := DB.Table("user_proxy_filter_indexes ufi").
+		countQuery := pg.DB.Table("user_proxy_filter_indexes ufi").
 			Where("ufi.workspace_id = ?", userId).
 			Joins("JOIN proxy_scrape_site pss ON pss.proxy_id = ufi.proxy_id AND pss.scrape_site_id = ?", scrapeSiteId).
 			Joins("JOIN user_scrape_site uss ON uss.scrape_site_id = pss.scrape_site_id AND uss.workspace_id = ?", userId)
@@ -696,16 +315,16 @@ func GetScrapeSiteProxyPageWithOptions(userId uint, scrapeSiteId uint64, page in
 }
 
 func DeleteOrphanProxyScrapeSiteRelations(ctx context.Context) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
 
-	if !isPostgresDialect(db) {
+	if !pg.IsPostgresDialect(db) {
 		result := db.
 			Where(
 				"NOT EXISTS (SELECT 1 FROM proxies p WHERE p.id = proxy_scrape_site.proxy_id) OR " +
@@ -766,213 +385,4 @@ func DeleteOrphanProxyScrapeSiteRelations(ctx context.Context) (int64, error) {
 			return total, nil
 		}
 	}
-}
-
-func DeleteScrapeSiteRelation(userId uint, scrapeSite []int) (int64, []domain.ScrapeSite, error) {
-	if len(scrapeSite) == 0 {
-		return 0, nil, nil
-	}
-
-	chunkSize := deleteChunkSize
-	if chunkSize > len(scrapeSite) {
-		chunkSize = len(scrapeSite)
-	}
-	if chunkSize <= 0 {
-		chunkSize = len(scrapeSite)
-	}
-
-	var totalDeleted int64
-	orphanSet := make(map[uint64]struct{})
-
-	for start := 0; start < len(scrapeSite); start += chunkSize {
-		end := start + chunkSize
-		if end > len(scrapeSite) {
-			end = len(scrapeSite)
-		}
-
-		chunk := scrapeSite[start:end]
-		result := DB.
-			Where("scrape_site_id IN ?", chunk).
-			Where("workspace_id = ?", userId).
-			Delete(&domain.WorkspaceScrapeSite{})
-
-		if result.Error != nil {
-			return totalDeleted, nil, result.Error
-		}
-
-		if DB.Migrator().HasTable(&domain.WorkspaceScrapeSourceStat{}) {
-			if err := DB.
-				Where("workspace_id = ?", userId).
-				Where("scrape_site_id IN ?", chunk).
-				Delete(&domain.WorkspaceScrapeSourceStat{}).Error; err != nil {
-				return totalDeleted, nil, err
-			}
-		}
-
-		totalDeleted += result.RowsAffected
-
-		orphanIDs, err := collectOrphanScrapeSiteIDs(chunk)
-		if err != nil {
-			return totalDeleted, nil, err
-		}
-
-		for _, id := range orphanIDs {
-			orphanSet[id] = struct{}{}
-		}
-	}
-
-	if len(orphanSet) == 0 {
-		return totalDeleted, nil, nil
-	}
-
-	uniqueIDs := make([]uint64, 0, len(orphanSet))
-	for id := range orphanSet {
-		uniqueIDs = append(uniqueIDs, id)
-	}
-
-	var orphans []domain.ScrapeSite
-	if err := DB.Where("id IN ?", uniqueIDs).Find(&orphans).Error; err != nil {
-		return totalDeleted, nil, err
-	}
-
-	return totalDeleted, orphans, nil
-}
-
-func DeleteScrapeSitesWithSettings(userID uint, settings dto.ScrapeSourceDeleteSettings) (int64, []domain.ScrapeSite, error) {
-	if settings.Scope == "selected" && len(settings.ScrapeSources) == 0 {
-		return 0, nil, ErrNoScrapeSourcesSelected
-	}
-
-	exportSettings := dto.ScrapeSourceExportSettings{
-		ScrapeSources:      settings.ScrapeSources,
-		Filter:             settings.Filter,
-		Http:               settings.Http,
-		Https:              settings.Https,
-		ProxyCountOperator: settings.ProxyCountOperator,
-		ProxyCount:         settings.ProxyCount,
-		AliveCountOperator: settings.AliveCountOperator,
-		AliveCount:         settings.AliveCount,
-	}
-
-	sources, err := GetScrapeSiteInfoForExport(userID, exportSettings)
-	if err != nil {
-		return 0, nil, err
-	}
-
-	if len(sources) == 0 {
-		return 0, nil, nil
-	}
-
-	sourceIDs := make([]int, 0, len(sources))
-	for _, source := range sources {
-		sourceIDs = append(sourceIDs, int(source.Id))
-	}
-
-	return DeleteScrapeSiteRelation(userID, sourceIDs)
-}
-
-func collectOrphanScrapeSiteIDs(candidateIDs []int) ([]uint64, error) {
-	if len(candidateIDs) == 0 {
-		return nil, nil
-	}
-
-	var stillInUse []int
-	if err := DB.Model(&domain.WorkspaceScrapeSite{}).
-		Where("scrape_site_id IN ?", candidateIDs).
-		Distinct("scrape_site_id").
-		Pluck("scrape_site_id", &stillInUse).Error; err != nil {
-		return nil, err
-	}
-
-	inUseSet := make(map[int]struct{}, len(stillInUse))
-	for _, id := range stillInUse {
-		inUseSet[id] = struct{}{}
-	}
-
-	seen := make(map[int]struct{}, len(candidateIDs))
-	orphanIDs := make([]uint64, 0, len(candidateIDs))
-	for _, candidate := range candidateIDs {
-		if _, alreadySeen := seen[candidate]; alreadySeen {
-			continue
-		}
-		seen[candidate] = struct{}{}
-
-		if _, ok := inUseSet[candidate]; ok {
-			continue
-		}
-
-		orphanIDs = append(orphanIDs, uint64(candidate))
-	}
-
-	if len(orphanIDs) == 0 {
-		return nil, nil
-	}
-
-	return orphanIDs, nil
-}
-
-func DeleteOrphanScrapeSites(ctx context.Context) (int64, error) {
-	if DB == nil {
-		return 0, fmt.Errorf("database not initialised")
-	}
-
-	db := DB
-	if ctx != nil {
-		db = db.WithContext(ctx)
-	}
-
-	result := db.
-		Where("NOT EXISTS (SELECT 1 FROM user_scrape_site us WHERE us.scrape_site_id = scrape_sites.id)").
-		Delete(&domain.ScrapeSite{})
-	if result.Error != nil {
-		return 0, result.Error
-	}
-
-	return result.RowsAffected, nil
-}
-
-func ScrapeSiteHasUsers(siteID uint64) (bool, error) {
-	var count int64
-	if err := DB.Model(&domain.WorkspaceScrapeSite{}).
-		Where("scrape_site_id = ?", siteID).
-		Count(&count).Error; err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// GetScrapeSiteSubscriptions reads current ownership and mode. Queue payloads
-// may predate a settings change or workspace removal.
-func GetScrapeSiteSubscriptions(ctx context.Context, siteID uint64) ([]domain.WorkspaceScrapeSite, error) {
-	var subscriptions []domain.WorkspaceScrapeSite
-	err := DB.WithContext(ctx).Where("scrape_site_id = ?", siteID).Find(&subscriptions).Error
-	return subscriptions, err
-}
-
-func UpdateScrapeSourceFetchMode(ctx context.Context, workspaceID uint, siteID uint64, mode string) (bool, error) {
-	if !domain.ValidScrapeFetchMode(mode) {
-		return false, fmt.Errorf("invalid fetch mode")
-	}
-	result := DB.WithContext(ctx).Model(&domain.WorkspaceScrapeSite{}).
-		Where("workspace_id = ? AND scrape_site_id = ?", workspaceID, siteID).
-		Updates(map[string]any{"fetch_mode": mode, "last_scraped_at": nil, "last_scrape_status": "", "last_scrape_error": "", "last_scrape_proxy_count": 0})
-	return result.RowsAffected > 0, result.Error
-}
-
-func RecordScrapeResult(ctx context.Context, siteID uint64, workspaceIDs []uint, mode, status string, count int, scrapeErr error, attemptedAt time.Time) error {
-	if len(workspaceIDs) == 0 {
-		return nil
-	}
-	message := ""
-	if scrapeErr != nil {
-		message = scrapeErr.Error()
-		if len(message) > 2000 {
-			runes := []rune(message)
-			message = string(runes[:min(500, len(runes))])
-		}
-	}
-	return DB.WithContext(ctx).Model(&domain.WorkspaceScrapeSite{}).
-		Where("scrape_site_id = ? AND workspace_id IN ? AND fetch_mode = ?", siteID, workspaceIDs, mode).
-		Where("last_scraped_at IS NULL OR last_scraped_at <= ?", attemptedAt).
-		Updates(map[string]any{"last_scraped_at": attemptedAt, "last_scrape_status": status, "last_scrape_error": message, "last_scrape_proxy_count": count}).Error
 }

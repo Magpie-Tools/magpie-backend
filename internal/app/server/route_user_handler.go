@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"magpie/internal/account"
 	"magpie/internal/api/dto"
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/auth"
@@ -11,12 +12,16 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/geolite"
 	"magpie/internal/jobs/checker/judges"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
-	jobruntime "magpie/internal/jobs/runtime"
+	"magpie/internal/judgestore"
+	"magpie/internal/platform/pg"
+	"magpie/internal/scrapestore"
 	"magpie/internal/settings"
 	"magpie/internal/support"
+	workspaces "magpie/internal/workspace"
 	"net/http"
 	"strings"
 	"sync"
@@ -46,11 +51,11 @@ var (
 	loginFallbackPasswordHashOnce sync.Once
 	loginFallbackPasswordHash     string
 
-	changePasswordInStore            = database.ChangePassword
-	rollbackPasswordIfCurrentInStore = database.ChangePasswordIfCurrent
+	changePasswordInStore            = account.ChangePassword
+	rollbackPasswordIfCurrentInStore = account.ChangePasswordIfCurrent
 	revokeUserSessions               = auth.RevokeAllUserJWTs
 	validateOutboundConfigURL        = support.ValidateOutboundHTTPURLContext
-	runGeoLiteUpdateOnSave           = jobruntime.RunGeoLiteUpdate
+	runGeoLiteUpdateOnSave           = geolite.RunGeoLiteUpdate
 	requeueAllQueuedProxies          = func() (int64, error) {
 		return proxyqueue.PublicProxyQueue.RequeueAll()
 	}
@@ -73,7 +78,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &credentials, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	credentials.Email = auth.NormalizeEmail(credentials.Email)
+	credentials.Email = domain.NormalizeEmail(credentials.Email)
 
 	user := domain.User{
 		Email:    credentials.Email,
@@ -124,7 +129,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	workspaceAccess, err := database.ResolveWorkspaceAccess(user.ID, 0)
+	workspaceAccess, err := workspaces.ResolveWorkspaceAccess(user.ID, 0)
 	if err != nil {
 		writeError(w, "Failed to resolve personal workspace", http.StatusInternalServerError)
 		return
@@ -132,7 +137,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 
 	go bootstrap.AddDefaultJudgesToWorkspaces()
 	registrationWarning := ""
-	sites, err := database.SaveScrapingSourcesOfUsers(workspaceAccess.WorkspaceID, cfg.Scraper.ScrapeSites)
+	sites, err := scrapestore.SaveScrapingSourcesOfUsers(workspaceAccess.WorkspaceID, cfg.Scraper.ScrapeSites)
 	if err != nil {
 		log.Warn("Could not add default Scraping Sources to user", "err", err)
 	} else {
@@ -160,7 +165,7 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSONBodyLimited(w, r, &credentials, resolveJSONMaxBodyBytes()) {
 		return
 	}
-	credentials.Email = auth.NormalizeEmail(credentials.Email)
+	credentials.Email = domain.NormalizeEmail(credentials.Email)
 
 	if blocked, retryAfter := loginFailuresBlocked(r, credentials.Email); blocked {
 		setRetryAfterHeader(w, retryAfter)
@@ -170,7 +175,7 @@ func loginUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user domain.User
-	if err := database.DB.Where("LOWER(email) = ?", credentials.Email).First(&user).Error; err != nil {
+	if err := pg.DB.Where("LOWER(email) = ?", credentials.Email).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			consumeInvalidPasswordWork(credentials.Password)
 			recordLoginFailure(r, credentials.Email)
@@ -318,7 +323,7 @@ func saveSettings(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if cleanupResult.ScrapeRelationsRemoved > 0 {
-				if removed, err := database.DeleteOrphanScrapeSites(context.Background()); err != nil {
+				if removed, err := scrapestore.DeleteOrphanScrapeSites(context.Background()); err != nil {
 					log.Warn("Failed to delete orphan scrape sites after blacklist update", "error", err)
 				} else if removed > 0 {
 					log.Info("Deleted orphan scrape sites after blacklist update", "count", removed)
@@ -408,14 +413,14 @@ func getUserSettings(w http.ResponseWriter, r *http.Request) {
 		writeWorkspaceAccessError(w, workspaceErr)
 		return
 	}
-	workspace := database.GetWorkspaceByID(workspaceID)
+	workspace := workspaces.GetWorkspaceByID(workspaceID)
 	if workspace.ID == 0 {
 		writeError(w, "Workspace not found", http.StatusNotFound)
 		return
 	}
-	preference := database.GetWorkspaceMemberPreference(workspaceID, userID)
-	workspaceJudges := database.GetWorkspaceJudges(workspaceID)
-	scrapingSources := database.GetScrapingSourcesOfUsers(workspaceID)
+	preference := workspaces.GetWorkspaceMemberPreference(workspaceID, userID)
+	workspaceJudges := judgestore.GetWorkspaceJudges(workspaceID)
+	scrapingSources := scrapestore.GetScrapingSourcesOfUsers(workspaceID)
 
 	writeJSON(w, http.StatusOK, workspace.ToUserSettings(workspaceJudges, scrapingSources, preference))
 }
@@ -465,7 +470,7 @@ func getUserProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 	if user.ID == 0 {
 		writeError(w, "User not found", http.StatusNotFound)
 		return
@@ -480,7 +485,7 @@ func getUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 
 	writeJSON(w, http.StatusOK, user.Role)
 }
@@ -492,7 +497,7 @@ func changePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 
 	var payload dto.ChangePassword
 	if !decodeJSONBodyLimited(w, r, &payload, resolveJSONMaxBodyBytes()) {
@@ -560,7 +565,7 @@ func deleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := database.GetUserFromId(userID)
+	user := account.GetUserFromId(userID)
 	if user.ID == 0 {
 		writeError(w, "User not found", http.StatusNotFound)
 		return
@@ -636,7 +641,7 @@ func createUserWithFirstAdminRole(user *domain.User, policy userRegistrationPoli
 		return errors.New("user cannot be nil")
 	}
 
-	return database.DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		// Serialize first-user role assignment across instances.
 		if tx.Dialector.Name() == "postgres" {
 			if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", firstUserAdminAdvisoryLockKey).Error; err != nil {
@@ -667,7 +672,7 @@ func createUserWithFirstAdminRole(user *domain.User, policy userRegistrationPoli
 			}
 			return err
 		}
-		if _, err := database.CreatePersonalWorkspaceForUser(tx, *user); err != nil {
+		if _, err := workspaces.CreatePersonalWorkspaceForUser(tx, *user); err != nil {
 			return fmt.Errorf("create personal workspace: %w", err)
 		}
 

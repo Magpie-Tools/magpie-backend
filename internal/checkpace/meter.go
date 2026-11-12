@@ -15,8 +15,8 @@ import (
 // Check usage is metered here, in memory, by the checker that sends the
 // requests. It does not depend on the statistics pipeline, which may drop or
 // delay results under load. The checker charges each request just before it is
-// sent (Snapshot.ChargeRequest). The refresh routine flushes the counters to
-// the usage meter every FlushInterval and before each snapshot load.
+// sent (Pacer.ChargeRequest). The Pacer's Run flushes the counters to the
+// usage meter every FlushInterval and before each snapshot load.
 //
 // The limit is soft. A charge checks the allowance first, so this instance
 // stops sending a workspace's requests as soon as its own counters reach the
@@ -83,8 +83,11 @@ func (m *workspaceMeter) counter(month int32) *monthCounter {
 
 // attemptsIn reads a workspace's requests in month on this instance without
 // creating a counter.
-func attemptsIn(workspaceID uint, month int32) uint64 {
-	value, ok := meters.Load(workspaceID)
+func (p *Pacer) attemptsIn(workspaceID uint, month int32) uint64 {
+	if p == nil {
+		return 0
+	}
+	value, ok := p.meters.Load(workspaceID)
 	if !ok {
 		return 0
 	}
@@ -130,19 +133,6 @@ type pendingBatch struct {
 	counters []*monthCounter // parallel to batch.Usage
 }
 
-var (
-	meters sync.Map // uint -> *workspaceMeter, for the life of the process
-
-	// instanceID names this process's batches. It never repeats, so batch
-	// numbers can restart at one after a restart.
-	instanceID = newInstanceID()
-
-	// Guarded by refreshMu, which also serializes snapshot loads with flushes.
-	batchSequence uint64
-	pending       *pendingBatch
-	lastWritten   time.Time // last successful write
-)
-
 // markKeepAlive is how often an idle process writes an empty batch. It is far
 // below the database's replay mark retention.
 const markKeepAlive = 24 * time.Hour
@@ -159,11 +149,11 @@ func newInstanceID() string {
 	return hex.EncodeToString(raw[:])
 }
 
-func meterFor(workspaceID uint) *workspaceMeter {
-	if value, ok := meters.Load(workspaceID); ok {
+func (p *Pacer) meterFor(workspaceID uint) *workspaceMeter {
+	if value, ok := p.meters.Load(workspaceID); ok {
 		return value.(*workspaceMeter)
 	}
-	value, _ := meters.LoadOrStore(workspaceID, &workspaceMeter{})
+	value, _ := p.meters.LoadOrStore(workspaceID, &workspaceMeter{})
 	return value.(*workspaceMeter)
 }
 
@@ -182,13 +172,14 @@ type monthWindow struct {
 	month      int32
 }
 
-var latestMonth atomic.Pointer[monthWindow]
-
 // monthOf is monthIndex with the latest month cached, which keeps calendar
 // arithmetic off the request path.
-func monthOf(at time.Time) int32 {
+func (p *Pacer) monthOf(at time.Time) int32 {
+	if p == nil {
+		return monthIndex(at)
+	}
 	nanos := at.UnixNano()
-	window := latestMonth.Load()
+	window := p.latestMonth.Load()
 	if window != nil && nanos >= window.start && nanos < window.end {
 		return window.month
 	}
@@ -197,29 +188,31 @@ func monthOf(at time.Time) int32 {
 	// instance's clock or a far-off schedule cannot displace it.
 	if (window == nil || month > window.month) && month <= monthIndex(time.Now()) {
 		start := monthStart(month)
-		latestMonth.Store(&monthWindow{start: start.UnixNano(), end: start.AddDate(0, 1, 0).UnixNano(), month: month})
+		p.latestMonth.Store(&monthWindow{start: start.UnixNano(), end: start.AddDate(0, 1, 0).UnixNano(), month: month})
 	}
 	return month
 }
 
 // ChargeRequest is called by the checker just before it sends one request
-// that serves workspaceID. firstOfCheck marks a protocol check's first
-// request. It returns false, charging nothing, when the workspace's check
-// allowance is used up on this instance or checking is paused because usage
-// could not be written; the request must then not be sent for the workspace.
+// that serves workspaceID, with the snapshot it read for the cycle (nil before
+// the first load). firstOfCheck marks a protocol check's first request. It
+// returns false, charging nothing, when the workspace's check allowance is used
+// up on this instance or checking is paused because usage could not be
+// written; the request must then not be sent for the workspace. A nil Pacer
+// admits every request and counts nothing.
 // The cost is a map read, a few atomic loads and one or two atomic additions:
 // no Redis, database, JSON or cryptographic work.
-func (s *Snapshot) ChargeRequest(workspaceID uint, firstOfCheck bool, at time.Time) bool {
-	if workspaceID == 0 {
+func (p *Pacer) ChargeRequest(s *Snapshot, workspaceID uint, firstOfCheck bool, at time.Time) bool {
+	if workspaceID == 0 || p == nil {
 		return true
 	}
-	if checksPaused() {
+	if p.checksPaused() {
 		return false
 	}
-	month := monthOf(at)
+	month := p.monthOf(at)
 	var counter *monthCounter
 	if pace := s.lookup(workspaceID); pace != nil && pace.counter != nil {
-		if pace.exhaustedIn(month) {
+		if p.exhaustedIn(pace, month) {
 			return false
 		}
 		if pace.counter.month == month {
@@ -230,7 +223,7 @@ func (s *Snapshot) ChargeRequest(workspaceID uint, firstOfCheck bool, at time.Ti
 		// No snapshot yet, a workspace the snapshot lacks, or another
 		// month than the snapshot's. The next refresh follows within
 		// RefreshInterval unless usage cannot be written.
-		counter = meterFor(workspaceID).counter(month)
+		counter = p.meterFor(workspaceID).counter(month)
 	}
 	counter.attempts.Add(1)
 	if firstOfCheck {
@@ -242,49 +235,49 @@ func (s *Snapshot) ChargeRequest(workspaceID uint, firstOfCheck bool, at time.Ti
 // flushLocked writes unflushed usage as one batch. A batch that failed is
 // retried unchanged before any new usage is batched, because its rows may
 // already be committed. The caller holds refreshMu.
-func flushLocked(ctx context.Context, flusher Flusher) error {
+func (p *Pacer) flushLocked(ctx context.Context, flusher Flusher) error {
 	if flusher == nil {
 		return nil
 	}
-	retrying := pending != nil
+	retrying := p.pending != nil
 	if !retrying {
 		now := time.Now()
-		pending = collectBatch(now)
-		if pending == nil {
-			if now.Sub(lastWritten) < markKeepAlive {
+		p.pending = p.collectBatch(now)
+		if p.pending == nil {
+			if now.Sub(p.lastWritten) < markKeepAlive {
 				return nil
 			}
 			// Nothing to write for a day: an empty batch refreshes this
 			// process's replay mark so it is never pruned while alive.
-			batchSequence++
-			pending = &pendingBatch{batch: UsageBatch{Instance: instanceID, Sequence: batchSequence}}
+			p.batchSequence++
+			p.pending = &pendingBatch{batch: UsageBatch{Instance: p.instanceID, Sequence: p.batchSequence}}
 		}
 	}
-	err := flusher(ctx, pending.batch)
+	err := flusher(ctx, p.pending.batch)
 	switch {
 	case errors.Is(err, ErrBatchOutcomeUnknown):
 		// The batch was resent so long after its first attempt that its
 		// replay mark was pruned. It may or may not be in the database;
 		// dropping it can lose usage but never charges it twice. Treating it
 		// as committed keeps local accounting consistent with the next load.
-		log.Error("dropping a check usage batch whose outcome is unknown", "sequence", pending.batch.Sequence,
-			"workspaces", len(pending.batch.Usage), "error", err)
+		log.Error("dropping a check usage batch whose outcome is unknown", "sequence", p.pending.batch.Sequence,
+			"workspaces", len(p.pending.batch.Usage), "error", err)
 	case err != nil:
-		pending.batch.Resend = true
-		recordFlushFailure(err, time.Now())
+		p.pending.batch.Resend = true
+		p.recordFlushFailure(err, time.Now())
 		return err
 	}
-	recordFlushSuccess()
-	lastWritten = time.Now()
-	for index, counter := range pending.counters {
-		counter.committedAttempts += pending.batch.Usage[index].Attempts
-		counter.committedProtocolChecks += pending.batch.Usage[index].ProtocolChecks
+	p.recordFlushSuccess()
+	p.lastWritten = time.Now()
+	for index, counter := range p.pending.counters {
+		counter.committedAttempts += p.pending.batch.Usage[index].Attempts
+		counter.committedProtocolChecks += p.pending.batch.Usage[index].ProtocolChecks
 	}
-	pending = nil
+	p.pending = nil
 	if retrying {
 		// Usage made while the batch was failing goes out now, not a flush
 		// interval later.
-		return flushLocked(ctx, flusher)
+		return p.flushLocked(ctx, flusher)
 	}
 	return nil
 }
@@ -292,9 +285,9 @@ func flushLocked(ctx context.Context, flusher Flusher) error {
 // collectBatch numbers a batch of every counter's unflushed usage and prunes
 // counters of past months that are fully flushed. It returns nil when nothing
 // is unflushed. The caller holds refreshMu.
-func collectBatch(now time.Time) *pendingBatch {
+func (p *Pacer) collectBatch(now time.Time) *pendingBatch {
 	var batch *pendingBatch
-	meters.Range(func(key, value any) bool {
+	p.meters.Range(func(key, value any) bool {
 		workspaceID, meter := key.(uint), value.(*workspaceMeter)
 		meter.mu.Lock()
 		defer meter.mu.Unlock()
@@ -326,18 +319,18 @@ func collectBatch(now time.Time) *pendingBatch {
 	if batch == nil {
 		return nil
 	}
-	batchSequence++
-	batch.batch.Instance, batch.batch.Sequence = instanceID, batchSequence
+	p.batchSequence++
+	batch.batch.Instance, batch.batch.Sequence = p.instanceID, p.batchSequence
 	return batch
 }
 
 // attachMeter connects a computed snapshot to this instance's counters for
 // the snapshot's period. The caller holds refreshMu, right after a flush, so
 // the database then held exactly the committed usage.
-func attachMeter(snapshot *Snapshot) {
+func (p *Pacer) attachMeter(snapshot *Snapshot) {
 	month := monthIndex(snapshot.PeriodStart)
 	for workspaceID, pace := range snapshot.paces {
-		pace.counter = meterFor(workspaceID).counter(month)
+		pace.counter = p.meterFor(workspaceID).counter(month)
 		pace.flushedMark = pace.counter.committedAttempts
 	}
 }
@@ -349,14 +342,14 @@ func attachMeter(snapshot *Snapshot) {
 // allowance applies to this instance's own usage in the new month, so a soft
 // limit still bounds spending. Charges dated before the snapshot's month are
 // not limited.
-func (p *Pace) exhaustedIn(month int32) bool {
+func (p *Pacer) exhaustedIn(pace *Pace, month int32) bool {
 	switch {
-	case p.counter == nil || month == p.counter.month:
-		return p.checksExhausted()
-	case month < p.counter.month || p.Allowance.UnlimitedChecks:
+	case pace.counter == nil || month == pace.counter.month:
+		return pace.checksExhausted()
+	case month < pace.counter.month || pace.Allowance.UnlimitedChecks:
 		return false
 	default:
-		return attemptsIn(p.Allowance.WorkspaceID, month) >= p.Allowance.MonthlyChecks
+		return p.attemptsIn(pace.Allowance.WorkspaceID, month) >= pace.Allowance.MonthlyChecks
 	}
 }
 
@@ -382,21 +375,6 @@ func (p *Pace) checksExhausted() bool {
 		return false
 	}
 	return allowance.UsedChecks+p.unflushedSinceLoad() >= allowance.MonthlyChecks
-}
-
-// resetMeterForTest clears every counter and any pending batch.
-func resetMeterForTest() {
-	refreshMu.Lock()
-	defer refreshMu.Unlock()
-	meters.Range(func(key, _ any) bool {
-		meters.Delete(key)
-		return true
-	})
-	pending = nil
-	batchSequence = 0
-	lastWritten = time.Now()
-	reloadPending = false
-	resetHealthForTest()
 }
 
 // CurrentUsedChecks is the snapshot's used checks plus this instance's checks

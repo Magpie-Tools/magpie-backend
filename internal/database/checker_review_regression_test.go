@@ -15,6 +15,9 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 )
 
 func seedCheckerTag(t *testing.T, db *gorm.DB, workspaceID uint, name string) domain.ProxyTag {
@@ -32,21 +35,10 @@ func seedCheckerTag(t *testing.T, db *gorm.DB, workspaceID uint, name string) do
 func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	a, _, proxy, judge := seedCheckerEvidenceTest(t, db)
-	// This fixture writes real evidence below. Keep its asynchronous notification
-	// out of later tests without discarding any work that predates this fixture.
-	readModelDirtyMu.Lock()
-	previousDirty, previousBatch := readModelDirtyProxyIDs, readModelPendingBatch
-	previousRound := readModelDirtyRound
-	readModelDirtyProxyIDs = make(map[uint64]struct{})
-	readModelDirtyRound = nil
-	readModelPendingBatch = nil
-	readModelDirtyMu.Unlock()
-	t.Cleanup(func() {
-		readModelDirtyMu.Lock()
-		readModelDirtyProxyIDs, readModelPendingBatch = previousDirty, previousBatch
-		readModelDirtyRound = previousRound
-		readModelDirtyMu.Unlock()
-	})
+	// This fixture writes real evidence below, and ingestion queues a
+	// read-model refresh for it. Finish that work against this test's schema
+	// before the package handle is restored, so later tests do not receive it.
+	t.Cleanup(func() { drainReadModel(t) })
 	ruleTag := seedCheckerTag(t, db, a.ID, "Checker")
 	classTag := seedCheckerTag(t, db, a.ID, "Classification")
 	a.CheckerConfig.Rules = []dto.TagCheckerRule{{TagID: ruleTag.ID, Mode: "remove", Protocols: []string{"http"}}}
@@ -76,7 +68,7 @@ func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 	}
 	// Give the tag-removal path genuine current health to invalidate. Without
 	// evidence, unknown-to-unknown reconciliation correctly performs no update.
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, a.ID, []uint64{proxy.ID}); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(db, a.ID, []uint64{proxy.ID}); err != nil {
 		t.Fatal(err)
 	}
 	assertHealth := func(healthy bool) {
@@ -242,7 +234,7 @@ func TestCheckerRemovedMembershipDoesNotSurviveReimportPostgres(t *testing.T) {
 			t.Run(fmt.Sprintf("automatic=%t/prune=%t", automatic, prune), func(t *testing.T) {
 				db := setupProxyIngestionPostgresTest(t)
 				a, _, proxy, _ := seedCheckerEvidenceTest(t, db)
-				if err := ensureCheckerSettingsSchema(db); err != nil {
+				if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 					t.Fatal(err)
 				}
 				tag := seedCheckerTag(t, db, a.ID, "Former membership")
@@ -414,7 +406,7 @@ func TestDashboardRefreshRejectsInFlightOldGenerationPostgres(t *testing.T) {
 			t.Error(err)
 		}
 	}}
-	DB = db.Session(&gorm.Session{Logger: hooks})
+	pg.DB = db.Session(&gorm.Session{Logger: hooks})
 	info := RefreshDashboardInfoCache(a.ID)
 	if !raced || len(info.JudgeValidProxies) != 0 {
 		t.Fatal("in-flight health was published", info)
@@ -422,7 +414,7 @@ func TestDashboardRefreshRejectsInFlightOldGenerationPostgres(t *testing.T) {
 	if _, ok := dashboardInfoCache.Load(a.ID); ok {
 		t.Fatal("obsolete dashboard refresh stored")
 	}
-	DB = db
+	pg.DB = db
 	// A delayed store after invalidation must also be rejected on another instance's read.
 	dashboardInfoCache.Store(a.ID, dashboardInfoCacheEntry{version: originalVersion, info: dto.DashboardInfo{TotalChecks: 987654}})
 	recentKey := dashboardProxyListCacheKey{WorkspaceID: a.ID, Limit: 1}
@@ -487,9 +479,9 @@ func TestSmallSourceHealthAggregatesCandidatesPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	capture := &checkerSourceQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: capture})
+	pg.DB = db.Session(&gorm.Session{Logger: capture})
 	detail, err := GetScrapeSiteDetail(a.ID, site.ID)
-	DB = db
+	pg.DB = db
 	if err != nil || detail.ProxyCount != 1 || detail.AliveCount != 1 {
 		t.Fatal(fmt.Sprint(detail), err)
 	}

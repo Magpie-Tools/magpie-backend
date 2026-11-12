@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/redis/go-redis/v9"
 
-	"magpie/internal/database"
 	"magpie/internal/support"
 )
 
@@ -94,7 +93,7 @@ func PublishGeoLiteDatabases(ctx context.Context, filenames []string) error {
 
 	opCtx := mergedContext(ctx, baseCtx)
 	for _, name := range filenames {
-		path := database.GeoLiteFilePath(name)
+		path := GeoLiteFilePath(name)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("geolite redis sync: read %s: %w", name, err)
@@ -173,7 +172,7 @@ func fetchGeoLiteFromRedis(ctx context.Context, client *redis.Client, filenames 
 		if len(data) == 0 {
 			continue
 		}
-		destPath := database.GeoLiteFilePath(name)
+		destPath := GeoLiteFilePath(name)
 		if err := writeToFile(destPath, bytes.NewReader(data)); err != nil {
 			return false, fmt.Errorf("geolite redis sync: write %s: %w", name, err)
 		}
@@ -181,7 +180,7 @@ func fetchGeoLiteFromRedis(ctx context.Context, client *redis.Client, filenames 
 	}
 
 	if updated {
-		if err := database.ReloadGeoLiteFromDisk(); err != nil {
+		if err := ReloadGeoLiteFromDisk(); err != nil {
 			return false, fmt.Errorf("geolite redis sync: reload databases: %w", err)
 		}
 	}

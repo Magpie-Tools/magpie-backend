@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
+	workspaces "magpie/internal/workspace"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -116,14 +119,14 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		t.Fatalf("create legacy ownership: %v", err)
 	}
 
-	previousDB := DB
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	t.Cleanup(func() { pg.DB = previousDB })
 	migratedDB, err := SetupDB(func(cfg *Config) {
 		cfg.ExistingDB = legacyDB
 		cfg.Dialector = nil
 		cfg.AutoMigrate = true
 		cfg.SeedDefaults = false
-		cfg.Migrations = defaultMigrations()
+		cfg.Migrations = schema.DefaultMigrations()
 	})
 	if err != nil {
 		t.Fatalf("migrate database: %v", err)
@@ -156,7 +159,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		t.Fatalf("migrated lifecycle state = %q, want active", managed.State)
 	}
 
-	shared, err := CreateWorkspace(legacyUser.ID, "Shared production")
+	shared, err := workspaces.CreateWorkspace(legacyUser.ID, "Shared production", nil)
 	if err != nil {
 		t.Fatalf("create shared workspace after migration: %v", err)
 	}
@@ -168,7 +171,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 	if err := migratedDB.Create(&newUser).Error; err != nil {
 		t.Fatalf("create post-migration user: %v", err)
 	}
-	newPersonal, err := CreatePersonalWorkspaceForUser(migratedDB, newUser)
+	newPersonal, err := workspaces.CreatePersonalWorkspaceForUser(migratedDB, newUser)
 	if err != nil {
 		t.Fatalf("create post-migration personal workspace: %v", err)
 	}
@@ -179,7 +182,7 @@ func TestSetupDBMigratesLegacyUserOwnershipToPersonalWorkspace(t *testing.T) {
 		t.Fatalf("post-migration personal workspace reused account id %d", newUser.ID)
 	}
 
-	if err := seedPersonalWorkspaces(migratedDB); err != nil {
+	if err := schema.SeedPersonalWorkspaces(migratedDB); err != nil {
 		t.Fatalf("rerun personal workspace seeding: %v", err)
 	}
 	var postMigrationMemberships []domain.WorkspaceMembership

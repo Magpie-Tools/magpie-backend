@@ -3,11 +3,13 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"magpie/internal/checkpace"
+	"magpie/internal/jobs/checker"
 )
 
 func TestShutdownWaitsForLastProducerBeforeFinalConsumerFlush(t *testing.T) {
@@ -122,9 +124,10 @@ func TestShutdownReportsDeadlineWhenProducerCannotStop(t *testing.T) {
 // Checker workers charge requests until the producers have stopped. The usage
 // meter's last flush must come after that, or those requests are never written.
 func TestShutdownWritesCheckUsageChargedUntilProducersStopped(t *testing.T) {
-	const workspaceID = 9_000_001 // the meter lives for the process
+	const workspaceID = 9_000_001
 	var written atomic.Uint64
-	checkpace.Configure(checkpace.Store{FlushUsage: func(_ context.Context, batch checkpace.UsageBatch) error {
+	pace := checkpace.NewPacer()
+	pace.Configure(checkpace.Store{FlushUsage: func(_ context.Context, batch checkpace.UsageBatch) error {
 		for _, usage := range batch.Usage {
 			if usage.WorkspaceID == workspaceID {
 				written.Add(usage.Attempts)
@@ -132,9 +135,9 @@ func TestShutdownWritesCheckUsageChargedUntilProducersStopped(t *testing.T) {
 		}
 		return nil
 	}})
-	t.Cleanup(func() { checkpace.Configure(checkpace.Store{}) })
 
 	running := newRuntime(context.Background())
+	running.pace = pace
 	running.startCheckUsageMeter()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -142,7 +145,7 @@ func TestShutdownWritesCheckUsageChargedUntilProducersStopped(t *testing.T) {
 	if err := running.producers.stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !checkpace.Current().ChargeRequest(workspaceID, true, time.Now()) {
+	if !pace.ChargeRequest(pace.Current(), workspaceID, true, time.Now()) {
 		t.Fatal("the request was refused")
 	}
 	if err := running.Shutdown(ctx); err != nil {
@@ -150,5 +153,137 @@ func TestShutdownWritesCheckUsageChargedUntilProducersStopped(t *testing.T) {
 	}
 	if got := written.Load(); got != 1 {
 		t.Fatalf("shutdown wrote %d of the 1 request charged before the producers stopped", got)
+	}
+}
+
+// Checker workers are producers. Shutdown stops them first, then the checker
+// batchers they submit to, then the consumers, whose check usage meter makes
+// the final flush, then the read models.
+func TestShutdownStopsCheckerBatchersBetweenWorkersAndFinalFlush(t *testing.T) {
+	running := newRuntime(context.Background())
+	stopped := make(chan string, 4)
+	record := func(name string) func(context.Context) {
+		return func(ctx context.Context) {
+			<-ctx.Done()
+			stopped <- name
+		}
+	}
+	running.producers.start(record("checker workers"))
+	running.batchers.start(record("checker batchers"))
+	running.consumers.start(record("usage meter final flush"))
+	running.readModels.start(record("read models"))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := running.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	close(stopped)
+	var order []string
+	for name := range stopped {
+		order = append(order, name)
+	}
+	want := []string{"checker workers", "checker batchers", "usage meter final flush", "read models"}
+	if len(order) != len(want) {
+		t.Fatalf("stop order %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("stop order %v, want %v", order, want)
+		}
+	}
+}
+
+// The real checker runtime: the dispatcher's workers have returned before the
+// batchers stop, and the batchers process what they received before the
+// consumers' final flush begins.
+func TestCheckerRuntimeStopsAfterItsDispatcher(t *testing.T) {
+	running := newRuntime(context.Background())
+	checkers := checker.NewRuntime(checkpace.NewPacer())
+	batchersDone := make(chan struct{})
+	running.batchers.start(func(ctx context.Context) {
+		checkers.RunBatchers(ctx)
+		close(batchersDone)
+	})
+	dispatcherDone := make(chan struct{})
+	running.producers.start(func(ctx context.Context) {
+		<-ctx.Done()
+		close(dispatcherDone)
+	})
+	flushSawBatchersStopped := make(chan bool, 1)
+	running.consumers.start(func(ctx context.Context) {
+		<-ctx.Done()
+		select {
+		case <-batchersDone:
+			flushSawBatchersStopped <- true
+		default:
+			flushSawBatchersStopped <- false
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := running.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-dispatcherDone:
+	default:
+		t.Fatal("dispatcher still running after shutdown")
+	}
+	if !<-flushSawBatchersStopped {
+		t.Fatal("the final flush began before the checker batchers stopped")
+	}
+}
+
+// The process's Pacer runs among the consumers with the real checker runtime
+// in place: its final flush begins after the checker workers have returned and
+// the batchers they submit to have stopped, and it writes the last request a
+// worker charged.
+func TestPacerFinalFlushFollowsCheckerWorkersAndBatchers(t *testing.T) {
+	const workspaceID = 9_000_002
+	pace := checkpace.NewPacer()
+	running := newRuntime(context.Background())
+	running.pace = pace
+	checkers := checker.NewRuntime(pace)
+	batchersDone := make(chan struct{})
+	running.batchers.start(func(ctx context.Context) {
+		checkers.RunBatchers(ctx)
+		close(batchersDone)
+	})
+	running.producers.start(func(ctx context.Context) {
+		<-ctx.Done()
+		if !pace.ChargeRequest(pace.Current(), workspaceID, true, time.Now()) {
+			t.Error("the worker's last request was refused")
+		}
+	})
+	var mu sync.Mutex
+	var written uint64
+	var afterBatchers []bool
+	pace.Configure(checkpace.Store{FlushUsage: func(_ context.Context, batch checkpace.UsageBatch) error {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, usage := range batch.Usage {
+			if usage.WorkspaceID != workspaceID {
+				continue
+			}
+			written += usage.Attempts
+			select {
+			case <-batchersDone:
+				afterBatchers = append(afterBatchers, true)
+			default:
+				afterBatchers = append(afterBatchers, false)
+			}
+		}
+		return nil
+	}})
+	running.startCheckUsageMeter()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := running.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if written != 1 || len(afterBatchers) != 1 || !afterBatchers[0] {
+		t.Fatalf("final flush wrote %d of 1 attempts; flushes after the batchers stopped: %v", written, afterBatchers)
 	}
 }

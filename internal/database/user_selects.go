@@ -25,7 +25,7 @@ func preloadCheckerWorkspaces(db *gorm.DB) *gorm.DB {
 	return db.Select(checkerWorkspaceSelectColumns)
 }
 
-func preloadWorkspaceIDsOnly(db *gorm.DB) *gorm.DB {
+func PreloadWorkspaceIDsOnly(db *gorm.DB) *gorm.DB {
 	return db.Select("id")
 }
 

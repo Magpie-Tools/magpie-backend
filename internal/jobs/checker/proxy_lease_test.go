@@ -19,7 +19,7 @@ func TestLongRouteRetriesRenewLeaseBetweenAttempts(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	queue := proxyqueue.NewRedisProxyQueue(client)
+	queue := proxyqueue.NewRedisProxyQueue(client, nil)
 	originalQueue := proxyqueue.PublicProxyQueue
 	proxyqueue.PublicProxyQueue = *queue
 	resetCheckerHTTPClientCacheForTests()
@@ -68,7 +68,7 @@ func TestBulkRequeueKeepsRetryingWorkerExclusive(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	queue := proxyqueue.NewRedisProxyQueue(client)
+	queue := proxyqueue.NewRedisProxyQueue(client, nil)
 	originalQueue, originalFactory := proxyqueue.PublicProxyQueue, checkerTransportFactory
 	proxyqueue.PublicProxyQueue = *queue
 	resetCheckerHTTPClientCacheForTests()

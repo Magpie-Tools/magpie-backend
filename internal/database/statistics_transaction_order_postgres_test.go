@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -57,7 +58,7 @@ func TestStatisticsLatestWaitDoesNotPinImportUsagePostgres(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	DB = db.WithContext(ctx)
+	pg.DB = db.WithContext(ctx)
 	held := db.WithContext(ctx).Begin()
 	defer held.Rollback()
 	var holderPID int

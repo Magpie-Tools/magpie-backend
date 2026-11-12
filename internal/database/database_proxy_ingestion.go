@@ -9,13 +9,15 @@ import (
 
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-const maxParamsPerBatch = 65534 // Conservative default (PostgreSQL's limit) - 1
+const MaxParamsPerBatch = 65534 // Conservative default (PostgreSQL's limit) - 1
 
 const minBatchSize = 100 // Minimum batch size to maintain efficiency
 
@@ -31,7 +33,7 @@ func InsertAndGetProxiesWithWorkspace(proxies []domain.Proxy, workspaceIDs ...ui
 		return inserted, err
 	}
 
-	proxiesWithWorkspaces, err := fetchProxiesWithWorkspaces(DB, inserted)
+	proxiesWithWorkspaces, err := fetchProxiesWithWorkspaces(pg.DB, inserted)
 	if err != nil {
 		return nil, fmt.Errorf("load imported proxies with workspaces: %w", err)
 	}
@@ -63,7 +65,7 @@ func insertAndAssociateProxies(proxies []domain.Proxy, workspaceIDs []uint) ([]d
 		return nil, nil
 	}
 
-	tx := DB.Begin()
+	tx := pg.DB.Begin()
 	if tx.Error != nil {
 		return nil, tx.Error
 	}
@@ -155,7 +157,7 @@ func planWorkspaceManagedProxyStates(tx *gorm.DB, workspaceID uint, proxies []do
 	}
 	existing := make(map[string]managedProxyStatePlan)
 	// Reserve one parameter for workspace_id in addition to the route hashes.
-	const lookupBatchSize = maxParamsPerBatch - 1
+	const lookupBatchSize = MaxParamsPerBatch - 1
 	for start := 0; start < len(hashes); start += lookupBatchSize {
 		end := min(start+lookupBatchSize, len(hashes))
 		var existingRows []existingRow
@@ -236,10 +238,10 @@ func calculateCreateBatchSize(tx *gorm.DB, model any, rowCount int) (int, error)
 	if err != nil {
 		return 0, err
 	}
-	if numFields <= 0 || numFields > maxParamsPerBatch {
+	if numFields <= 0 || numFields > MaxParamsPerBatch {
 		return 0, fmt.Errorf("cannot batch insert with %d database fields", numFields)
 	}
-	return min(maxParamsPerBatch/numFields, rowCount), nil
+	return min(MaxParamsPerBatch/numFields, rowCount), nil
 }
 
 func insertProxies(tx *gorm.DB, proxies []domain.Proxy) error {
@@ -269,8 +271,8 @@ func ensureProxyIDs(tx *gorm.DB, proxies []domain.Proxy) error {
 	}
 
 	lookup := make(map[string]uint64, len(missing))
-	for start := 0; start < len(missing); start += maxParamsPerBatch {
-		end := min(start+maxParamsPerBatch, len(missing))
+	for start := 0; start < len(missing); start += MaxParamsPerBatch {
+		end := min(start+MaxParamsPerBatch, len(missing))
 		var results []struct {
 			ID   uint64
 			Hash []byte
@@ -353,10 +355,10 @@ func createWorkspaceAssociations(tx *gorm.DB, proxies []domain.Proxy, workspaceI
 			return err
 		}
 	}
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
-	if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+	if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
 	if inserted.RowsAffected == 0 {
@@ -405,8 +407,8 @@ func fetchProxiesWithWorkspaces(tx *gorm.DB, proxies []domain.Proxy) ([]domain.P
 	for _, proxy := range proxies {
 		credentialsByID[proxy.ID] = proxy
 	}
-	for i := 0; i < len(ids); i += maxParamsPerBatch {
-		end := i + maxParamsPerBatch
+	for i := 0; i < len(ids); i += MaxParamsPerBatch {
+		end := i + MaxParamsPerBatch
 		if end > len(ids) {
 			end = len(ids)
 		}

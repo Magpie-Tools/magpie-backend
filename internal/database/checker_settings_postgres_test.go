@@ -5,50 +5,19 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
+	testdb "magpie/internal/testkit/db"
 	"reflect"
 	"testing"
 	"time"
 )
 
-func testCheckerProfiles() *dto.CheckerSettings {
-	w := domain.Workspace{HTTPProtocol: true, Timeout: 1000, Retries: 0, TransportProtocol: "tcp"}
-	s := w.DefaultCheckerSettings()
-	return s
-}
+func testCheckerProfiles() *dto.CheckerSettings { return testdb.CheckerProfiles() }
 
 func seedCheckerEvidenceTest(t *testing.T, db *gorm.DB) (domain.Workspace, domain.Workspace, domain.Proxy, domain.Judge) {
 	t.Helper()
-	for i, name := range domain.CheckerProtocols {
-		if err := db.Create(&domain.Protocol{ID: i + 1, Name: name}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	judge := domain.Judge{FullString: "http://127.0.0.1:8080/"}
-	if err := db.Create(&judge).Error; err != nil {
-		t.Fatal(err)
-	}
-	a, b := domain.Workspace{Name: "Accept", CheckerConfig: testCheckerProfiles()}, domain.Workspace{Name: "Reject", CheckerConfig: testCheckerProfiles()}
-	if err := db.Create(&a).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&b).Error; err != nil {
-		t.Fatal(err)
-	}
-	for id, regex := range map[uint]string{a.ID: "accepted", b.ID: "different"} {
-		if err := db.Create(&domain.WorkspaceJudge{WorkspaceID: id, JudgeID: judge.ID, Regex: regex}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	proxy := domain.Proxy{IP: "192.0.2.1", Port: 8080}
-	if err := db.Create(&proxy).Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, id := range []uint{a.ID, b.ID} {
-		if err := db.Create(&domain.ManagedProxy{WorkspaceID: id, ProxyID: proxy.ID}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	return a, b, proxy, judge
+	return testdb.SeedCheckerEvidence(t, db)
 }
 
 func TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres(t *testing.T) {
@@ -90,7 +59,7 @@ func TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres(t 
 			t.Fatalf("workspace %d TCP candidates=%d err=%v", id, len(routes), err)
 		}
 	}
-	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[uint]bool{a.ID: true, b.ID: false} {
@@ -122,7 +91,7 @@ func TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres(t 
 	}
 	assertAlive(a.ID, nil)
 	assertAlive(b.ID, new(false))
-	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexes(db, "WHERE up.proxy_id = ?", proxy.ID); err != nil {
 		t.Fatal(err)
 	}
 	dead := buildProxyListFilterQuery(a.ID, dto.ProxyListFilters{Status: "dead"})
@@ -286,19 +255,19 @@ func TestCheckerAttributionMigrationPreservesLegacyPartitionHistoryPostgres(t *t
 			t.Fatal(err)
 		}
 	}
-	if err := prepareCheckerSettingsSchema(db); err != nil {
+	if err := schema.PrepareCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureProxyStatisticsPartitionSchema(db); err != nil {
+	if err := schema.EnsureProxyStatisticsPartitionSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareCheckerSettingsSchema(db); err != nil {
+	if err := schema.PrepareCheckerSettingsSchema(db); err != nil {
 		t.Fatal("second migration", err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal("second attribution migration", err)
 	}
 	var count int64
@@ -334,7 +303,7 @@ func TestPendingCheckerProjectionSuppressesHealthWithoutPruningEvidencePostgres(
 	if err := InsertProxyStatistics(ctx, []domain.ProxyStatistic{stat}, 100); err != nil {
 		t.Fatal(err)
 	}
-	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Model(&domain.Workspace{}).Where("id = ?", a.ID).UpdateColumn("checker_dirty", true).Error; err != nil {
@@ -365,7 +334,7 @@ func TestPendingCheckerProjectionSuppressesHealthWithoutPruningEvidencePostgres(
 	}
 	// A statistics flush while pending can rebuild indexes as unknown. A
 	// successful refresh must restore still-applicable evidence atomically.
-	if err := refreshWorkspaceProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexes(db, "WHERE up.workspace_id = ?", a.ID); err != nil {
 		t.Fatal(err)
 	}
 	refreshed, err := LoadCheckerWorkspace(ctx, a.ID)

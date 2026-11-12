@@ -4,7 +4,7 @@ import "time"
 
 // WorkspaceProxyFilterIndex is a denormalized read model for proxy list filtering.
 type WorkspaceProxyFilterIndex struct {
-	// Keep these names aligned with ensureReadModelSchema. Different names make
+	// Keep these names aligned with schema.EnsureReadModelSchema. Different names make
 	// AutoMigrate create another physical copy of the same PostgreSQL index.
 	WorkspaceID uint   `gorm:"column:workspace_id;primaryKey;index:idx_user_proxy_filter_user_alive_latest,priority:1;index:idx_user_proxy_filter_user_country,priority:1;index:idx_user_proxy_filter_user_type,priority:1;index:idx_user_proxy_filter_user_reputation,priority:1"`
 	ProxyID     uint64 `gorm:"primaryKey;index:idx_user_proxy_filter_proxy_id"`

@@ -1,0 +1,19 @@
+# Functions outside internal/database that receive a *gorm.DB and still begin,
+# commit, roll back or nest a transaction. A pure-move change may add the
+# function it carries; a follow-up logic change reshapes it and removes the line.
+#
+# allow: package.Function
+
+# Schema migrations moved from internal/database with their transactions. Each
+# takes the handle it migrates and opens a transaction on it. The follow-up
+# gives platform/schema a migrator that owns the pool handle.
+allow: platform/schema.PrepareCheckerSettingsSchema          # one transaction around the legacy checker-settings rename
+allow: platform/schema.migrateLegacyProxyStorage              # one transaction per batch of legacy credential rows
+allow: platform/schema.migrateProxyStatisticsToPartitioned    # explicit Begin/Commit around the partition swap
+allow: platform/schema.ensureMonthlyPartitionForTable         # one transaction per monthly partition
+
+# The development seed moved from internal/database with its transaction. It
+# receives the handle the command opened and runs one transaction on it. The
+# follow-up gives devseed the handle at construction and opens the transaction
+# in its own store function.
+allow: devseed.SeedDevelopmentData

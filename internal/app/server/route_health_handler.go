@@ -10,7 +10,7 @@ import (
 	"magpie/internal/app/bootstrap"
 	"magpie/internal/app/version"
 	"magpie/internal/checkpace"
-	"magpie/internal/database"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 )
 
@@ -59,7 +59,7 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func readyz(w http.ResponseWriter, r *http.Request) {
+func (p pacedRoutes) readyz(w http.ResponseWriter, r *http.Request) {
 	ctx := context.Background()
 	if r != nil {
 		ctx = r.Context()
@@ -70,7 +70,7 @@ func readyz(w http.ResponseWriter, r *http.Request) {
 	components := map[string]probeComponent{
 		"database":    checkDatabaseComponent(ctx),
 		"redis":       redisComponent,
-		"check_usage": checkUsageComponent(),
+		"check_usage": checkUsageComponent(p.pace.Health()),
 		"startup_queue_bootstrap": checkStartupBootstrapComponent(
 			redisComponent,
 			redisRequired,
@@ -112,11 +112,11 @@ func readyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkDatabaseComponent(ctx context.Context) probeComponent {
-	if database.DB == nil {
+	if pg.DB == nil {
 		return probeComponent{Status: componentStatusDown, Details: "database connection is not initialized"}
 	}
 
-	sqlDB, err := database.DB.DB()
+	sqlDB, err := pg.DB.DB()
 	if err != nil {
 		return probeComponent{Status: componentStatusDown, Details: "database sql handle unavailable"}
 	}
@@ -211,11 +211,10 @@ func classifyRedisError(err error, lastErr string) string {
 }
 
 // checkUsageComponent reports whether this instance writes metered check
-// usage. Failing writes degrade readiness without making the instance
-// unready: usage stays counted in memory and is retried, and checking pauses
-// by itself after CHECK_USAGE_PAUSE_AFTER.
-func checkUsageComponent() probeComponent {
-	health := checkpace.Health()
+// usage, from its Pacer's health. Failing writes degrade readiness without
+// making the instance unready: usage stays counted in memory and is retried,
+// and checking pauses by itself after CHECK_USAGE_PAUSE_AFTER.
+func checkUsageComponent(health checkpace.PersistenceHealth) probeComponent {
 	if health.Healthy {
 		return probeComponent{Status: componentStatusUp}
 	}

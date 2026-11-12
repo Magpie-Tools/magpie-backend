@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -20,7 +22,7 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
@@ -36,9 +38,9 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 		t.Fatalf("migrate database: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	users := []domain.User{
 		{Email: "first@example.test", Password: "hash", Role: "user"},
@@ -47,15 +49,16 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 	if err := db.Create(&users).Error; err != nil {
 		t.Fatalf("create users: %v", err)
 	}
+	workspaces := make([]domain.Workspace, 0, len(users))
 	for _, user := range users {
-		createTestWorkspaceForUser(t, db, user)
+		workspaces = append(workspaces, createTestWorkspaceForUser(t, db, user))
 	}
 
 	first := domain.Proxy{Port: 8080, Username: "CaseUser", Password: "CaseSecret", Country: "N/A", EstimatedType: "N/A"}
 	if err := first.SetIP("192.0.2.10"); err != nil {
 		t.Fatalf("set first IP: %v", err)
 	}
-	firstInserted, err := InsertAndGetProxiesWithUser([]domain.Proxy{first}, users[0].ID)
+	firstInserted, err := InsertAndGetProxiesWithWorkspace([]domain.Proxy{first}, workspaces[0].ID)
 	if err != nil {
 		t.Fatalf("insert first proxy: %v", err)
 	}
@@ -67,7 +70,7 @@ func TestProxyAccessStorageKeepsCaseSensitiveCredentialsOnUserRelation(t *testin
 	if err := second.SetIP("192.0.2.10"); err != nil {
 		t.Fatalf("set second IP: %v", err)
 	}
-	secondInserted, err := InsertAndGetProxiesWithUser([]domain.Proxy{second}, users[1].ID)
+	secondInserted, err := InsertAndGetProxiesWithWorkspace([]domain.Proxy{second}, workspaces[1].ID)
 	if err != nil {
 		t.Fatalf("insert second proxy: %v", err)
 	}
@@ -103,7 +106,7 @@ func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
@@ -119,21 +122,21 @@ func TestProxyAccessStoragePersistsIPv6Address(t *testing.T) {
 		t.Fatalf("migrate database: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	user := domain.User{Email: "ipv6@example.test", Password: "hash", Role: "user"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	createTestWorkspaceForUser(t, db, user)
+	workspace := createTestWorkspaceForUser(t, db, user)
 
 	proxy := domain.Proxy{Port: 8080, Country: "N/A", EstimatedType: "N/A"}
 	if err := proxy.SetIP("2001:0db8::42"); err != nil {
 		t.Fatalf("set IPv6 address: %v", err)
 	}
-	inserted, err := InsertAndGetProxiesWithUser([]domain.Proxy{proxy}, user.ID)
+	inserted, err := InsertAndGetProxiesWithWorkspace([]domain.Proxy{proxy}, workspace.ID)
 	if err != nil {
 		t.Fatalf("insert IPv6 proxy: %v", err)
 	}
@@ -157,7 +160,7 @@ func TestProxyAccessStoragePersistsProviderHostname(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
@@ -173,21 +176,21 @@ func TestProxyAccessStoragePersistsProviderHostname(t *testing.T) {
 		t.Fatalf("migrate database: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	user := domain.User{Email: "hostname@example.test", Password: "hash", Role: "user"}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	createTestWorkspaceForUser(t, db, user)
+	workspace := createTestWorkspaceForUser(t, db, user)
 
 	proxy := domain.Proxy{Port: 3128, Country: "N/A", EstimatedType: "N/A"}
 	if err := proxy.SetHost("Gateway.Provider.Example."); err != nil {
 		t.Fatalf("set provider hostname: %v", err)
 	}
-	inserted, err := InsertAndGetProxiesWithUser([]domain.Proxy{proxy}, user.ID)
+	inserted, err := InsertAndGetProxiesWithWorkspace([]domain.Proxy{proxy}, workspace.ID)
 	if err != nil {
 		t.Fatalf("insert hostname proxy: %v", err)
 	}

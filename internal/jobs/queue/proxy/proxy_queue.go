@@ -13,8 +13,8 @@ import (
 
 	"magpie/internal/checkpace"
 	"magpie/internal/domain"
+	"magpie/internal/instanceid"
 	queueutil "magpie/internal/jobs/queue"
-	"magpie/internal/jobs/runtime"
 	"magpie/internal/security"
 	"magpie/internal/support"
 
@@ -78,6 +78,10 @@ type RedisProxyQueue struct {
 	popScript      *redis.Script
 	queueShardKeys []string
 	popQueueKeys   []string
+	// pace supplies the allowance snapshot that sets each route's requeue
+	// delay. A nil Pacer has no snapshot, so every route uses
+	// checkpace.FallbackInterval, as before the first allowance load.
+	pace *checkpace.Pacer
 }
 
 type proxyPopResult struct {
@@ -111,10 +115,12 @@ type queuedProxy struct {
 var PublicProxyQueue RedisProxyQueue
 
 func init() {
-	PublicProxyQueue = *NewRedisProxyQueue(nil)
+	PublicProxyQueue = *NewRedisProxyQueue(nil, nil)
 }
 
-func NewRedisProxyQueue(client *redis.Client) *RedisProxyQueue {
+// NewRedisProxyQueue returns a queue on client that schedules routes with
+// pace's allowance snapshot. pace may be nil for tools that pace nothing.
+func NewRedisProxyQueue(client *redis.Client, pace *checkpace.Pacer) *RedisProxyQueue {
 	shards := support.GetEnvInt("PROXY_QUEUE_SHARDS", defaultQueueShards)
 	if shards <= 0 {
 		shards = defaultQueueShards
@@ -132,6 +138,7 @@ func NewRedisProxyQueue(client *redis.Client) *RedisProxyQueue {
 		popScript:      redis.NewScript(luaPopScript),
 		queueShardKeys: shardKeys,
 		popQueueKeys:   popKeys,
+		pace:           pace,
 	}
 	if client != nil {
 		if err := queue.refreshQueueHeads(); err != nil {
@@ -238,8 +245,8 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 
 	pipe := client.Pipeline()
 	// New owners or routes change workspace check budgets; refresh soon.
-	checkpace.RequestRefresh()
-	pace := checkpace.Current()
+	rpq.pace.RequestRefresh()
+	pace := rpq.pace.Current()
 	now := time.Now()
 	proxyLenDuration := time.Duration(len(queueable))
 	batchSize := 500 // Adjust based on your Redis server capabilities
@@ -247,7 +254,7 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 	for i, proxy := range queueable {
 		// Spread the batch over each route's own cadence so an import does not
 		// make every new route due at once.
-		interval := pace.RouteCheckInterval(proxy.Workspaces)
+		interval := rpq.pace.RouteCheckInterval(pace, proxy.Workspaces)
 		offset := (interval * time.Duration(i)) / proxyLenDuration
 		nextCheck := now.Add(offset)
 		hashKey := string(proxy.Hash)
@@ -624,7 +631,7 @@ func (rpq *RedisProxyQueue) requeueProxy(proxy domain.Proxy, lastCheckTime time.
 
 	// The fastest owning workspace's cadence, from the in-memory allowance
 	// snapshot. Requeueing issues no command beyond the completion script.
-	interval := checkpace.Current().RouteCheckInterval(proxy.Workspaces)
+	interval := rpq.pace.RouteCheckInterval(rpq.pace.Current(), proxy.Workspaces)
 	base := lastCheckTime
 	// Clamp to now so overdue proxies don't keep hogging the queue.
 	if now := time.Now(); now.After(base) {
@@ -865,7 +872,7 @@ func (rpq *RedisProxyQueue) GetActiveInstances() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return runtime.CountActiveInstances(rpq.baseContext(), client)
+	return instanceid.CountActiveInstances(rpq.baseContext(), client)
 }
 
 func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {
@@ -878,7 +885,7 @@ func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {
 		return 0, err
 	}
 	ctx := rpq.baseContext()
-	interval := requeueAllWindow(checkpace.Current())
+	interval := requeueAllWindow(rpq.pace.Current())
 
 	const batchSize int64 = 500
 

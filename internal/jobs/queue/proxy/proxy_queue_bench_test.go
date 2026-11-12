@@ -40,7 +40,7 @@ func BenchmarkProxyQueueLegacyRekey(b *testing.B) {
 	if size, err := client.DBSize(ctx).Result(); err != nil || size != 0 {
 		b.Fatalf("benchmark requires an empty disposable Redis database: size=%d, error=%v", size, err)
 	}
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	keys := append([]string{proxyQueueHeadKey}, queue.popKeys()...)
 	b.Cleanup(func() {
 		for start := 0; start < len(keys); start += 1000 {
@@ -49,7 +49,7 @@ func BenchmarkProxyQueueLegacyRekey(b *testing.B) {
 			}
 		}
 	})
-	useUniformPace(b, time.Hour)
+	useUniformPace(b, queue, time.Hour)
 	canonicalDue := float64(time.Now().Add(processingLease / 2).UnixMilli())
 	pipe := client.Pipeline()
 	for i := 0; i <= b.N; i++ {
@@ -224,7 +224,7 @@ func benchmarkProxyQueueCycle(b *testing.B, concurrent bool) {
 	if size, err := client.DBSize(ctx).Result(); err != nil || size != 0 {
 		b.Fatalf("benchmark requires an empty disposable Redis database: size=%d, error=%v", size, err)
 	}
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	keys := append([]string{proxyQueueHeadKey}, queue.popKeys()...)
 	b.Cleanup(func() {
 		for start := 0; start < len(keys); start += 1000 {
@@ -235,7 +235,7 @@ func benchmarkProxyQueueCycle(b *testing.B, concurrent bool) {
 		}
 	})
 	// Keep completed routes behind every still-ready route throughout the run.
-	useUniformPace(b, time.Hour)
+	useUniformPace(b, queue, time.Hour)
 	pipe := client.Pipeline()
 	for i := 0; i < b.N; i++ {
 		member := fmt.Sprintf("benchmark-route-%064d", i)

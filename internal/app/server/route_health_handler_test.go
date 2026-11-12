@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
-	"magpie/internal/database"
+	"magpie/internal/checkpace"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"gorm.io/driver/sqlite"
@@ -39,10 +41,10 @@ func TestHealthz_ReturnsLivenessPayload(t *testing.T) {
 }
 
 func TestReadyz_FailsWhenDatabaseUnavailable(t *testing.T) {
-	prevDB := database.DB
-	database.DB = nil
+	prevDB := pg.DB
+	pg.DB = nil
 	t.Cleanup(func() {
-		database.DB = prevDB
+		pg.DB = prevDB
 	})
 
 	t.Setenv(envReadyzAllowRedisDegraded, "true")
@@ -54,7 +56,7 @@ func TestReadyz_FailsWhenDatabaseUnavailable(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	readyz(rr, req)
+	pacedRoutes{pace: checkpace.NewPacer()}.readyz(rr, req)
 
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
@@ -95,14 +97,14 @@ func TestCheckRedisComponent_ReportsModeAndErrorDetails(t *testing.T) {
 }
 
 func TestReadyz_AllowsStartupBootstrapDegradedWhenRedisDegradedAllowed(t *testing.T) {
-	prevDB := database.DB
+	prevDB := pg.DB
 	db, err := gorm.Open(sqlite.Open("file:readyz-degraded?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	database.DB = db
+	pg.DB = db
 	t.Cleanup(func() {
-		database.DB = prevDB
+		pg.DB = prevDB
 	})
 
 	t.Setenv(envReadyzAllowRedisDegraded, "true")
@@ -116,7 +118,7 @@ func TestReadyz_AllowsStartupBootstrapDegradedWhenRedisDegradedAllowed(t *testin
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	readyz(rr, req)
+	pacedRoutes{pace: checkpace.NewPacer()}.readyz(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
@@ -144,5 +146,19 @@ func TestClassifyRedisError_ParseURLClassifiedAsConfigInvalid(t *testing.T) {
 	}
 	if got := classifyRedisError(nil, "failed to parse redisUrl"); got != "config_invalid" {
 		t.Fatalf("classifyRedisError(legacy parse msg) = %q, want %q", got, "config_invalid")
+	}
+}
+
+// The readiness probe reports the Pacer's write health: failing writes degrade
+// it, a pause is named, and the error text stays in the log.
+func TestCheckUsageComponentReportsPacerHealth(t *testing.T) {
+	if got := checkUsageComponent(checkpace.NewPacer().Health()); got.Status != componentStatusUp {
+		t.Fatalf("a Pacer without failed writes reported %+v", got)
+	}
+	since := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	got := checkUsageComponent(checkpace.PersistenceHealth{FailingSince: since, Paused: true, LastError: "dial tcp db.internal:5432"})
+	if got.Status != componentStatusDegraded || !strings.Contains(got.Details, since.Format(time.RFC3339)) ||
+		!strings.Contains(got.Details, "paused") || strings.Contains(got.Details, "db.internal") {
+		t.Fatalf("failing check usage writes reported %+v", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 )
 
 func TestStatisticLedgerRetirementPreservesReplayProtection(t *testing.T) {
@@ -21,9 +22,9 @@ func TestStatisticLedgerRetirementPreservesReplayProtection(t *testing.T) {
 				db = setupProxyIngestionPostgresTest(t)
 			} else {
 				db = openDailyChecksSQLite(t)
-				old := DB
-				DB = db
-				t.Cleanup(func() { DB = old })
+				old := pg.DB
+				pg.DB = db
+				t.Cleanup(func() { pg.DB = old })
 				if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}); err != nil {
 					t.Fatal(err)
 				}
@@ -122,7 +123,7 @@ func TestDailyCompactionPreservesTotalsAndBackfill(t *testing.T) {
 		}
 	}
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, startOfUTCDay(now))
+		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, StartOfUTCDay(now))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestDailyCompactionPreservesTotalsAndBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, startOfUTCDay(now))
+		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, StartOfUTCDay(now))
 	}); err != nil {
 		t.Fatal(err)
 	}

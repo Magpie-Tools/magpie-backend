@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	dbschema "magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/postgres"
@@ -70,7 +71,7 @@ func TestEnsureProxyAccessStorageSchemaMigratesLegacyPostgres(t *testing.T) {
 	if err := db.AutoMigrate(&domain.Proxy{}, &domain.UserProxy{}); err != nil {
 		t.Fatalf("auto migrate new storage columns: %v", err)
 	}
-	if err := ensureProxyAccessStorageSchema(db); err != nil {
+	if err := dbschema.EnsureProxyAccessStorageSchema(db); err != nil {
 		t.Fatalf("migrate legacy proxy storage: %v", err)
 	}
 
@@ -222,7 +223,7 @@ func TestEnsureProxyAccessStorageSchemaBackfillsCurrentIPAddressRoutes(t *testin
 	if err := db.AutoMigrate(&domain.Proxy{}); err != nil {
 		t.Fatalf("auto migrate hostname columns: %v", err)
 	}
-	if err := ensureProxyAccessStorageSchema(db); err != nil {
+	if err := dbschema.EnsureProxyAccessStorageSchema(db); err != nil {
 		t.Fatalf("backfill current IP route: %v", err)
 	}
 

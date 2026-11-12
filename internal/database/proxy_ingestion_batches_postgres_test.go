@@ -2,61 +2,23 @@ package database
 
 import (
 	"fmt"
-	"os"
-	"strings"
 	"testing"
-	"time"
 
 	"magpie/internal/domain"
-	"magpie/internal/security"
+	"magpie/internal/platform/pg"
+	testdb "magpie/internal/testkit/db"
 
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
+// setupProxyIngestionPostgresTest opens an isolated, migrated PostgreSQL schema
+// from the test kit and makes it the package handle for the test.
 func setupProxyIngestionPostgresTest(t testing.TB) *gorm.DB {
 	t.Helper()
-	dsn := strings.TrimSpace(os.Getenv("MAGPIE_TEST_POSTGRES_DSN"))
-	if dsn == "" {
-		t.Skip("MAGPIE_TEST_POSTGRES_DSN is not set")
-	}
-	t.Setenv("PROXY_ENCRYPTION_KEY", "proxy-ingestion-batch-test-key")
-	security.ResetProxyCipherForTests()
-	t.Cleanup(security.ResetProxyCipherForTests)
-	admin, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	adminSQL, err := admin.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = adminSQL.Close() })
-	schema := fmt.Sprintf("proxy_ingestion_batches_%d", time.Now().UnixNano())
-	if err := admin.Exec("CREATE SCHEMA " + schema).Error; err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = admin.Exec("DROP SCHEMA " + schema + " CASCADE").Error })
-	// Keep pgx's extended protocol enabled so oversized parameter lists fail here.
-	db, err := gorm.Open(postgres.Open(dsn+" search_path="+schema), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := configureWorkspaceJoinTables(db); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.AutoMigrate(defaultMigrations()...); err != nil {
-		t.Fatal(err)
-	}
-	previous := DB
-	DB = db
-	t.Cleanup(func() { DB = previous })
+	db := testdb.OpenPostgres(t)
+	previous := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previous })
 	return db
 }
 

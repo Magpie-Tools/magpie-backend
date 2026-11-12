@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/log"
 
+	"magpie/internal/account"
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 )
 
@@ -39,7 +39,7 @@ func getNotificationReadState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	readIDs, err := database.ReadNotificationIDs(r.Context(), userID, ids)
+	readIDs, err := account.ReadNotificationIDs(r.Context(), userID, ids)
 	if err != nil {
 		log.Error("failed to load notification read state", "error", err)
 		writeError(w, "Failed to load notification read state", http.StatusInternalServerError)
@@ -55,11 +55,11 @@ func markNotificationRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	err = database.MarkNotificationRead(r.Context(), userID, r.PathValue("id"))
+	err = account.MarkNotificationRead(r.Context(), userID, r.PathValue("id"))
 	switch {
-	case errors.Is(err, database.ErrInvalidNotificationID):
+	case errors.Is(err, account.ErrInvalidNotificationID):
 		writeError(w, "Invalid notification ID", http.StatusBadRequest)
-	case errors.Is(err, database.ErrNotificationNotFound):
+	case errors.Is(err, account.ErrNotificationNotFound):
 		writeError(w, "Notification not found", http.StatusNotFound)
 	case err != nil:
 		log.Error("failed to mark notification as read", "error", err)

@@ -18,6 +18,7 @@ import (
 	"magpie/internal/domain"
 	sitequeue "magpie/internal/jobs/queue/sites"
 	"magpie/internal/jobs/scraper"
+	"magpie/internal/scrapestore"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -32,7 +33,7 @@ func getScrapeSourcesCount(w http.ResponseWriter, r *http.Request) {
 
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	filters := parseScrapeSourceListFilters(r)
-	writeJSON(w, http.StatusOK, database.GetAllScrapeSiteCountOfUserWithSearchAndFilters(userID, search, filters))
+	writeJSON(w, http.StatusOK, scrapestore.GetAllScrapeSiteCountOfUserWithSearchAndFilters(userID, search, filters))
 }
 
 func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +58,7 @@ func getScrapeSourcePage(w http.ResponseWriter, r *http.Request) {
 			pageSize = parsed
 		}
 	}
-	scrapeSiteInfoPages := database.GetScrapeSiteInfoPageWithOptions(userID, page, pageSize, search, filters, database.ScrapeSourcePageQueryOptions{
+	scrapeSiteInfoPages := scrapestore.GetScrapeSiteInfoPageWithOptions(userID, page, pageSize, search, filters, scrapestore.ScrapeSourcePageQueryOptions{
 		SortField: strings.TrimSpace(r.URL.Query().Get("sortField")),
 		SortOrder: strings.TrimSpace(r.URL.Query().Get("sortOrder")),
 	})
@@ -94,7 +95,7 @@ func exportScrapeSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sources, dbErr := database.GetScrapeSiteInfoForExport(userID, settings)
+	sources, dbErr := scrapestore.GetScrapeSiteInfoForExport(userID, settings)
 	if dbErr != nil {
 		log.Error("error exporting scrape sources", "error", dbErr.Error())
 		writeError(w, "Could not export scrape sources", http.StatusInternalServerError)
@@ -319,9 +320,9 @@ func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
 		settings.Scope = "all"
 	}
 
-	deleted, orphaned, deleteErr := database.DeleteScrapeSitesWithSettings(userID, settings)
+	deleted, orphaned, deleteErr := scrapestore.DeleteScrapeSitesWithSettings(userID, settings)
 	if deleteErr != nil {
-		if errors.Is(deleteErr, database.ErrNoScrapeSourcesSelected) {
+		if errors.Is(deleteErr, scrapestore.ErrNoScrapeSourcesSelected) {
 			writeError(w, "No scraping sources selected for deletion", http.StatusBadRequest)
 			return
 		}
@@ -335,7 +336,7 @@ func deleteScrapingSources(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteScrapingSourcesByIDs(w http.ResponseWriter, userID uint, scrapingSource []int) {
-	deleted, orphaned, deleteErr := database.DeleteScrapeSiteRelation(userID, scrapingSource)
+	deleted, orphaned, deleteErr := scrapestore.DeleteScrapeSiteRelation(userID, scrapingSource)
 	if deleteErr != nil {
 		log.Error("could not delete scrape sites", "error", deleteErr.Error())
 		writeError(w, "Could not delete scraping sources", http.StatusInternalServerError)
@@ -449,7 +450,7 @@ func saveScrapingSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sites, err := database.SaveScrapingSourcesWithSettings(userID, allowedSources, mode, tagIDs)
+	sites, err := scrapestore.SaveScrapingSourcesWithSettings(userID, allowedSources, mode, tagIDs)
 	if err != nil {
 		if errors.Is(err, database.ErrProxyTagNotFound) {
 			writeError(w, "One or more automatic tags do not belong to this workspace", http.StatusBadRequest)

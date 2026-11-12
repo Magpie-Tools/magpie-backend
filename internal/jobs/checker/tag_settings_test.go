@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	"net"
 	"net/http"
@@ -58,7 +59,7 @@ func TestTaggedAssignmentsShareProfileBudgetAndCaptureSettings(t *testing.T) {
 	}
 	var statistics []domain.ProxyStatistic
 	enqueueProxyStatistic = func(stat domain.ProxyStatistic, _ []uint) { statistics = append(statistics, stat) }
-	processJudgeAssignments(refreshed, assignments, success, map[uint]bool{}, maxTimeout, maxRetries, false)
+	NewRuntime(checkpace.NewPacer()).processJudgeAssignments(refreshed, assignments, success, map[uint]bool{}, maxTimeout, maxRetries, false)
 	if calls["http"] != [2]uint16{1200, 0} || calls["socks5"] != [2]uint16{1200, 0} {
 		t.Fatal(calls)
 	}
@@ -87,7 +88,7 @@ func TestSharedRequestKeepsWorkspaceValidationEvidence(t *testing.T) {
 		{workspaceID: 2, regex: "DEFAULT", headers: []string{"HEADER-B"}, configKey: "second"},
 	}}}
 	success := map[uint]bool{}
-	processJudgeAssignments(domain.Proxy{ID: 1}, assignments, success, map[uint]bool{}, 8000, 4, false)
+	NewRuntime(checkpace.NewPacer()).processJudgeAssignments(domain.Proxy{ID: 1}, assignments, success, map[uint]bool{}, 8000, 4, false)
 	if len(captured) != 1 || len(captured[0].CheckEvidence) != 2 || !captured[0].CheckEvidence[0].Alive || captured[0].CheckEvidence[1].Alive || !success[1] || success[2] {
 		t.Fatal(captured, success)
 	}

@@ -11,6 +11,9 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
+	testdb "magpie/internal/testkit/db"
 )
 
 func TestWorkspaceCheckUsageInventoryScalePostgres(t *testing.T) {
@@ -91,8 +94,8 @@ func TestRotatorCountLargePoolPostgres(t *testing.T) {
 	if err := db.Model(&a).Update("http_protocol", true).Error; err != nil {
 		t.Fatal(err)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	start := time.Now()
 	created, err := CreateRotatingProxy(a.ID, dto.RotatingProxyCreateRequest{Name: "large-pool", Protocol: "http"})
 	if err != nil || created.AliveProxyCount != routes {
@@ -102,7 +105,7 @@ func TestRotatorCountLargePoolPostgres(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].AliveProxyCount != routes {
 		t.Fatalf("large-pool listing failed: %+v %v", listed, err)
 	}
-	for _, query := range queries.queries {
+	for _, query := range queries.Queries {
 		if strings.Contains(query, "username_encrypted") || strings.Contains(query, "password_encrypted") {
 			t.Fatalf("rotator count loaded credentials: %s", query)
 		}
@@ -137,7 +140,7 @@ func TestRotatorUptimeScopesHistoryPostgres(t *testing.T) {
 	threshold := float64(80)
 	var selected domain.Proxy
 	sql := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return buildAliveProxyQuery(tx, a.ID, 1, nil, uptimeFilterMin, &threshold).Order("proxies.id").Limit(1).Find(&selected)
+		return evidence.BuildAliveProxyQuery(tx, a.ID, 1, nil, evidence.UptimeFilterMin, &threshold).Order("proxies.id").Limit(1).Find(&selected)
 	})
 	var encoded string
 	if err := db.Raw("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) " + sql).Row().Scan(&encoded); err != nil {
@@ -169,79 +172,8 @@ func TestRotatorUptimeScopesHistoryPostgres(t *testing.T) {
 	if scanned > 1 {
 		t.Fatal("uptime read unrelated route history", scanned)
 	}
-	candidate, err := nextAliveProxyForProtocol(db, a.ID, 1, nil, uptimeFilterMin, &threshold, nil)
+	candidate, err := nextAliveProxyForProtocol(db, a.ID, 1, nil, evidence.UptimeFilterMin, &threshold, nil)
 	if err != nil || candidate.ID != p.ID {
 		t.Fatalf("candidate=%+v error=%v", candidate, err)
-	}
-}
-
-func TestSourceStatisticsRefreshCoalescesLargePoolPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	a, _, p, _ := seedCheckerEvidenceTest(t, db)
-	const routes = 10000
-	if err := ensureReadModelSchema(db); err != nil {
-		t.Fatal(err)
-	}
-	site := domain.ScrapeSite{URL: "https://example.test/review"}
-	if err := db.Create(&site).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&domain.WorkspaceScrapeSite{WorkspaceID: a.ID, ScrapeSiteID: site.ID, FetchMode: domain.ScrapeFetchHTTP}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Exec(`INSERT INTO proxies (id,host,port,country,estimated_type) SELECT n,'192.0.2.1',8080,'','' FROM generate_series(2,?::bigint) n`, routes).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Exec(`INSERT INTO user_proxies (workspace_id,proxy_id,state) SELECT ?,n,'active' FROM generate_series(2,?::bigint) n`, a.ID, routes).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Exec(`INSERT INTO proxy_scrape_site (proxy_id,scrape_site_id) SELECT n,? FROM generate_series(1,?::bigint) n`, site.ID, routes).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Exec("ANALYZE").Error; err != nil {
-		t.Fatal(err)
-	}
-	sourceStatsDirtyMu.Lock()
-	previousDirty := sourceStatsDirty
-	sourceStatsDirty = make(map[sourceStatsKey]struct{})
-	sourceStatsDirtyMu.Unlock()
-	t.Cleanup(func() { sourceStatsDirtyMu.Lock(); sourceStatsDirty = previousDirty; sourceStatsDirtyMu.Unlock() })
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	measured := db.Session(&gorm.Session{Logger: queries})
-	start := time.Now()
-	for i := 0; i < 10; i++ {
-		if err := refreshWorkspaceScrapeSourceStatsForProxyIDs(measured, []uint64{p.ID}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, query := range queries.queries {
-		if strings.Contains(query, "INSERT INTO user_scrape_source_stats") {
-			t.Fatal("route refresh recounted the source")
-		}
-	}
-	sourceStatsDirtyMu.Lock()
-	pending := len(sourceStatsDirty)
-	sourceStatsDirtyMu.Unlock()
-	if pending != 1 {
-		t.Fatalf("10 changes produced %d pending source/workspace pairs, want 1", pending)
-	}
-	t.Logf("ten one-route source notifications, pool=%d, duration=%s, aggregate scans=0", routes, time.Since(start))
-	DB = measured
-	flushDirtySourceStats(context.Background())
-	var stat domain.WorkspaceScrapeSourceStat
-	if err := db.First(&stat, "workspace_id = ? AND scrape_site_id = ?", a.ID, site.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if stat.ProxyCount != routes {
-		t.Fatalf("coalesced source count=%d, want %d", stat.ProxyCount, routes)
-	}
-	aggregates := 0
-	for _, query := range queries.queries {
-		if strings.Contains(query, "INSERT INTO user_scrape_source_stats") {
-			aggregates++
-		}
-	}
-	if aggregates != 1 {
-		t.Fatalf("coalesced notifications ran %d aggregate refreshes, want 1", aggregates)
 	}
 }

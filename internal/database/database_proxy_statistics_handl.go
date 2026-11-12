@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
@@ -27,7 +29,7 @@ func CalculateProxyStatisticBatchSize(statCount int) int {
 		return minBatchSize
 	}
 
-	maxPossibleBatchSize := maxParamsPerBatch / numFields
+	maxPossibleBatchSize := MaxParamsPerBatch / numFields
 	if maxPossibleBatchSize < 1 {
 		maxPossibleBatchSize = 1
 	}
@@ -48,12 +50,12 @@ func proxyStatisticColumnCount() int {
 		return int(count)
 	}
 
-	if DB == nil {
+	if pg.DB == nil {
 		log.Error("Failed to determine proxy statistics batch size: database not initialised")
 		return 0
 	}
 
-	numFields, err := getNumDatabaseFields(domain.ProxyStatistic{}, DB)
+	numFields, err := getNumDatabaseFields(domain.ProxyStatistic{}, pg.DB)
 	if err != nil || numFields == 0 {
 		log.Error("Failed to determine proxy statistics batch size", "error", err)
 		return 0
@@ -73,11 +75,11 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 		return nil
 	}
 
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("proxy statistics: database connection was not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -117,7 +119,7 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 		return err
 	}
 
-	QueueReadModelRefreshForProxyIDs(proxyIDs)
+	readmodel.QueueReadModelRefreshForProxyIDs(proxyIDs)
 	return nil
 }
 
@@ -169,14 +171,14 @@ func acceptProxyStatisticEvents(tx *gorm.DB, statistics []domain.ProxyStatistic)
 		args := make([]any, 0, len(chunk)*4+1)
 		for i, event := range chunk {
 			values[i] = "(?, ?, ?, ?)"
-			if isPostgresDialector(tx) {
+			if pg.IsPostgresDialector(tx) {
 				values[i] = "(?, ?, ?, ?::timestamptz)"
 			}
 			args = append(args, event.Stream, event.EventID, event.SortID, time.Now().UTC())
 		}
 		var inserted []domain.ProxyStatisticEvent
 		lock := ""
-		if isPostgresDialector(tx) {
+		if pg.IsPostgresDialector(tx) {
 			lock = " FOR SHARE"
 		}
 		// Lock floors inside the existing ledger insert. Retirement cannot

@@ -9,6 +9,7 @@ import (
 )
 
 func TestOwnershipVerifierDetectsOwnershipChanges(t *testing.T) {
+	r := startTestRuntime(t)
 	db := setupCheckerTestDB(t)
 
 	user := domain.User{
@@ -40,7 +41,7 @@ func TestOwnershipVerifierDetectsOwnershipChanges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	owned, err := verifyProxyOwnership(ctx, proxy.ID)
+	owned, err := r.verifyProxyOwnership(ctx, proxy.ID)
 	if err != nil {
 		t.Fatalf("verify owned proxy: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestOwnershipVerifierDetectsOwnershipChanges(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel2()
 
-	owned, err = verifyProxyOwnership(ctx2, proxy.ID)
+	owned, err = r.verifyProxyOwnership(ctx2, proxy.ID)
 	if err != nil {
 		t.Fatalf("verify orphaned proxy: %v", err)
 	}
@@ -67,7 +68,7 @@ func TestOwnershipVerifierDetectsOwnershipChanges(t *testing.T) {
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel3()
 
-	owned, err = verifyProxyOwnership(ctx3, proxy.ID+1000)
+	owned, err = r.verifyProxyOwnership(ctx3, proxy.ID+1000)
 	if err != nil {
 		t.Fatalf("verify unknown proxy: %v", err)
 	}

@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -117,7 +119,7 @@ func TestSnapshotAliveCountsPreserveCurrentEvidence(t *testing.T) {
 			want := map[uint]int64{a.ID: 5, b.ID: 2, legacy.ID: 1, legacyShared.ID: 1, dirty.ID: 0, empty.ID: 0, 999: 0}
 			assertCounts := func(ids []uint, expected map[uint]int64) {
 				t.Helper()
-				got, err := aliveProxyCountByWorkspace(db, ids)
+				got, err := evidence.AliveProxyCountByWorkspace(db, ids)
 				if err != nil || !reflect.DeepEqual(got, expected) {
 					t.Fatalf("counts=%v want=%v error=%v", got, expected, err)
 				}
@@ -131,7 +133,7 @@ func TestSnapshotAliveCountsPreserveCurrentEvidence(t *testing.T) {
 					return
 				}
 				if err := db.Raw(`SELECT up.workspace_id, COUNT(DISTINCT up.proxy_id) AS alive_count
-FROM user_proxies up JOIN (`+currentOverallStatusesSQL+`) pos
+FROM user_proxies up JOIN (`+evidence.CurrentOverallStatusesSQL+`) pos
 ON pos.workspace_id = up.workspace_id AND pos.proxy_id = up.proxy_id
 WHERE up.workspace_id IN ? AND up.state = ? AND pos.overall_alive = TRUE
 GROUP BY up.workspace_id`, ids, domain.ManagedProxyStateActive).Scan(&reference).Error; err != nil {
@@ -228,7 +230,7 @@ CROSS JOIN LATERAL (VALUES (w.checker_http_key,TRUE),('obsolete',FALSE)) k(key,c
 	t.Logf("fixture routes=%d owners=8 original_foreign_keys_validated=%d", routes, len(foreignKeys))
 	if os.Getenv("MAGPIE_TEST_SNAPSHOT_BASELINE") == "1" {
 		baseline := `SELECT up.workspace_id, COUNT(DISTINCT up.proxy_id) AS alive_count FROM user_proxies up ` +
-			currentOverallStatusJoin(db, "INNER", "up.workspace_id", "up.proxy_id") +
+			evidence.CurrentOverallStatusJoin(db, "INNER", "up.workspace_id", "up.proxy_id") +
 			` WHERE up.workspace_id IN ? AND up.state = 'active' AND pos.overall_alive = TRUE GROUP BY up.workspace_id`
 		var plan string
 		if err := db.Raw("EXPLAIN (FORMAT JSON) "+baseline, workspaceIDs).Row().Scan(&plan); err != nil {
@@ -257,11 +259,11 @@ CROSS JOIN LATERAL (VALUES (w.checker_http_key,TRUE),('obsolete',FALSE)) k(key,c
 	}
 	for _, owners := range []int{1, 8} {
 		t.Run(fmt.Sprintf("owners-%d", owners), func(t *testing.T) {
-			queries := &checkerScaleQueryLogger{Interface: db.Logger}
+			queries := &testdb.QueryRecorder{Interface: db.Logger}
 			measured := db.Session(&gorm.Session{Logger: queries})
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			start := time.Now()
-			counts, err := aliveProxyCountByWorkspace(measured.WithContext(ctx), workspaceIDs[:owners])
+			counts, err := evidence.AliveProxyCountByWorkspace(measured.WithContext(ctx), workspaceIDs[:owners])
 			elapsed := time.Since(start)
 			cancel()
 			if err != nil || len(counts) != owners {
@@ -272,13 +274,13 @@ CROSS JOIN LATERAL (VALUES (w.checker_http_key,TRUE),('obsolete',FALSE)) k(key,c
 					t.Fatalf("alive count=%d want=%d", count, routes/8)
 				}
 			}
-			if len(queries.queries) != 1 || strings.Contains(queries.queries[0], "LATERAL") {
-				t.Fatalf("alive count must use one grouped query: %v", queries.queries)
+			if len(queries.Queries) != 1 || strings.Contains(queries.Queries[0], "LATERAL") {
+				t.Fatalf("alive count must use one grouped query: %v", queries.Queries)
 			}
 			ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			var encoded string
-			if err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + queries.queries[0]).Row().Scan(&encoded); err != nil {
+			if err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + queries.Queries[0]).Row().Scan(&encoded); err != nil {
 				t.Fatal(err)
 			}
 			writeSnapshotEvidence(t, fmt.Sprintf("scoped-%d-plan.json", owners), []byte(encoded))

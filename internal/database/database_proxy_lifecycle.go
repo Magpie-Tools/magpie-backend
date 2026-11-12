@@ -9,12 +9,12 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/readmodel"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
-
-const deleteChunkSize = 5000 // Keep large deletes under Postgres parameter limits
 
 var ErrNoProxiesSelected = errors.New("no proxies selected for deletion")
 
@@ -35,16 +35,16 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 			return
 		}
 		err = errors.Join(err,
-			refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(DB, workspaceID, committedProxyIDs),
-			refreshWorkspaceUsageActiveRoutes(DB, workspaceID))
+			readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(pg.DB, workspaceID, committedProxyIDs),
+			refreshWorkspaceUsageActiveRoutes(pg.DB, workspaceID))
 		if checkerChanged {
 			checkerconfig.Notify(workspaceID)
 		} else {
 			checkerconfig.TagAssignmentsChanged(workspaceID)
 		}
 	}()
-	hasFilterIndex := DB.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{})
-	chunkSize := deleteChunkSize
+	hasFilterIndex := pg.DB.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{})
+	chunkSize := pg.DeleteChunkSize
 	if chunkSize > len(proxies) {
 		chunkSize = len(proxies)
 	}
@@ -69,7 +69,7 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 		}
 		var removed int64
 		var changed bool
-		if err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := pg.DB.Transaction(func(tx *gorm.DB) error {
 			var deleteErr error
 			removed, changed, deleteErr = deleteManagedRoutes(tx, workspaceID, proxyIDs, "")
 			return deleteErr
@@ -81,7 +81,7 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 		committedProxyIDs = append(committedProxyIDs, proxyIDs...)
 		if len(proxyIDs) > 0 {
 			if hasFilterIndex {
-				if err := DB.
+				if err := pg.DB.
 					Where("workspace_id = ?", workspaceID).
 					Where("proxy_id IN ?", proxyIDs).
 					Delete(&domain.WorkspaceProxyFilterIndex{}).Error; err != nil {
@@ -111,9 +111,9 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 		uniqueIDs = append(uniqueIDs, id)
 	}
 
-	for start := 0; start < len(uniqueIDs); start += deleteChunkSize {
+	for start := 0; start < len(uniqueIDs); start += pg.DeleteChunkSize {
 		var batch []domain.Proxy
-		if err := DB.Where("id IN ?", uniqueIDs[start:min(start+deleteChunkSize, len(uniqueIDs))]).Find(&batch).Error; err != nil {
+		if err := pg.DB.Where("id IN ?", uniqueIDs[start:min(start+pg.DeleteChunkSize, len(uniqueIDs))]).Find(&batch).Error; err != nil {
 			return totalDeleted, nil, err
 		}
 		orphans = append(orphans, batch...)
@@ -123,11 +123,11 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 }
 
 func PauseManagedProxy(workspaceID uint, proxyID uint64, reason string) (bool, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return false, nil, fmt.Errorf("database not initialised")
 	}
 	paused := false
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		result := tx.Model(&domain.ManagedProxy{}).
 			Where("workspace_id = ? AND proxy_id = ? AND state = ?", workspaceID, proxyID, domain.ManagedProxyStateActive).
@@ -151,19 +151,19 @@ func PauseManagedProxy(workspaceID uint, proxyID uint64, reason string) (bool, [
 	if err != nil || !paused {
 		return false, nil, err
 	}
-	inactive, err := proxiesWithoutActiveManagement(DB, []uint64{proxyID})
+	inactive, err := proxiesWithoutActiveManagement(pg.DB, []uint64{proxyID})
 	return true, inactive, err
 }
 
 // DeleteActiveManagedProxy applies failure deletion atomically. A manual pause
 // or archive during an in-flight check must not turn into an automatic deletion.
 func DeleteActiveManagedProxy(workspaceID uint, proxyID uint64) (bool, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return false, nil, fmt.Errorf("database not initialised")
 	}
 	deleted := false
 	checkerChanged := false
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := pg.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
 		var removed int64
 		removed, checkerChanged, err = deleteManagedRoutes(tx, workspaceID, []uint64{proxyID}, domain.ManagedProxyStateActive)
@@ -180,7 +180,7 @@ func DeleteActiveManagedProxy(workspaceID uint, proxyID uint64) (bool, []domain.
 				return err
 			}
 		}
-		if err := refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, []uint64{proxyID}); err != nil {
+		if err := readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, []uint64{proxyID}); err != nil {
 			return err
 		}
 		return refreshWorkspaceUsageActiveRoutes(tx, workspaceID)
@@ -193,7 +193,7 @@ func DeleteActiveManagedProxy(workspaceID uint, proxyID uint64) (bool, []domain.
 	}
 	// Paused or archived management in another workspace still retains the route,
 	// but only active management should keep it in checker and rotator queues.
-	inactive, err := proxiesWithoutActiveManagement(DB, []uint64{proxyID})
+	inactive, err := proxiesWithoutActiveManagement(pg.DB, []uint64{proxyID})
 	return true, inactive, err
 }
 
@@ -205,7 +205,7 @@ func SetManagedProxyState(workspaceID uint, proxyID uint64, state string) error 
 		return domain.ErrInvalidManagedProxyState
 	}
 
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		var managed domain.ManagedProxy
 		if err := tx.Where("workspace_id = ? AND proxy_id = ?", workspaceID, proxyID).First(&managed).Error; err != nil {
 			return err
@@ -271,10 +271,10 @@ func ensureWorkspaceActivationAvailable(tx *gorm.DB, workspaceID uint) error {
 }
 
 func refreshManagedProxyLifecycleReadModels(tx *gorm.DB, workspaceID uint, proxyIDs []uint64) error {
-	if err := refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
+	if err := readmodel.RefreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx, workspaceID, proxyIDs); err != nil {
 		return err
 	}
-	return refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs)
+	return readmodel.RefreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx, workspaceID, proxyIDs)
 }
 
 func DeleteProxiesWithSettings(workspaceID uint, settings dto.DeleteSettings) (int64, []domain.Proxy, error) {

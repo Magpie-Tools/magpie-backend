@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -122,13 +123,13 @@ func TestStatisticsUsageDoesNotRecountOrOverwriteActiveCapacity(t *testing.T) {
 	if err := UpdateWorkspaceUsageActiveRoutes(db, a.ID, 17); err != nil {
 		t.Fatal(err)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	if err := recordWorkspaceCheckUsage(db.Session(&gorm.Session{Logger: queries}), []domain.ProxyStatistic{
 		{ProxyID: proxy.ID, WorkspaceIDs: []uint{a.ID}, CreatedAt: time.Now().UTC()},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, query := range queries.queries {
+	for _, query := range queries.Queries {
 		if strings.Contains(strings.ToLower(query), "user_proxies") {
 			t.Fatalf("statistics usage queried inventory: %s", query)
 		}

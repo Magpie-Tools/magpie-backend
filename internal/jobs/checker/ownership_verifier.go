@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"github.com/charmbracelet/log"
 )
@@ -32,12 +32,6 @@ type ownershipVerifier struct {
 	requests chan *ownershipRequest
 }
 
-var proxyOwnershipVerifier = newOwnershipVerifier()
-
-func init() {
-	go proxyOwnershipVerifier.run()
-}
-
 func newOwnershipVerifier() *ownershipVerifier {
 	return &ownershipVerifier{
 		requests: make(chan *ownershipRequest, 1024),
@@ -50,7 +44,7 @@ func newOwnershipVerifier() *ownershipVerifier {
 // False with no error means no active management, including an unknown or zero
 // ID. On cancellation or lookup failure, ownership is unknown; the worker keeps
 // the route scheduled rather than treating the error as permission to remove it.
-func verifyProxyOwnership(ctx context.Context, proxyID uint64) (bool, error) {
+func (r *Runtime) verifyProxyOwnership(ctx context.Context, proxyID uint64) (bool, error) {
 	if proxyID == 0 {
 		return false, nil
 	}
@@ -65,7 +59,7 @@ func verifyProxyOwnership(ctx context.Context, proxyID uint64) (bool, error) {
 	}
 
 	select {
-	case proxyOwnershipVerifier.requests <- req:
+	case r.ownership.requests <- req:
 	case <-ctx.Done():
 		return false, ctx.Err()
 	}
@@ -78,7 +72,10 @@ func verifyProxyOwnership(ctx context.Context, proxyID uint64) (bool, error) {
 	}
 }
 
-func (v *ownershipVerifier) run() {
+// run batches requests until ctx ends. Requests already received are then
+// processed before it returns, so stopping it after the workers that submit
+// to it loses nothing.
+func (v *ownershipVerifier) run(ctx context.Context) {
 	batch := make([]*ownershipRequest, 0, ownershipBatchMaxItems)
 	var timer *time.Timer
 	var timerC <-chan time.Time
@@ -116,6 +113,21 @@ func (v *ownershipVerifier) run() {
 			flush()
 			timer = nil
 			timerC = nil
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			for {
+				select {
+				case req := <-v.requests:
+					batch = append(batch, req)
+					continue
+				default:
+				}
+				break
+			}
+			flush()
+			return
 		}
 	}
 }
@@ -170,7 +182,7 @@ func fetchProxyOwnership(proxyIDs []uint64) (map[uint64]bool, error) {
 	if len(proxyIDs) == 0 {
 		return nil, nil
 	}
-	if database.DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
@@ -180,7 +192,7 @@ func fetchProxyOwnership(proxyIDs []uint64) (map[uint64]bool, error) {
 	defer cancel()
 
 	var rows []uint64
-	if err := database.DB.WithContext(ctx).
+	if err := pg.DB.WithContext(ctx).
 		Table("user_proxies").
 		Distinct("proxy_id").
 		Where("proxy_id IN ? AND state = ?", proxyIDs, domain.ManagedProxyStateActive).

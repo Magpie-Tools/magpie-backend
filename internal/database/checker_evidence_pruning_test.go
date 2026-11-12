@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 )
@@ -37,7 +38,7 @@ func seedEvidencePrunePointers(t *testing.T, db *gorm.DB, count int) domain.Work
 			}
 		}
 	}
-	if err := ensureProxyStatisticsRetentionSchema(db); err != nil {
+	if err := schema.EnsureProxyStatisticsRetentionSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	return workspace

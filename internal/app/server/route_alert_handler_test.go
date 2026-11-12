@@ -8,8 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestAlertAPIRolesIsolationAndWriteOnlyDestinations(t *testing.T) {
@@ -17,7 +18,7 @@ func TestAlertAPIRolesIsolationAndWriteOnlyDestinations(t *testing.T) {
 	t.Setenv("JWT_SECRET", "alert-api-test-secret")
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
 	t.Setenv("PROXY_ENCRYPTION_KEY", "alert-destination-test-key")
-	if err := database.DB.AutoMigrate(&domain.AlertRule{}, &domain.AlertDestination{}, &domain.AlertIncident{}, &domain.AlertDelivery{}, &domain.RotatingProxy{}); err != nil {
+	if err := pg.DB.AutoMigrate(&domain.AlertRule{}, &domain.AlertDestination{}, &domain.AlertIncident{}, &domain.AlertDelivery{}, &domain.RotatingProxy{}); err != nil {
 		t.Fatal(err)
 	}
 	owner, workspace := createWorkspaceMiddlewareTestUser(t, "alert-owner@example.test")
@@ -35,7 +36,7 @@ func TestAlertAPIRolesIsolationAndWriteOnlyDestinations(t *testing.T) {
 	}
 	for _, role := range []string{domain.WorkspaceRoleViewer, domain.WorkspaceRoleOperator, domain.WorkspaceRoleAdmin} {
 		user, _ := createWorkspaceMiddlewareTestUser(t, "alert-"+role+"@example.test")
-		if _, err := database.AddWorkspaceMember(workspace.ID, user.Email, role, false); err != nil {
+		if _, err := workspaces.AddWorkspaceMember(workspace.ID, user.Email, role, false); err != nil {
 			t.Fatal(err)
 		}
 		response := request(user.ID, http.MethodGet, "/alerts", "")

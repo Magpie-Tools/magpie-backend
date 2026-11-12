@@ -13,6 +13,9 @@ import (
 	"gorm.io/gorm/logger"
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 )
 
 type bulkDeleteQueryLog struct {
@@ -56,10 +59,10 @@ func seedBulkDeletePostgres(t *testing.T, routes int) (*gorm.DB, domain.Workspac
 	if err := db.Model(&b).Updates(map[string]any{"checker_generation": 1, "checker_http_key": "other-default"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	for _, statement := range []struct {
@@ -101,7 +104,7 @@ SELECT workspace_id,proxy_id,? FROM user_proxies WHERE workspace_id=? AND proxy_
 	if err := db.Exec("ANALYZE").Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := refreshAllWorkspaceScrapeSourceStats(db); err != nil {
+	if err := readmodel.RefreshWorkspaceScrapeSourceStats(db, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := refreshWorkspaceUsageActiveRoutes(db, a.ID); err != nil {
@@ -113,7 +116,7 @@ SELECT workspace_id,proxy_id,? FROM user_proxies WHERE workspace_id=? AND proxy_
 // Increase MAGPIE_TEST_BULK_DELETE_ROUTES to 70000 to cover the reported scale
 // and the extended-protocol limit, using an isolated schema and real cascades.
 func TestBulkProxyDeletionPostgres(t *testing.T) {
-	routes := 2*deleteChunkSize + 1
+	routes := 2*pg.DeleteChunkSize + 1
 	if value := os.Getenv("MAGPIE_TEST_BULK_DELETE_ROUTES"); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < routes {
@@ -123,7 +126,7 @@ func TestBulkProxyDeletionPostgres(t *testing.T) {
 	}
 	db, a, b := seedBulkDeletePostgres(t, routes)
 	queries := &bulkDeleteQueryLog{Interface: db.Logger, counts: make(map[string]int), duration: make(map[string]time.Duration)}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	started := time.Now()
 	deleted, orphans, err := DeleteProxiesWithSettings(a.ID, dto.DeleteSettings{Scope: "all"})
 	t.Logf("routes=%d sources=41 elapsed=%s statements=%v SQL_time=%v", routes, time.Since(started), queries.counts, queries.duration)
@@ -144,21 +147,21 @@ func TestBulkProxyDeletionPostgres(t *testing.T) {
 }
 
 func TestBulkProxyDeletionRefreshesCommittedBatchesOnErrorPostgres(t *testing.T) {
-	db, a, b := seedBulkDeletePostgres(t, deleteChunkSize+1)
+	db, a, b := seedBulkDeletePostgres(t, pg.DeleteChunkSize+1)
 	if err := db.Exec(fmt.Sprintf(`CREATE FUNCTION reject_delete_batch() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN IF OLD.workspace_id=%d AND OLD.proxy_id>%d THEN RAISE EXCEPTION 'rejected test batch'; END IF; RETURN OLD; END $$;
-CREATE TRIGGER reject_delete_batch BEFORE DELETE ON user_proxies FOR EACH ROW EXECUTE FUNCTION reject_delete_batch()`, a.ID, deleteChunkSize)).Error; err != nil {
+CREATE TRIGGER reject_delete_batch BEFORE DELETE ON user_proxies FOR EACH ROW EXECUTE FUNCTION reject_delete_batch()`, a.ID, pg.DeleteChunkSize)).Error; err != nil {
 		t.Fatal(err)
 	}
-	ids := make([]int, deleteChunkSize+1)
+	ids := make([]int, pg.DeleteChunkSize+1)
 	for i := range ids {
 		ids[i] = i + 1
 	}
 	deleted, _, err := DeleteProxyRelation(a.ID, ids)
-	if err == nil || !strings.Contains(err.Error(), "rejected test batch") || deleted != deleteChunkSize {
+	if err == nil || !strings.Contains(err.Error(), "rejected test batch") || deleted != pg.DeleteChunkSize {
 		t.Fatalf("deleted=%d error=%v", deleted, err)
 	}
-	assertBulkDeleteState(t, db, a.ID, b.ID, 1, int64(deleteChunkSize-deleteChunkSize/4))
+	assertBulkDeleteState(t, db, a.ID, b.ID, 1, int64(pg.DeleteChunkSize-pg.DeleteChunkSize/4))
 }
 
 func assertBulkDeleteState(t *testing.T, db *gorm.DB, workspaceID, otherWorkspaceID uint, remaining, tombstones int64) {

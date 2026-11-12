@@ -12,6 +12,8 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -37,7 +39,7 @@ func setupRotatingProxyTestDBWithDSN(t *testing.T, dsn string) *gorm.DB {
 	if err := db.Exec("PRAGMA busy_timeout = 5000").Error; err != nil {
 		t.Fatalf("set busy timeout: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
@@ -62,10 +64,10 @@ func setupRotatingProxyTestDBWithDSN(t *testing.T, dsn string) *gorm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 
-	DB = db
+	pg.DB = db
 
 	t.Cleanup(func() {
-		DB = nil
+		pg.DB = nil
 	})
 
 	return db

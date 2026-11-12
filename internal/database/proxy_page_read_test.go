@@ -8,6 +8,7 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -89,7 +90,7 @@ func TestProxyPageDefaultOrderKeepsLifecycleCountsAndPendingMasks(t *testing.T) 
 		t.Fatalf("pending health filter returned rows=%v total=%d", filtered, total)
 	}
 	queryLog := &proxyPageReadLogger{Interface: logger.Default}
-	DB = db.Session(&gorm.Session{Logger: queryLog})
+	pg.DB = db.Session(&gorm.Session{Logger: queryLog})
 	if count := GetWorkspaceProxyCount(workspace.ID); count != 3 {
 		t.Fatal("ownership count changed", count)
 	}

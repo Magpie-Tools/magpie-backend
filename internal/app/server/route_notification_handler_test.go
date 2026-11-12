@@ -12,29 +12,30 @@ import (
 	"time"
 
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	workspaces "magpie/internal/workspace"
 )
 
 func TestNotificationReadAPIIsolationPersistenceAndAccess(t *testing.T) {
 	setupUserRegistrationTestDB(t)
 	t.Setenv("JWT_SECRET", "notification-api-test-secret")
 	t.Setenv("AUTH_REVOCATION_FAIL_OPEN", "true")
-	if err := database.DB.AutoMigrate(&domain.NotificationRead{}, &domain.AlertIncident{}); err != nil {
+	if err := pg.DB.AutoMigrate(&domain.NotificationRead{}, &domain.AlertIncident{}); err != nil {
 		t.Fatal(err)
 	}
 	owner, workspace := createWorkspaceMiddlewareTestUser(t, "notification-owner@example.test")
 	reader, _ := createWorkspaceMiddlewareTestUser(t, "notification-reader@example.test")
 	outsider, _ := createWorkspaceMiddlewareTestUser(t, "notification-outsider@example.test")
-	if _, err := database.AddWorkspaceMember(workspace.ID, reader.Email, domain.WorkspaceRoleViewer, false); err != nil {
+	if _, err := workspaces.AddWorkspaceMember(workspace.ID, reader.Email, domain.WorkspaceRoleViewer, false); err != nil {
 		t.Fatal(err)
 	}
-	invitation, err := database.CreateWorkspaceInvitation(workspace.ID, owner.ID, outsider.Email, domain.WorkspaceRoleViewer, false, time.Now().Add(time.Hour))
+	invitation, err := workspaces.CreateWorkspaceInvitation(workspace.ID, owner.ID, outsider.Email, domain.WorkspaceRoleViewer, false, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	incident := domain.AlertIncident{WorkspaceID: workspace.ID, RuleID: 1, RuleRevision: 1, RuleName: "Minimum routes", ScopeName: "Production", Metric: domain.AlertMetricUsableRoutes, OpenedAt: time.Now()}
-	if err := database.DB.Create(&incident).Error; err != nil {
+	if err := pg.DB.Create(&incident).Error; err != nil {
 		t.Fatal(err)
 	}
 	alertID := "alert-" + strconv.FormatUint(incident.ID, 10)
@@ -102,11 +103,11 @@ func TestNotificationReadAPIIsolationPersistenceAndAccess(t *testing.T) {
 	request(outsiderSession, http.MethodPut, "/notifications/"+invitationID+"/read", http.StatusNoContent)
 	request(readerBrowserTwo, http.MethodPut, "/notifications/"+alertID+"/read", http.StatusNoContent)
 	var count int64
-	if err := database.DB.Model(&domain.NotificationRead{}).Where("user_id = ? AND notification_id = ?", reader.ID, alertID).Count(&count).Error; err != nil || count != 1 {
+	if err := pg.DB.Model(&domain.NotificationRead{}).Where("user_id = ? AND notification_id = ?", reader.ID, alertID).Count(&count).Error; err != nil || count != 1 {
 		t.Fatalf("duplicate receipts: %d, %v", count, err)
 	}
 	// Reading an invitation neither accepts nor deletes it.
-	if err := database.DB.Model(&domain.WorkspaceInvitation{}).Where("id = ?", invitation.ID).Count(&count).Error; err != nil || count != 1 {
+	if err := pg.DB.Model(&domain.WorkspaceInvitation{}).Where("id = ?", invitation.ID).Count(&count).Error; err != nil || count != 1 {
 		t.Fatalf("read changed invitation: %d, %v", count, err)
 	}
 	for _, invalid := range []string{"unknown-1", "alert-0", "alert-01", "release--1", "release-9223372036854775808"} {
@@ -117,7 +118,7 @@ func TestNotificationReadAPIIsolationPersistenceAndAccess(t *testing.T) {
 	request(readerBrowserOne, http.MethodGet, "/notifications/read-state?ids="+url.QueryEscape(tooMany), http.StatusBadRequest)
 	request(readerBrowserOne, http.MethodPut, "/notifications/alert-999999/read", http.StatusNotFound)
 	request(readerBrowserOne, http.MethodGet, "/notifications/read-state", http.StatusOK)
-	if err := database.DB.Migrator().DropTable(&domain.NotificationRead{}); err != nil {
+	if err := pg.DB.Migrator().DropTable(&domain.NotificationRead{}); err != nil {
 		t.Fatal(err)
 	}
 	request(readerBrowserOne, http.MethodGet, statePath, http.StatusInternalServerError)

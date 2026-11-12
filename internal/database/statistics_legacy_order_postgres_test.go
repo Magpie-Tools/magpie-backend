@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -247,7 +248,7 @@ func TestStatisticsReorderingKeepsStatementCountsPostgres(t *testing.T) {
 					stats[i].CreatedAt = stats[i].CreatedAt.Add(time.Second)
 				}
 				after := &statisticsCostQueryLogger{Interface: db.Logger, counts: make(map[string]int)}
-				DB = db.Session(&gorm.Session{Logger: after})
+				pg.DB = db.Session(&gorm.Session{Logger: after})
 				if err := InsertProxyStatistics(context.Background(), stats, CalculateProxyStatisticBatchSize(len(stats))); err != nil {
 					t.Fatal(err)
 				}

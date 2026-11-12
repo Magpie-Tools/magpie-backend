@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/workspace"
 )
 
 func TestWorkspaceListCountsSharedRoutesAndEmptyMemberships(t *testing.T) {
@@ -38,7 +39,7 @@ func TestWorkspaceListCountsSharedRoutesAndEmptyMemberships(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rows, err := ListWorkspaces(owner.ID)
+	rows, err := workspace.ListWorkspaces(owner.ID, nil)
 	if err != nil || len(rows) != 3 {
 		t.Fatalf("workspace list length=%d error=%v", len(rows), err)
 	}
@@ -51,7 +52,7 @@ func TestWorkspaceListCountsSharedRoutesAndEmptyMemberships(t *testing.T) {
 			t.Fatalf("workspace %d counts=%v want=%v", row.ID, got, want[row.ID])
 		}
 	}
-	rows, err = ListWorkspaces(owner.ID + other.ID + 100)
+	rows, err = workspace.ListWorkspaces(owner.ID+other.ID+100, nil)
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("nonmember workspace list=%v error=%v", rows, err)
 	}

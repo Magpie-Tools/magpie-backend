@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/workspace"
 )
 
 const workspaceHeader = "X-Workspace-ID"
@@ -39,10 +39,10 @@ func withWorkspaceOperator(next http.Handler) http.Handler {
 	return withWorkspaceRole(domain.WorkspaceRoleOperator, next)
 }
 
-func resolveRequestWorkspaceAccess(r *http.Request) (database.WorkspaceAccess, error) {
+func resolveRequestWorkspaceAccess(r *http.Request) (workspace.WorkspaceAccess, error) {
 	userID, err := auth.GetUserIDFromRequest(r)
 	if err != nil {
-		return database.WorkspaceAccess{}, err
+		return workspace.WorkspaceAccess{}, err
 	}
 
 	var requested uint
@@ -50,18 +50,18 @@ func resolveRequestWorkspaceAccess(r *http.Request) (database.WorkspaceAccess, e
 	if raw != "" {
 		parsed, parseErr := strconv.ParseUint(raw, 10, 64)
 		if parseErr != nil || parsed == 0 || uint64(uint(parsed)) != parsed {
-			return database.WorkspaceAccess{}, errInvalidWorkspaceHeader
+			return workspace.WorkspaceAccess{}, errInvalidWorkspaceHeader
 		}
 		requested = uint(parsed)
 	}
-	return database.ResolveWorkspaceAccess(userID, requested)
+	return workspace.ResolveWorkspaceAccess(userID, requested)
 }
 
 var errInvalidWorkspaceHeader = errors.New("invalid workspace header")
 
-func workspaceAccessFromRequest(r *http.Request) (database.WorkspaceAccess, error) {
+func workspaceAccessFromRequest(r *http.Request) (workspace.WorkspaceAccess, error) {
 	if r != nil && r.Context() != nil {
-		if access, ok := r.Context().Value(workspaceContextKey{}).(database.WorkspaceAccess); ok && access.WorkspaceID > 0 {
+		if access, ok := r.Context().Value(workspaceContextKey{}).(workspace.WorkspaceAccess); ok && access.WorkspaceID > 0 {
 			return access, nil
 		}
 	}
@@ -80,7 +80,7 @@ func writeWorkspaceAccessError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errInvalidWorkspaceHeader):
 		writeError(w, "X-Workspace-ID must be a positive integer", http.StatusBadRequest)
-	case errors.Is(err, database.ErrWorkspaceNotFound):
+	case errors.Is(err, workspace.ErrWorkspaceNotFound):
 		writeError(w, "Workspace not found or membership required", http.StatusForbidden)
 	default:
 		writeError(w, "Unauthorized", http.StatusUnauthorized)

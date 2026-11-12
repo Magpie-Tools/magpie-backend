@@ -3,10 +3,12 @@ package database
 import (
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 )
 
 func collectProxyIDsForDeletion(workspaceID uint, settings dto.DeleteSettings) ([]uint, error) {
-	query := DB.Model(&domain.Proxy{}).
+	query := pg.DB.Model(&domain.Proxy{}).
 		Select("DISTINCT proxies.id").
 		Joins("JOIN user_proxies ON user_proxies.proxy_id = proxies.id").
 		Where("user_proxies.workspace_id = ?", workspaceID)
@@ -24,7 +26,7 @@ func collectProxyIDsForDeletion(workspaceID uint, settings dto.DeleteSettings) (
 
 	if !settings.Filter && (settings.ProxyStatus == "alive" || settings.ProxyStatus == "dead") {
 		isAlive := settings.ProxyStatus == "alive"
-		query = query.Joins(currentOverallStatusJoin(query, "INNER", "user_proxies.workspace_id", "proxies.id")).
+		query = query.Joins(evidence.CurrentOverallStatusJoin(query, "INNER", "user_proxies.workspace_id", "proxies.id")).
 			Where("pos.overall_alive = ?", isAlive)
 	}
 

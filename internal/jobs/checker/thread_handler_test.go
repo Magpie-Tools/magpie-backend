@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	"magpie/internal/support"
 )
@@ -68,7 +69,7 @@ func TestProcessJudgeAssignments_EnqueuesOneStatisticPerNetworkCheck(t *testing.
 		3: false,
 	}
 
-	processJudgeAssignments(proxy, assignments, workspaceSuccess, map[uint]bool{}, 1000, 2, false)
+	NewRuntime(checkpace.NewPacer()).processJudgeAssignments(proxy, assignments, workspaceSuccess, map[uint]bool{}, 1000, 2, false)
 
 	if len(captured) != 1 {
 		t.Fatalf("expected 1 proxy statistic, got %d", len(captured))
@@ -136,7 +137,7 @@ func TestProcessJudgeAssignments_RecordsFailedCheckOnce(t *testing.T) {
 		11: false,
 	}
 
-	processJudgeAssignments(proxy, assignments, workspaceSuccess, map[uint]bool{}, 1000, 1, false)
+	NewRuntime(checkpace.NewPacer()).processJudgeAssignments(proxy, assignments, workspaceSuccess, map[uint]bool{}, 1000, 1, false)
 
 	if len(captured) != 1 {
 		t.Fatalf("expected 1 proxy statistic, got %d", len(captured))

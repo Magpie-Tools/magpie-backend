@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"magpie/internal/database"
+	"magpie/internal/account"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -64,7 +64,7 @@ func resolvePasswordResetCleanupInterval() time.Duration {
 }
 
 func runPasswordResetCleanup(ctx context.Context) {
-	removed, err := database.DeleteExpiredPasswordResetTokens(ctx, time.Now().UTC())
+	removed, err := account.DeleteExpiredPasswordResetTokens(ctx, time.Now().UTC())
 	if err != nil {
 		log.Error("Failed to cleanup expired password reset tokens", "error", err)
 		return

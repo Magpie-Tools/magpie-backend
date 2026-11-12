@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"magpie/internal/platform/pg"
 )
 
 func DeleteOldProxySnapshots(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
@@ -15,17 +17,17 @@ func DeleteOldProxyHistory(ctx context.Context, olderThan time.Time, limit int) 
 }
 
 func deleteOldRowsByCreatedAt(ctx context.Context, table string, olderThan time.Time, limit int, scope string) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("%s: database not initialised", scope)
 	}
 	if olderThan.IsZero() {
 		return 0, nil
 	}
 	if limit <= 0 {
-		limit = deleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

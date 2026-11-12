@@ -41,7 +41,7 @@ func queueConcurrencyFixture(t *testing.T) (*RedisProxyQueue, *redis.Client, dom
 		_ = client.FlushDB(context.Background()).Err()
 		_ = client.Close()
 	})
-	queue := NewRedisProxyQueue(client)
+	queue := NewRedisProxyQueue(client, nil)
 	proxy := domain.Proxy{ID: 1, IP: "192.0.2.1", Port: 8080, Hash: []byte("stored-route-hash"), Workspaces: []domain.Workspace{{ID: 1}}}
 	return queue, client, proxy
 }
@@ -73,7 +73,7 @@ func TestQueueHeadRepairPreservesConcurrentEnqueue(t *testing.T) {
 	queue, client, proxy := queueConcurrencyFixture(t)
 	writer := redis.NewClient(client.Options())
 	t.Cleanup(func() { _ = writer.Close() })
-	writerQueue := NewRedisProxyQueue(writer)
+	writerQueue := NewRedisProxyQueue(writer, nil)
 	client.AddHook(&beforeHeadRepairHook{enqueue: func() {
 		if err := writerQueue.AddToQueue([]domain.Proxy{proxy}); err != nil {
 			t.Fatal(err)
@@ -93,7 +93,7 @@ func TestQueueHeadRepairPreservesConcurrentEnqueue(t *testing.T) {
 func TestOwnershipChangingCompletionPreservesNewWorkspace(t *testing.T) {
 	queue, _, proxy := queueConcurrencyFixture(t)
 	ctx := context.Background()
-	useUniformPace(t, time.Millisecond)
+	useUniformPace(t, queue, time.Millisecond)
 	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}

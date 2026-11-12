@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -19,10 +20,10 @@ func TestDeleteOrphanProxyScrapeSiteRelations(t *testing.T) {
 		t.Fatalf("migrate schema: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
+	previousDB := pg.DB
+	pg.DB = db
 	t.Cleanup(func() {
-		DB = previousDB
+		pg.DB = previousDB
 	})
 
 	proxy := domain.Proxy{ID: 1, Port: 8080, Country: "N/A", EstimatedType: "N/A"}

@@ -88,7 +88,7 @@ func TestBulkRequeuePreservesLeaseClaimedAfterListing(t *testing.T) {
 	}
 	writer := redis.NewClient(client.Options())
 	t.Cleanup(func() { _ = writer.Close() })
-	otherQueue := NewRedisProxyQueue(writer)
+	otherQueue := NewRedisProxyQueue(writer, nil)
 	var worker domain.Proxy
 	client.AddHook(&afterQueueListingHook{key: queue.queueKeyForMember(string(proxy.Hash)), claim: func() {
 		limited, cancel := context.WithTimeout(ctx, time.Second)
@@ -150,7 +150,7 @@ func TestImportPreservesActiveLeaseInEverySupportedShard(t *testing.T) {
 			assertRouteStillLeased(t, queue, client, worker)
 			// A changed payload must not prevent normal scheduling completion,
 			// and the new owner must survive when the old worker completes.
-			useUniformPace(t, time.Millisecond)
+			useUniformPace(t, queue, time.Millisecond)
 			if err := queue.RequeueProxy(worker, scheduled); err != nil {
 				t.Fatal(err)
 			}

@@ -7,6 +7,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -17,11 +18,6 @@ type WorkspaceJudgeAssignment struct {
 	Regex      string
 	CreatedAt  time.Time
 }
-
-// UserJudgeAssignment is the compatibility name for a workspace's judge assignment.
-//
-// Deprecated: Use WorkspaceJudgeAssignment.
-type UserJudgeAssignment = WorkspaceJudgeAssignment
 
 type WebsiteBlacklistCleanupResult struct {
 	JudgeRelationsRemoved  int64
@@ -35,7 +31,7 @@ type WebsiteBlacklistCleanupResult struct {
 // source subscriptions that resolve to blocked hosts. It returns enough detail
 // for callers to refresh caches and queues.
 func RemoveBlockedWebsitesFromWorkspaces(ctx context.Context, blockedWebsites []string) (*WebsiteBlacklistCleanupResult, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, errors.New("database not initialised")
 	}
 
@@ -47,7 +43,7 @@ func RemoveBlockedWebsitesFromWorkspaces(ctx context.Context, blockedWebsites []
 
 	result := &WebsiteBlacklistCleanupResult{}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -95,13 +91,6 @@ func RemoveBlockedWebsitesFromWorkspaces(ctx context.Context, blockedWebsites []
 	}
 
 	return result, nil
-}
-
-// RemoveBlockedWebsitesFromUsers is the compatibility name for workspace cleanup.
-//
-// Deprecated: Use RemoveBlockedWebsitesFromWorkspaces.
-func RemoveBlockedWebsitesFromUsers(ctx context.Context, blockedWebsites []string) (*WebsiteBlacklistCleanupResult, error) {
-	return RemoveBlockedWebsitesFromWorkspaces(ctx, blockedWebsites)
 }
 
 func findBlockedJudgeIDs(tx *gorm.DB, blockedSet map[string]struct{}) ([]uint, map[uint]struct{}, error) {
@@ -179,7 +168,7 @@ func deleteWorkspaceJudgeRelations(tx *gorm.DB, judgeIDs []uint, totalRemoved *i
 		return nil
 	}
 
-	chunkSize := deleteChunkSize
+	chunkSize := pg.DeleteChunkSize
 	if chunkSize > len(judgeIDs) {
 		chunkSize = len(judgeIDs)
 	}
@@ -210,7 +199,7 @@ func deleteWorkspaceScrapeRelations(tx *gorm.DB, siteIDs []uint64, totalRemoved 
 		return nil
 	}
 
-	chunkSize := deleteChunkSize
+	chunkSize := pg.DeleteChunkSize
 	if chunkSize > len(siteIDs) {
 		chunkSize = len(siteIDs)
 	}

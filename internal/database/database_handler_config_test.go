@@ -6,6 +6,7 @@ import (
 
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -55,8 +56,8 @@ func TestSetupDBWithAutoMigrateDisabledDoesNotMutateSchema(t *testing.T) {
 		t.Fatalf("open database: %v", err)
 	}
 
-	previousDB := DB
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	t.Cleanup(func() { pg.DB = previousDB })
 
 	if _, err := SetupDB(func(cfg *Config) {
 		cfg.ExistingDB = db

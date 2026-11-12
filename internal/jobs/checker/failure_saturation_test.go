@@ -11,6 +11,7 @@ import (
 // A saturated streak is not rewritten, yet still triggers the failure action
 // without a follow-up read.
 func TestSaturatedFailureStreakIsNotRewritten(t *testing.T) {
+	r := startTestRuntime(t)
 	db := setupCheckerTestDB(t)
 	workspaces := []domain.Workspace{{Name: "observe"}, {Name: "pause", AutoRemoveFailingProxies: true, AutoRemoveFailureThreshold: 3}}
 	if err := db.Create(&workspaces).Error; err != nil {
@@ -37,7 +38,7 @@ INSERT INTO observed_failure_updates VALUES (NEW.workspace_id, NEW.consecutive_f
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	removed, _, err := processFailureEvents(ctx, proxy.ID, []failureEvent{
+	removed, _, err := r.processFailureEvents(ctx, proxy.ID, []failureEvent{
 		{WorkspaceID: workspaces[0].ID, HasEligibleChecks: true},
 		{WorkspaceID: workspaces[1].ID, AutoRemove: true, FailureThreshold: 3, FailureAction: domain.FailureActionPause, HasEligibleChecks: true},
 	})

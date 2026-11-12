@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"magpie/internal/alerts"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -14,11 +16,11 @@ import (
 const autoRemoveCleanupBatchSize = 2000
 
 func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -80,15 +82,15 @@ func CleanupAutoRemovalViolations(ctx context.Context) (int64, []domain.Proxy, [
 		return 0, nil, nil, result.Error
 	}
 
-	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(pausedProxyIDs))
+	inactive, refresh, err := LoadProxyQueueChangesForUint64(db, mapKeysUint64(pausedProxyIDs))
 	return total, inactive, refresh, err
 }
 
 func CleanupProxyLimitViolations(ctx context.Context) (int64, []domain.Proxy, []domain.Proxy, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -112,7 +114,7 @@ func CleanupProxyLimitViolations(ctx context.Context) (int64, []domain.Proxy, []
 			allPaused[proxyID] = struct{}{}
 		}
 	}
-	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(allPaused))
+	inactive, refresh, err := LoadProxyQueueChangesForUint64(db, mapKeysUint64(allPaused))
 	return total, inactive, refresh, err
 }
 
@@ -121,11 +123,11 @@ func cleanupProxyLimitViolationsWithConfig(ctx context.Context, limitCfg config.
 		return 0, nil, nil, nil
 	}
 
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, nil, nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -165,7 +167,7 @@ func cleanupProxyLimitViolationsWithConfig(ctx context.Context, limitCfg config.
 			pausedIDs[proxyID] = struct{}{}
 		}
 	}
-	inactive, refresh, err := loadProxyQueueChangesForUint64(db, mapKeysUint64(pausedIDs))
+	inactive, refresh, err := LoadProxyQueueChangesForUint64(db, mapKeysUint64(pausedIDs))
 	return totalPaused, inactive, refresh, err
 }
 
@@ -235,7 +237,7 @@ func collectOrphanProxyIDs(candidateIDs []int) ([]uint64, error) {
 	}
 
 	var stillInUse []int
-	if err := DB.Model(&domain.ManagedProxy{}).
+	if err := pg.DB.Model(&domain.ManagedProxy{}).
 		Where("proxy_id IN ?", candidateIDs).
 		Distinct("proxy_id").
 		Pluck("proxy_id", &stillInUse).Error; err != nil {
@@ -273,18 +275,18 @@ func GetExistingProxyIDSet(ctx context.Context, proxyIDs []uint64) (map[uint64]s
 	if len(proxyIDs) == 0 {
 		return nil, nil
 	}
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
 
 	result := make(map[uint64]struct{})
-	for start := 0; start < len(proxyIDs); start += maxParamsPerBatch {
-		end := start + maxParamsPerBatch
+	for start := 0; start < len(proxyIDs); start += MaxParamsPerBatch {
+		end := start + MaxParamsPerBatch
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
@@ -305,10 +307,10 @@ func GetExistingProxyIDSet(ctx context.Context, proxyIDs []uint64) (map[uint64]s
 }
 
 func DeleteOrphanProxies(ctx context.Context) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("database not initialised")
 	}
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -317,12 +319,12 @@ func DeleteOrphanProxies(ctx context.Context) (int64, error) {
 		Where("NOT EXISTS (SELECT 1 FROM user_proxies up WHERE up.proxy_id = proxies.id)").
 		// Ownership deletion removes a managed proxy immediately, but retain
 		// the route's recent check history for the rolling alert window.
-		Where("NOT EXISTS (SELECT 1 FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id AND ps.created_at >= ?)", time.Now().UTC().Add(-AlertWindow)).
+		Where("NOT EXISTS (SELECT 1 FROM proxy_statistics ps WHERE ps.proxy_id = proxies.id AND ps.created_at >= ?)", time.Now().UTC().Add(-alerts.AlertWindow)).
 		Delete(&domain.Proxy{})
 	if result.Error != nil {
 		return 0, result.Error
 	}
-	if err := DeleteOrphanProxyCheckCounters(ctx, deleteChunkSize); err != nil {
+	if err := DeleteOrphanProxyCheckCounters(ctx, pg.DeleteChunkSize); err != nil {
 		return result.RowsAffected, err
 	}
 	return result.RowsAffected, nil

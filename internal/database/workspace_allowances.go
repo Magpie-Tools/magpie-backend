@@ -12,6 +12,7 @@ import (
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 
 	"gorm.io/gorm"
 )
@@ -22,10 +23,10 @@ import (
 // counts come from the usage meter maintained by lifecycle writes, so the
 // managed-proxy table is scanned only for workspaces without any usage row.
 func LoadWorkspaceAllowances(ctx context.Context, now time.Time) ([]checkpace.Allowance, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -307,10 +308,10 @@ const maxRequestedInterval = 31 * 24 * time.Hour
 // cannot use. Intervals below the plan's minimum are rejected rather than
 // silently raised.
 func UpdateWorkspaceCadence(ctx context.Context, workspaceID uint, request dto.WorkspaceCadenceUpdateRequest) error {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("database not initialised")
 	}
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	var workspace domain.Workspace
 	if err := db.Select("id").Preload("Subscription").First(&workspace, workspaceID).Error; err != nil {
 		return err
@@ -338,11 +339,11 @@ func UpdateWorkspaceCadence(ctx context.Context, workspaceID uint, request dto.W
 }
 
 // CadenceWarnings explains when a requested interval needs more than the
-// monthly allowance, using the current snapshot's route and source counts.
-func CadenceWarnings(workspaceID uint, subscription domain.WorkspaceSubscription, request dto.WorkspaceCadenceUpdateRequest) []string {
+// monthly allowance, using snapshot's route and source counts (none if nil).
+func CadenceWarnings(snapshot *checkpace.Snapshot, workspaceID uint, subscription domain.WorkspaceSubscription, request dto.WorkspaceCadenceUpdateRequest) []string {
 	cfg := config.GetConfig()
 	warnings := []string{}
-	pace, ok := checkpace.Current().Pace(workspaceID)
+	pace, ok := snapshot.Pace(workspaceID)
 	if !ok {
 		return warnings
 	}
@@ -371,10 +372,10 @@ func CadenceWarnings(workspaceID uint, subscription domain.WorkspaceSubscription
 // unchanged. Intervals are raised to the workspace's minimum and lowered to
 // the 31-day maximum. It returns how many workspaces received each interval.
 func PreserveLegacyCadence(ctx context.Context, checkPeriod, scrapePeriod time.Duration) (int, int, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, 0, fmt.Errorf("database not initialised")
 	}
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

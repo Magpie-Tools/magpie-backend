@@ -63,7 +63,7 @@ func runAbuseIPDBOnce(ctx context.Context, client abuseipdb.Client) time.Duratio
 	}
 
 	staleBefore := now.Add(-abuseIPDBCheckStaleAfter)
-	proxy, err := database.GetNextAbuseIPDBProxyToCheck(ctx, staleBefore)
+	proxy, err := abuseipdb.GetNextAbuseIPDBProxyToCheck(ctx, staleBefore)
 	if err != nil {
 		log.Error("AbuseIPDB: failed to select proxy", "error", err)
 		return abuseIPDBNoWorkInterval
@@ -86,7 +86,7 @@ func runAbuseIPDBOnce(ctx context.Context, client abuseipdb.Client) time.Duratio
 	}
 
 	checkedAt := time.Now().UTC()
-	if err := database.UpsertAbuseIPDBCheck(context.Background(), proxy.ID, result, checkedAt); err != nil {
+	if err := abuseipdb.UpsertAbuseIPDBCheck(context.Background(), proxy.ID, result, checkedAt); err != nil {
 		log.Error("AbuseIPDB: failed to store check", "proxy_id", proxy.ID, "error", err)
 		return abuseIPDBNoWorkInterval
 	}

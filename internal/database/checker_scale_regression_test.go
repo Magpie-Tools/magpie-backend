@@ -11,23 +11,14 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 )
-
-type checkerScaleQueryLogger struct {
-	logger.Interface
-	queries []string
-}
-
-func (l *checkerScaleQueryLogger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
-	sql, _ := fc()
-	l.queries = append(l.queries, sql)
-	l.Interface.Trace(ctx, begin, fc, err)
-}
 
 func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
@@ -49,10 +40,10 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	if err := db.Model(&a).Updates(map[string]any{"checker_config": a.CheckerConfig, "checker_generation": 1, "checker_revision": 1, "checker_full_revision": 1, "checker_projected_revision": 1, "checker_http_key": fixture.Default.Keys[0]}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureCheckerSettingsSchema(db); err != nil {
+	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	for _, stmt := range []struct {
@@ -94,8 +85,8 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	if original.Proxies.Len() != routes {
 		t.Fatal("fixture did not load all tagged routes", original.Proxies.Len())
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
-	DB = db.Session(&gorm.Session{Logger: queries})
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
+	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	measure := func(name string, work func()) {
 		t.Helper()
 		runtime.GC()
@@ -119,12 +110,12 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	for _, sql := range queries.queries {
+	for _, sql := range queries.Queries {
 		if strings.Contains(sql, "proxy_tag_assignments") || strings.Contains(sql, "proxy_checker_plans") || strings.Contains(sql, "checker_proxy_changes") {
 			t.Fatal("unchanged reconciliation read route data", sql)
 		}
 	}
-	queries.queries = nil
+	queries.Queries = nil
 	measure("one checker membership edit", func() {
 		if err := AddProxyTagsToProxies(a.ID, []uint64{proxy.ID}, []uint64{special.ID}); err != nil {
 			t.Fatal(err)
@@ -134,7 +125,7 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	if updated.Plan(proxy.ID).Settings[0].Timeout != 3000 || original.Plan(proxy.ID).Settings[0].Timeout != 2000 || updated.Plan(100) != original.Plan(100) {
 		t.Fatal("incremental snapshot changed an old or unrelated route")
 	}
-	for _, sql := range queries.queries {
+	for _, sql := range queries.Queries {
 		if strings.HasPrefix(sql, "SELECT") && (strings.Contains(sql, "FROM \"proxy_tag_assignments\"") || strings.Contains(sql, "FROM \"proxy_checker_plans\"")) && !strings.Contains(sql, "proxy_id IN") {
 			t.Fatal("membership refresh loaded unscoped routes", sql)
 		}
@@ -170,7 +161,7 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	}
 	// Run the actual dashboard query and assert every evidence lookup executes
 	// only for the limited candidates, rather than every workspace proxy.
-	queries.queries = nil
+	queries.Queries = nil
 	start := time.Now()
 	recent := RefreshRecentProxyChecksCache(a.ID, 10)
 	elapsed := time.Since(start)
@@ -178,7 +169,7 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 		t.Fatal("recent-check query failed", len(recent))
 	}
 	var recentSQL string
-	for _, sql := range queries.queries {
+	for _, sql := range queries.Queries {
 		if strings.Contains(sql, "WITH candidates AS MATERIALIZED") {
 			recentSQL = sql
 		}
@@ -215,5 +206,5 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Fatal("recent dashboard scanned workspace", elapsed)
 	}
-	DB = db
+	pg.DB = db
 }

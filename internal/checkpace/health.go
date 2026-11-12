@@ -2,8 +2,6 @@ package checkpace
 
 import (
 	"errors"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -29,47 +27,38 @@ const unhealthyAfter = time.Minute
 // was applied. The batch is dropped rather than risk charging it twice.
 var ErrBatchOutcomeUnknown = errors.New("check usage batch outcome unknown: replay mark missing")
 
-var (
-	// failingSince is when the current run of failed writes began, in Unix
-	// nanoseconds, or 0 while writes succeed.
-	failingSince atomic.Int64
-	pauseAfter   atomic.Int64 // nanoseconds; 0 never pauses
-
-	healthMu  sync.Mutex
-	lastError string // guarded by healthMu
-	pausedLog bool   // guarded by healthMu; the pause was logged
-)
-
-func init() { pauseAfter.Store(int64(DefaultPauseAfter)) }
-
 // SetPauseAfter sets how long check usage may stay unwritten before checking
 // pauses. Zero or less never pauses.
-func SetPauseAfter(limit time.Duration) {
-	pauseAfter.Store(int64(max(limit, 0)))
+func (p *Pacer) SetPauseAfter(limit time.Duration) {
+	p.pauseAfter.Store(int64(max(limit, 0)))
 }
 
-// checksPaused is one atomic load while writes succeed.
-func checksPaused() bool {
-	since := failingSince.Load()
+// checksPaused is one atomic load while writes succeed. A nil Pacer never
+// pauses.
+func (p *Pacer) checksPaused() bool {
+	if p == nil {
+		return false
+	}
+	since := p.failingSince.Load()
 	if since == 0 {
 		return false
 	}
-	limit := pauseAfter.Load()
+	limit := p.pauseAfter.Load()
 	return limit > 0 && time.Now().UnixNano()-since >= limit
 }
 
-func recordFlushFailure(err error, now time.Time) {
-	failingSince.CompareAndSwap(0, now.UnixNano())
-	healthMu.Lock()
-	lastError = err.Error()
-	healthMu.Unlock()
+func (p *Pacer) recordFlushFailure(err error, now time.Time) {
+	p.failingSince.CompareAndSwap(0, now.UnixNano())
+	p.healthMu.Lock()
+	p.lastError = err.Error()
+	p.healthMu.Unlock()
 }
 
-func recordFlushSuccess() {
-	since := failingSince.Swap(0)
-	healthMu.Lock()
-	lastError, pausedLog = "", false
-	healthMu.Unlock()
+func (p *Pacer) recordFlushSuccess() {
+	since := p.failingSince.Swap(0)
+	p.healthMu.Lock()
+	p.lastError, p.pausedLog = "", false
+	p.healthMu.Unlock()
 	if since != 0 {
 		log.Info("workspace check usage writes recovered; checking resumes", "failing_for", time.Since(time.Unix(0, since)).Round(time.Second))
 	}
@@ -77,18 +66,18 @@ func recordFlushSuccess() {
 
 // logPauseOnce reports the moment checking pauses. Run calls it on every
 // flush tick.
-func logPauseOnce() {
-	if !checksPaused() {
+func (p *Pacer) logPauseOnce() {
+	if !p.checksPaused() {
 		return
 	}
-	healthMu.Lock()
-	defer healthMu.Unlock()
-	if pausedLog {
+	p.healthMu.Lock()
+	defer p.healthMu.Unlock()
+	if p.pausedLog {
 		return
 	}
-	pausedLog = true
+	p.pausedLog = true
 	log.Error("workspace check usage has not been written; checking is paused until a write succeeds",
-		"failing_since", time.Unix(0, failingSince.Load()).UTC(), "pause_after", time.Duration(pauseAfter.Load()), "error", lastError)
+		"failing_since", time.Unix(0, p.failingSince.Load()).UTC(), "pause_after", time.Duration(p.pauseAfter.Load()), "error", p.lastError)
 }
 
 // PersistenceHealth describes this instance's check usage writes.
@@ -101,26 +90,18 @@ type PersistenceHealth struct {
 }
 
 // Health reports whether check usage is being written.
-func Health() PersistenceHealth {
-	since := failingSince.Load()
+func (p *Pacer) Health() PersistenceHealth {
+	since := p.failingSince.Load()
 	if since == 0 {
 		return PersistenceHealth{Healthy: true}
 	}
-	healthMu.Lock()
-	defer healthMu.Unlock()
+	p.healthMu.Lock()
+	defer p.healthMu.Unlock()
 	failing := time.Unix(0, since)
 	return PersistenceHealth{
 		Healthy:      time.Since(failing) < unhealthyAfter,
 		FailingSince: failing.UTC(),
-		Paused:       checksPaused(),
-		LastError:    lastError,
+		Paused:       p.checksPaused(),
+		LastError:    p.lastError,
 	}
-}
-
-func resetHealthForTest() {
-	failingSince.Store(0)
-	pauseAfter.Store(int64(DefaultPauseAfter))
-	healthMu.Lock()
-	lastError, pausedLog = "", false
-	healthMu.Unlock()
 }

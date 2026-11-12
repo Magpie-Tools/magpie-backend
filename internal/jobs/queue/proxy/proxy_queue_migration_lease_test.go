@@ -165,7 +165,7 @@ func TestLegacyMigrationPreservesCanonicalClaimAndImportDuringDecode(t *testing.
 	seedLegacyAlias(t, queue, client, proxy, "old-hash", []uint{3}, false)
 	writer := redis.NewClient(client.Options())
 	t.Cleanup(func() { _ = writer.Close() })
-	writerQueue := NewRedisProxyQueue(writer)
+	writerQueue := NewRedisProxyQueue(writer, nil)
 	var worker domain.Proxy
 	client.AddHook(&beforeMigrationHook{mutate: func() {
 		if err := writerQueue.AddToQueue([]domain.Proxy{proxy}); err != nil {
@@ -263,7 +263,7 @@ func TestLegacyMigrationCannotUseStaleSourceLeaseOrPayload(t *testing.T) {
 						t.Fatal(err)
 					}
 				case "deleted":
-					if err := NewRedisProxyQueue(writer).RemoveFromQueue([]domain.Proxy{{Hash: []byte("old-hash")}}); err != nil {
+					if err := NewRedisProxyQueue(writer, nil).RemoveFromQueue([]domain.Proxy{{Hash: []byte("old-hash")}}); err != nil {
 						t.Fatal(err)
 					}
 				case "updated":

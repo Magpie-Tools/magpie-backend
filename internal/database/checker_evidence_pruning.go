@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"fmt"
+
+	"magpie/internal/platform/pg"
 )
 
 // Retain every modern pointer while its workspace projection is pending.
@@ -58,20 +60,20 @@ type CheckerEvidencePrunePage struct {
 // Page keys are covered by the primary index. Physical tuple reads are deferred
 // until eligibility has identified obsolete pointers, then use verified seeks.
 func PruneObsoleteCheckerEvidencePage(ctx context.Context, cursor *CheckerEvidencePruneCursor, limit int) (CheckerEvidencePrunePage, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return CheckerEvidencePrunePage{}, fmt.Errorf("checker evidence pruning: database not initialised")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if !isPostgresDialect(DB) {
+	if !pg.IsPostgresDialect(pg.DB) {
 		// Keep SQLite's existing retention semantics without PostgreSQL's
 		// physical tuple IDs or data-modifying CTEs. Production uses PostgreSQL.
 		deleted, err := PruneObsoleteCheckerEvidence(ctx, limit)
 		return CheckerEvidencePrunePage{Scanned: deleted, Deleted: deleted}, err
 	}
 	if limit <= 0 {
-		limit = deleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 	boundary := `SELECT workspace_id, config_key, proxy_id, protocol_id FROM proxy_latest_statistics
 ORDER BY workspace_id DESC, config_key DESC, proxy_id DESC, protocol_id DESC LIMIT 1`
@@ -133,7 +135,7 @@ FROM boundary LEFT JOIN LATERAL (
 		ThroughProxyID     uint64
 		ThroughProtocolID  int
 	}
-	if err := DB.WithContext(ctx).Raw(query, args...).Scan(&row).Error; err != nil {
+	if err := pg.DB.WithContext(ctx).Raw(query, args...).Scan(&row).Error; err != nil {
 		return CheckerEvidencePrunePage{}, fmt.Errorf("checker evidence pruning: scan page: %w", err)
 	}
 	page := CheckerEvidencePrunePage{Scanned: row.Scanned, Deleted: row.Deleted}

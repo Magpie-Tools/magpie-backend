@@ -12,10 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"magpie/internal/account"
 	"magpie/internal/api/dto"
-	"magpie/internal/auth"
-	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/mail"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
 
 	"github.com/charmbracelet/log"
@@ -34,11 +35,11 @@ var (
 	readPasswordResetConfigFn = support.ReadPasswordResetConfig
 	buildPasswordResetURLFn   = support.BuildPasswordResetURL
 	queueEmailFn              = func(kind, toAddress, subject, body string) error {
-		return database.EnqueueEmailOutbox(kind, toAddress, subject, body, resolveEmailOutboxMaxAttempts())
+		return mail.EnqueueEmailOutbox(kind, toAddress, subject, body, resolveEmailOutboxMaxAttempts())
 	}
-	getUserByEmailFn         = database.GetUserByEmail
-	createPasswordResetToken = database.CreatePasswordResetToken
-	deleteResetTokensForUser = database.DeletePasswordResetTokensForUser
+	getUserByEmailFn         = account.GetUserByEmail
+	createPasswordResetToken = account.CreatePasswordResetToken
+	deleteResetTokensForUser = account.DeletePasswordResetTokensForUser
 	resolveResetTokenEmailFn = lookupPasswordResetTokenEmail
 	nowFn                    = time.Now
 )
@@ -56,7 +57,7 @@ func forgotPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := auth.NormalizeEmail(payload.Email)
+	email := domain.NormalizeEmail(payload.Email)
 	if email == "" {
 		writeJSON(w, http.StatusOK, map[string]string{"message": forgotPasswordSuccessMessage})
 		return
@@ -348,7 +349,7 @@ func lookupPasswordResetTokenEmail(rawToken string) (string, error) {
 	var row struct {
 		Email string
 	}
-	err := database.DB.
+	err := pg.DB.
 		Table("password_reset_tokens").
 		Select("users.email").
 		Joins("JOIN users ON users.id = password_reset_tokens.user_id").
@@ -358,7 +359,7 @@ func lookupPasswordResetTokenEmail(rawToken string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return auth.NormalizeEmail(row.Email), nil
+	return domain.NormalizeEmail(row.Email), nil
 }
 
 func resetPasswordWithToken(rawToken string, newPassword string) (string, error) {
@@ -371,7 +372,7 @@ func resetPasswordWithToken(rawToken string, newPassword string) (string, error)
 	now := nowFn().UTC()
 	var userEmail string
 
-	err = database.DB.Transaction(func(tx *gorm.DB) error {
+	err = pg.DB.Transaction(func(tx *gorm.DB) error {
 		var resetToken domain.PasswordResetToken
 		if err := tx.Where("token_hash = ? AND expires_at > ?", tokenHash, now).First(&resetToken).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -402,7 +403,7 @@ func resetPasswordWithToken(rawToken string, newPassword string) (string, error)
 			return errors.Join(errRevokeActiveSessions, err)
 		}
 
-		if err := database.DeletePasswordResetTokensForUser(tx, user.ID); err != nil {
+		if err := account.DeletePasswordResetTokensForUser(tx, user.ID); err != nil {
 			return err
 		}
 

@@ -17,7 +17,10 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/config"
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
+	"magpie/internal/platform/pg"
 	"magpie/internal/support"
+	"magpie/internal/workspace"
 )
 
 type dashboardInfoCacheEntry struct {
@@ -27,18 +30,6 @@ type dashboardInfoCacheEntry struct {
 }
 
 var dashboardInfoCache sync.Map
-
-func GetUserFromId(id uint) domain.User {
-	var users domain.User
-	DB.Where("id = ?", id).First(&users)
-	return users
-}
-
-func GetWorkspacesThatDontHaveJudges() []domain.Workspace {
-	var workspaces []domain.Workspace
-	DB.Where("id NOT IN (SELECT DISTINCT workspace_id FROM user_judges)").Find(&workspaces)
-	return workspaces
-}
 
 func normalizeDashboardCountry(country string) string {
 	trimmed := strings.TrimSpace(country)
@@ -54,72 +45,10 @@ func normalizeDashboardCountry(country string) string {
 	}
 }
 
-func AddWorkspaceJudgesRelation(workspaces []domain.Workspace, judges []*domain.JudgeWithRegex) error {
-	var workspaceJudges []domain.WorkspaceJudge
-
-	for _, workspace := range workspaces {
-		for _, judge := range judges {
-			workspaceJudges = append(workspaceJudges, domain.WorkspaceJudge{
-				WorkspaceID: workspace.ID,
-				JudgeID:     judge.Judge.ID,
-				Regex:       judge.Regex,
-			})
-		}
-	}
-
-	if len(workspaceJudges) > 0 {
-		if err := DB.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "workspace_id"}, {Name: "judge_id"}},
-			DoNothing: true,
-		}).Create(&workspaceJudges).Error; err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func GetAllWorkspaceJudgeRelations() ([]domain.WorkspaceJudge, []domain.JudgeWithRegex) {
-	var workspaceJudges []domain.WorkspaceJudge
-	if err := DB.Find(&workspaceJudges).Error; err != nil {
-		return nil, nil
-	}
-
-	var results []struct {
-		ID         uint   `gorm:"column:id"`
-		FullString string `gorm:"column:full_string"`
-		CreatedAt  time.Time
-		Regex      string `gorm:"column:regex"`
-	}
-
-	if err := DB.Table("user_judges").
-		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
-		Joins("JOIN judges ON user_judges.judge_id = judges.id").
-		Scan(&results).Error; err != nil {
-		return nil, nil
-	}
-
-	var judgesWithRegex []domain.JudgeWithRegex
-	for _, result := range results {
-		judge := &domain.Judge{
-			ID:         result.ID,
-			FullString: result.FullString,
-			CreatedAt:  result.CreatedAt,
-		}
-		judge.SetUp()
-		judgesWithRegex = append(judgesWithRegex, domain.JudgeWithRegex{
-			Judge: judge,
-			Regex: result.Regex,
-		})
-	}
-
-	return workspaceJudges, judgesWithRegex
-}
-
 func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings) error {
 	// Wrap everything in a single transaction so either all changes
 	// happen or none do.
-	return DB.Transaction(func(tx *gorm.DB) error {
+	return pg.DB.Transaction(func(tx *gorm.DB) error {
 		var locked domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, workspaceID).Error; err != nil {
 			return err
@@ -132,7 +61,7 @@ func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings
 			for _, rule := range settings.CheckerSettings.Rules {
 				ids = append(ids, rule.TagID)
 			}
-			if err := requireProxyTags(tx, workspaceID, ids); err != nil {
+			if err := RequireProxyTags(tx, workspaceID, ids); err != nil {
 				return err
 			}
 		}
@@ -408,75 +337,11 @@ func UpdateWorkspaceSettings(workspaceID, userID uint, settings dto.UserSettings
 // UpdateUserSettings preserves the old Go API by updating the user's default
 // workspace. HTTP handlers use UpdateWorkspaceSettings directly.
 func UpdateUserSettings(userID uint, settings dto.UserSettings) error {
-	access, err := ResolveWorkspaceAccess(userID, 0)
+	access, err := workspace.ResolveWorkspaceAccess(userID, 0)
 	if err != nil {
 		return err
 	}
 	return UpdateWorkspaceSettings(access.WorkspaceID, userID, settings)
-}
-
-func GetWorkspaceJudges(workspaceID uint) []dto.SimpleWorkspaceJudge {
-	var results []dto.SimpleWorkspaceJudge
-
-	if err := DB.Table("user_judges").
-		Select("judges.full_string AS Url, user_judges.regex AS Regex").
-		Joins("JOIN judges ON user_judges.judge_id = judges.id").
-		Where("user_judges.workspace_id = ?", workspaceID).
-		Scan(&results).Error; err != nil {
-		return nil
-	}
-
-	return results
-}
-
-// GetUserJudges is the compatibility name for a workspace's judge settings.
-// The ID identifies a workspace, not a user account.
-//
-// Deprecated: Use GetWorkspaceJudges.
-func GetUserJudges(workspaceID uint) []dto.SimpleWorkspaceJudge {
-	return GetWorkspaceJudges(workspaceID)
-}
-
-func GetWorkspaceJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
-	var rows []struct {
-		ID         uint      `gorm:"column:id"`
-		FullString string    `gorm:"column:full_string"`
-		CreatedAt  time.Time `gorm:"column:created_at"`
-		Regex      string    `gorm:"column:regex"`
-	}
-
-	if err := DB.Table("user_judges").
-		Select("judges.id, judges.full_string, judges.created_at, user_judges.regex").
-		Joins("JOIN judges ON user_judges.judge_id = judges.id").
-		Where("user_judges.workspace_id = ?", workspaceID).
-		Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-
-	result := make([]domain.JudgeWithRegex, 0, len(rows))
-	for _, row := range rows {
-		judge := &domain.Judge{
-			ID:         row.ID,
-			FullString: row.FullString,
-			CreatedAt:  row.CreatedAt,
-		}
-		judge.SetUp()
-		judge.UpdateIp()
-		result = append(result, domain.JudgeWithRegex{
-			Judge: judge,
-			Regex: row.Regex,
-		})
-	}
-
-	return result, nil
-}
-
-// GetUserJudgesWithRegex is the compatibility name for a workspace's judge assignments.
-// The ID identifies a workspace, not a user account.
-//
-// Deprecated: Use GetWorkspaceJudgesWithRegex.
-func GetUserJudgesWithRegex(workspaceID uint) ([]domain.JudgeWithRegex, error) {
-	return GetWorkspaceJudgesWithRegex(workspaceID)
 }
 
 func GetDashboardInfo(userid uint) dto.DashboardInfo {
@@ -550,7 +415,7 @@ func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, err
 }
 
 func RefreshDashboardCaches(ctx context.Context) (returnErr error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return fmt.Errorf("dashboard cache: database connection was not initialised")
 	}
 	if ctx == nil {
@@ -571,7 +436,7 @@ func RefreshDashboardCaches(ctx context.Context) (returnErr error) {
 	}()
 
 	var workspaceIDs []uint
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 	if err := db.Model(&domain.Workspace{}).Order("id").Pluck("id", &workspaceIDs).Error; err != nil {
 		return fmt.Errorf("dashboard cache: load workspace ids: %w", err)
 	}
@@ -655,7 +520,7 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 
 	go func() {
 		defer wg.Done()
-		err := dashboardLatestStatistics(db, userid).
+		err := evidence.DashboardLatestStatistics(db, userid).
 			Select(
 				"j.full_string AS judge_url, "+
 					"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+
@@ -753,21 +618,6 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 	}
 
 	return info, nil
-}
-
-func ChangePassword(userID uint, password string) error {
-	err := DB.Model(&domain.User{}).Where("ID = ?", userID).Update("password", password).Error
-	return err
-}
-
-func ChangePasswordIfCurrent(userID uint, expectedPassword string, newPassword string) (bool, error) {
-	result := DB.Model(&domain.User{}).
-		Where("ID = ? AND password = ?", userID, expectedPassword).
-		Update("password", newPassword)
-	if result.Error != nil {
-		return false, result.Error
-	}
-	return result.RowsAffected > 0, nil
 }
 
 func changedCheckerRuleTags(before, after []dto.TagCheckerRule) []uint64 {

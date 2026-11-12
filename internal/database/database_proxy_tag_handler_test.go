@@ -8,6 +8,8 @@ import (
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -25,7 +27,7 @@ func setupProxyTagTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open tag test database: %v", err)
 	}
-	if err := configureWorkspaceJoinTables(db); err != nil {
+	if err := schema.ConfigureWorkspaceJoinTables(db); err != nil {
 		t.Fatalf("configure workspace join tables: %v", err)
 	}
 	if err := db.AutoMigrate(&domain.ManagedProxy{}); err != nil {
@@ -44,9 +46,9 @@ func setupProxyTagTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate tag schema: %v", err)
 	}
 
-	previousDB := DB
-	DB = db
-	t.Cleanup(func() { DB = previousDB })
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
 	return db
 }
 
@@ -173,7 +175,7 @@ func TestProxyTagsAreWorkspaceOwnedAndManyToMany(t *testing.T) {
 	if err := AddProxyTagsToProxies(users[0].ID, []uint64{proxy.ID}, []uint64{residential.ID}); err != nil {
 		t.Fatalf("add import tags: %v", err)
 	}
-	tags, err = getProxyTagsForProxy(users[0].ID, proxy.ID)
+	tags, err = GetProxyTagsForProxy(users[0].ID, proxy.ID)
 	if err != nil {
 		t.Fatalf("load first user's tags: %v", err)
 	}
@@ -182,7 +184,7 @@ func TestProxyTagsAreWorkspaceOwnedAndManyToMany(t *testing.T) {
 	if _, err := ReplaceProxyTags(users[0].ID, proxy.ID, []uint64{otherUserTag.ID}); !errors.Is(err, ErrProxyTagNotFound) {
 		t.Fatalf("cross-user assignment error = %v, want ErrProxyTagNotFound", err)
 	}
-	tags, err = getProxyTagsForProxy(users[0].ID, proxy.ID)
+	tags, err = GetProxyTagsForProxy(users[0].ID, proxy.ID)
 	if err != nil {
 		t.Fatalf("reload tags after rejected assignment: %v", err)
 	}
@@ -203,7 +205,7 @@ func TestProxyTagsAreWorkspaceOwnedAndManyToMany(t *testing.T) {
 	if err := DeleteProxyTag(users[0].ID, provider.ID); err != nil {
 		t.Fatalf("delete provider tag: %v", err)
 	}
-	tags, err = getProxyTagsForProxy(users[0].ID, proxy.ID)
+	tags, err = GetProxyTagsForProxy(users[0].ID, proxy.ID)
 	if err != nil {
 		t.Fatalf("load tags after deletion: %v", err)
 	}
@@ -223,7 +225,7 @@ func TestProxyTagsAreWorkspaceOwnedAndManyToMany(t *testing.T) {
 		t.Fatalf("first user's assignments after access deletion = %d, want 0", firstUserAssignments)
 	}
 
-	otherTags, err = getProxyTagsForProxy(users[1].ID, proxy.ID)
+	otherTags, err = GetProxyTagsForProxy(users[1].ID, proxy.ID)
 	if err != nil {
 		t.Fatalf("load other user's tags after first access deletion: %v", err)
 	}

@@ -253,7 +253,11 @@ func newReadModelRebuildFixture(t *testing.T, ctx context.Context, dsn string) *
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// DROP DATABASE waits for a checkpoint, which flushes what every test
+		// running in parallel has written to the server: 4-9 seconds under
+		// the full suite on a default PostgreSQL. The budget only bounds a
+		// drop that hangs.
+		cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		if _, err := admin.Exec(cleanup, "DROP DATABASE "+identifier+" WITH (FORCE)"); err != nil {
 			t.Errorf("remove rebuild CLI database: %v", err)

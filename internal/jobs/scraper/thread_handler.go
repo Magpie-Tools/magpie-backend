@@ -9,8 +9,10 @@ import (
 	"magpie/internal/config"
 	"magpie/internal/database"
 	"magpie/internal/domain"
+	"magpie/internal/geolite"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
+	"magpie/internal/scrapestore"
 	"magpie/internal/support"
 	"math"
 	"strings"
@@ -68,7 +70,25 @@ func StartInfrastructure() {
 
 /* ─────────────────────────────  dispatcher  ─────────────────────────────── */
 
-func ThreadDispatcher(ctx context.Context) {
+// Dispatcher runs the scraper workers. It holds the process's Pacer, whose
+// allowance snapshot decides which subscribers each fetch serves and when a
+// source is revisited. app/bootstrap constructs one per process.
+type Dispatcher struct {
+	pace *checkpace.Pacer
+}
+
+// NewDispatcher returns a dispatcher that paces fetches with pace, which the
+// caller runs. It starts nothing.
+func NewDispatcher(pace *checkpace.Pacer) *Dispatcher {
+	if pace == nil {
+		panic("scraper: NewDispatcher needs the process's Pacer")
+	}
+	return &Dispatcher{pace: pace}
+}
+
+// ThreadDispatcher adjusts the number of scraper workers until ctx ends, then
+// joins them and the post-processing workers.
+func (d *Dispatcher) ThreadDispatcher(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -95,14 +115,14 @@ func ThreadDispatcher(ctx context.Context) {
 
 		var target uint32
 		if cfg.Scraper.DynamicThreads {
-			target = autoThreadCount(cfg)
+			target = autoThreadCount(cfg, d.pace.Current())
 		} else {
 			target = cfg.Scraper.Threads
 		}
 
 		activeThreads := currentThreads.Load()
 		for activeThreads < target {
-			launchScraperWorker(ctx, &workers)
+			d.launchScraperWorker(ctx, &workers)
 			activeThreads = currentThreads.Load()
 		}
 		// Non-blocking stop requests avoid dispatcher stalls when counts drift.
@@ -122,7 +142,7 @@ func ThreadDispatcher(ctx context.Context) {
 	}
 }
 
-func launchScraperWorker(ctx context.Context, workers *sync.WaitGroup) {
+func (d *Dispatcher) launchScraperWorker(ctx context.Context, workers *sync.WaitGroup) {
 	currentThreads.Add(1)
 	workers.Add(1)
 	go func() {
@@ -134,7 +154,7 @@ func launchScraperWorker(ctx context.Context, workers *sync.WaitGroup) {
 			currentThreads.Add(^uint32(0))
 		}()
 
-		scrapeWorker(ctx)
+		d.scrapeWorker(ctx)
 	}()
 }
 
@@ -149,7 +169,7 @@ func requestScraperWorkerStop() bool {
 
 // Each URL is fetched once for each mode requested by its current workspaces.
 // HTTP groups run first, and browser capacity failures do not wait for a slot.
-func scrapeWorker(ctx context.Context) {
+func (d *Dispatcher) scrapeWorker(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -176,14 +196,14 @@ func scrapeWorker(ctx context.Context) {
 			}
 			continue
 		}
-		processScrapeSiteJob(ctx, job)
+		d.processScrapeSiteJob(ctx, job)
 	}
 }
 
-func processScrapeSiteJob(ctx context.Context, job sitequeue.ScrapeSiteJob) {
+func (d *Dispatcher) processScrapeSiteJob(ctx context.Context, job sitequeue.ScrapeSiteJob) {
 	workCtx, stopRenewal := sitequeue.PublicScrapeSiteQueue.MaintainScrapeSiteLease(ctx, job)
 	defer stopRenewal() // Also join the renewal goroutine if a worker panics.
-	queued := scrapeSite(workCtx, &job)
+	queued := d.scrapeSite(workCtx, &job)
 	renewalErr := stopRenewal()
 	if !queued {
 		return
@@ -201,13 +221,13 @@ func processScrapeSiteJob(ctx context.Context, job sitequeue.ScrapeSiteJob) {
 	}
 }
 
-func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool) {
+func (d *Dispatcher) scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool) {
 	site := job.Site
 	if job.Schedule.RetryAfterMS > time.Now().UnixMilli() {
 		return true
 	}
 	lookupCtx, cancelLookup := context.WithTimeout(ctx, 5*time.Second)
-	subscriptions, err := database.GetScrapeSiteSubscriptions(lookupCtx, site.ID)
+	subscriptions, err := scrapestore.GetScrapeSiteSubscriptions(lookupCtx, site.ID)
 	cancelLookup()
 	if err != nil {
 		log.Error("load scrape subscriptions", "site_id", site.ID, "err", err)
@@ -260,7 +280,7 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 		if len(group.Workspaces) == 0 {
 			continue
 		}
-		modeInterval, due := dueScrapeSubscribers(site.ID, group.Workspaces, job.Schedule.Modes[mode])
+		modeInterval, due := d.dueScrapeSubscribers(site.ID, group.Workspaces, job.Schedule.Modes[mode])
 		if len(due) == 0 {
 			// Every subscriber is between its cadence boundaries or out of
 			// scrape allowance. Revisit without fetching or charging anyone.
@@ -320,11 +340,12 @@ func scrapeSite(ctx context.Context, job *sitequeue.ScrapeSiteJob) (queued bool)
 
 // dueScrapeSubscribers returns a fetch mode's cadence and the subscribers due
 // for this fetch. A first fetch, or one retried after a deferral, serves every
-// subscriber with remaining allowance.
-func dueScrapeSubscribers(siteID uint64, subscribers []domain.Workspace, previous sitequeue.ScrapeModeSchedule) (time.Duration, []domain.Workspace) {
-	pace := checkpace.Current()
+// subscriber with remaining allowance. Before the first allowance snapshot every
+// subscriber is due at checkpace.FallbackInterval.
+func (d *Dispatcher) dueScrapeSubscribers(siteID uint64, subscribers []domain.Workspace, previous sitequeue.ScrapeModeSchedule) (time.Duration, []domain.Workspace) {
+	pace := d.pace.Current()
 	ids := support.GetWorkspaceIDsFromList(subscribers)
-	interval := pace.SourceScrapeInterval(ids)
+	interval := d.pace.SourceScrapeInterval(pace, ids)
 	firstOrRetry := previous.NextAttemptMS <= 0 || previous.DeferredReason != ""
 	scheduled := time.UnixMilli(previous.NextAttemptMS)
 	due := make([]domain.Workspace, 0, len(subscribers))
@@ -357,7 +378,7 @@ func recordScrapeUsage(site domain.ScrapeSite, fetchedAt time.Time) {
 func recordScrapeResult(site domain.ScrapeSite, mode, status string, count int, scrapeErr error, attemptedAt time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := database.RecordScrapeResult(ctx, site.ID, support.GetWorkspaceIDsFromList(site.Workspaces), mode, status, count, scrapeErr, attemptedAt); err != nil {
+	if err := scrapestore.RecordScrapeResult(ctx, site.ID, support.GetWorkspaceIDsFromList(site.Workspaces), mode, status, count, scrapeErr, attemptedAt); err != nil {
 		log.Error("record scrape result", "site_id", site.ID, "err", err)
 	}
 }
@@ -393,7 +414,9 @@ func shouldEmitScrapePopErrorLog(now time.Time) (bool, int) {
 
 /* ─────────────────────────────  auto-sizing  ────────────────────────────── */
 
-func autoThreadCount(cfg config.Config) uint32 {
+// autoThreadCount sizes the worker pool from the source count and the planned
+// fetch rate in snapshot, which is nil before the first allowance load.
+func autoThreadCount(cfg config.Config, snapshot *checkpace.Snapshot) uint32 {
 	totalSites, err := sitequeue.PublicScrapeSiteQueue.GetScrapeSiteCount()
 	if err != nil {
 		log.Error("count sites", "err", err)
@@ -410,8 +433,8 @@ func autoThreadCount(cfg config.Config) uint32 {
 	// Workspace scrape allowances set the planned fetch rate. Before the first
 	// allowance snapshot, assume each source is fetched at the fallback cadence.
 	scrapesPerSecond := float64(totalSites) / checkpace.FallbackInterval.Seconds()
-	if pace := checkpace.Current(); pace != nil {
-		scrapesPerSecond = pace.ScrapesPerSecond
+	if snapshot != nil {
+		scrapesPerSecond = snapshot.ScrapesPerSecond
 	}
 	worstCaseSeconds := float64(cfg.Scraper.Retries+1) * float64(cfg.Scraper.Timeout) / 1000
 	required := math.Ceil(scrapesPerSecond / float64(instances) * worstCaseSeconds)
@@ -471,7 +494,7 @@ func processScrapedHTMLJob(job scrapedHTMLJob) {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	subscriptions, err := database.GetScrapeSiteSubscriptions(ctx, job.site.ID)
+	subscriptions, err := scrapestore.GetScrapeSiteSubscriptions(ctx, job.site.ID)
 	if err != nil {
 		resultErr = err
 		return
@@ -548,9 +571,9 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML, mode string) (int, error
 	if err != nil {
 		return 0, fmt.Errorf("save %d scraped proxies: %w", len(parsedProxies), err)
 	} else {
-		proxiesToEnrich := database.FilterProxiesMissingGeo(proxies)
+		proxiesToEnrich := geolite.FilterProxiesMissingGeo(proxies)
 		if len(proxiesToEnrich) > 0 {
-			database.AsyncEnrichProxyMetadata(proxiesToEnrich)
+			geolite.AsyncEnrichProxyMetadata(proxiesToEnrich)
 		}
 	}
 
@@ -561,7 +584,7 @@ func handleScrapedHTML(site domain.ScrapeSite, rawHTML, mode string) (int, error
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := database.ApplyScrapeSourceTags(ctx, site.ID, mode, support.GetWorkspaceIDsFromList(site.Workspaces), proxies); err != nil {
+	if err := scrapestore.ApplyScrapeSourceTags(ctx, site.ID, mode, support.GetWorkspaceIDsFromList(site.Workspaces), proxies); err != nil {
 		return 0, fmt.Errorf("assign source tags: %w", err)
 	}
 

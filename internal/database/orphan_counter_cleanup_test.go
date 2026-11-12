@@ -62,7 +62,7 @@ func TestOrphanCounterCleanupDistinctBatchesAndResume(t *testing.T) {
 	}
 	for id := uint64(1); id <= 8; id++ {
 		for day := 1; day <= 5; day++ {
-			if err := db.Create(&domain.ProxyDailyCheck{ProxyID: id, Day: startOfUTCDay(time.Now()).AddDate(0, 0, -day), ChecksCount: 1}).Error; err != nil {
+			if err := db.Create(&domain.ProxyDailyCheck{ProxyID: id, Day: StartOfUTCDay(time.Now()).AddDate(0, 0, -day), ChecksCount: 1}).Error; err != nil {
 				t.Fatal(err)
 			}
 		}

@@ -17,7 +17,6 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"magpie/internal/config"
-	"magpie/internal/database"
 )
 
 const (
@@ -41,8 +40,8 @@ type downloadTarget struct {
 }
 
 var downloadTargets = []downloadTarget{
-	{editionID: "GeoLite2-ASN", filename: database.GeoLiteASNFileName},
-	{editionID: "GeoLite2-Country", filename: database.GeoLiteCountryFileName},
+	{editionID: "GeoLite2-ASN", filename: GeoLiteASNFileName},
+	{editionID: "GeoLite2-Country", filename: GeoLiteCountryFileName},
 }
 
 // UpdateDatabases downloads the GeoLite datasets using the configured API key.
@@ -56,7 +55,7 @@ func UpdateDatabases(ctx context.Context) (bool, error) {
 			return false, ErrNoAPIKey
 		}
 
-		if err := database.EnsureGeoLiteDataDir(); err != nil {
+		if err := EnsureGeoLiteDataDir(); err != nil {
 			return false, fmt.Errorf("ensure data dir: %w", err)
 		}
 
@@ -66,7 +65,7 @@ func UpdateDatabases(ctx context.Context) (bool, error) {
 			}
 		}
 
-		if err := database.ReloadGeoLiteFromDisk(); err != nil {
+		if err := ReloadGeoLiteFromDisk(); err != nil {
 			return false, fmt.Errorf("reload geolite: %w", err)
 		}
 
@@ -130,7 +129,7 @@ func downloadEdition(ctx context.Context, apiKey string, target downloadTarget) 
 			continue
 		}
 
-		destPath := database.GeoLiteFilePath(target.filename)
+		destPath := GeoLiteFilePath(target.filename)
 		if err := writeToFile(destPath, tarReader); err != nil {
 			return fmt.Errorf("%s: write file: %w", target.editionID, err)
 		}

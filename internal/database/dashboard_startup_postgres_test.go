@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/evidence"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -104,10 +105,10 @@ SELECT w.id,w.checker_http_key,n,1,n,'2026-10-22 12:00:00+00',true,100,1,1 FROM 
 		"fastest": queryLog.matching(t, "FROM candidates latest"),
 	}
 	newInner := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return dashboardLatestStatistics(tx, workspaceID).Select("pls.*").Find(&[]domain.ProxyLatestStatistic{})
+		return evidence.DashboardLatestStatistics(tx, workspaceID).Select("pls.*").Find(&[]domain.ProxyLatestStatistic{})
 	})
 	oldInner := db.ToSQL(func(tx *gorm.DB) *gorm.DB {
-		return workspaceLatestStatistics(tx, workspaceID, true).Select("pls.*").Find(&[]domain.ProxyLatestStatistic{})
+		return evidence.WorkspaceLatestStatistics(tx, workspaceID, true).Select("pls.*").Find(&[]domain.ProxyLatestStatistic{})
 	})
 	newInner = strings.TrimSuffix(strings.TrimPrefix(newInner, "SELECT pls.* FROM ("), ") pls")
 	oldInner = strings.TrimSuffix(strings.TrimPrefix(oldInner, "SELECT pls.* FROM ("), ") pls")

@@ -1,0 +1,39 @@
+# Package-level state.
+#
+# package: the number of package-level variables in non-test files, not counting
+# errors.New/fmt.Errorf sentinels, regexp.MustCompile, //go:embed,
+# redis.NewScript, Prometheus collectors and blank identifiers. The number
+# cannot rise. Lower it when a variable goes away. Moving existing state to
+# another package lowers one number and raises the other by the same amount.
+# A package that is not listed may have none.
+#
+# init_goroutine: files whose init() still starts a goroutine. The list is
+# empty: no init() starts a goroutine. Routines start from app/bootstrap.
+
+app/bootstrap: 3
+app/releases: 1
+app/server: 41
+app/version: 2
+auth: 6
+blacklist: 6
+checkerconfig: 4
+config: 18
+database: 9
+domain: 9
+evidence: 2
+geolite: 18
+instanceid: 2
+ipgeolocation: 1
+jobs/checker: 14
+jobs/checker/judges: 5
+jobs/queue/proxy: 1
+jobs/queue/sites: 1
+jobs/runtime: 12
+jobs/scraper: 11
+platform/pg: 2
+platform/schema: 1
+readmodel: 7
+rotatingproxy: 10
+security: 6
+support: 17
+support/reputation: 1

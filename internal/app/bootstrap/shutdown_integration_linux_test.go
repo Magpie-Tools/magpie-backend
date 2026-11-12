@@ -29,6 +29,8 @@ import (
  "magpie/internal/database"
  "magpie/internal/domain"
  jobs "magpie/internal/jobs/runtime"
+ "magpie/internal/platform/pg"
+ "magpie/internal/readmodel"
  "net/http"
  "os"
  "syscall"
@@ -48,7 +50,7 @@ func main() {
   judge := domain.Judge{FullString: "http://shutdown.invalid/judge"}
   protocol := domain.Protocol{}
   // Commit fixture rows with their ownership so startup cleanup cannot see them as orphans.
-  if err := database.DB.Transaction(func(tx *gorm.DB) error {
+  if err := pg.DB.Transaction(func(tx *gorm.DB) error {
    for _, fixture := range []any{&workspace, &proxy, &judge} {
     if err := tx.Create(fixture).Error; err != nil { return err }
    }
@@ -64,7 +66,7 @@ func main() {
   }); err != nil { panic(err) }
   snapshot, err := database.LoadCheckerWorkspace(context.Background(), workspace.ID)
   if err != nil { panic(err) }
-  if err := database.RefreshReadModelIndexes(context.Background()); err != nil { panic(err) }
+  if err := readmodel.RefreshReadModelIndexes(context.Background()); err != nil { panic(err) }
   jobs.AddWorkspaceManagedTraffic(workspace.ID, 1, 123)
   jobs.AddProxyStatistic(domain.ProxyStatistic{CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: workspace.ID, ConfigKey: snapshot.Default.Keys[protocol.ID-1], Alive: true}}, Alive: true, Attempt: 1, ResponseTime: 10, TransportProtocol: "tcp", ProxyID: proxy.ID, JudgeID: judge.ID, ProtocolID: protocol.ID, CreatedAt: time.Now().UTC()})
   fmt.Println("SHUTDOWN_PROBE submitted usage and statistic")
@@ -121,7 +123,7 @@ func testApplicationSIGTERM(t *testing.T, drainReputation bool) {
 		defer cancel()
 		for {
 			var complete bool
-			err := database.DB.WithContext(drainCtx).Raw("SELECT EXISTS (SELECT 1 FROM proxy_latest_statistics WHERE workspace_id > 0 AND alive) AND NOT EXISTS (SELECT 1 FROM proxy_reputation_refreshes)").Scan(&complete).Error
+			err := pg.DB.WithContext(drainCtx).Raw("SELECT EXISTS (SELECT 1 FROM proxy_latest_statistics WHERE workspace_id > 0 AND alive) AND NOT EXISTS (SELECT 1 FROM proxy_reputation_refreshes)").Scan(&complete).Error
 			if err != nil { panic(err) }
 			if complete { return }
 			select {
@@ -131,8 +133,15 @@ func testApplicationSIGTERM(t *testing.T, drainReputation bool) {
 		}
 	})
 `
+		// The injected producer reads the shared pool handle, which setup.go
+		// itself does not import.
+		const coreImport = "\t\"magpie/internal/database\"\n"
+		if strings.Count(string(setup), coreImport) != 1 {
+			t.Fatal("cannot locate the import block for shutdown fixture")
+		}
+		patched := strings.Replace(string(setup), coreImport, coreImport+"\t\"magpie/internal/platform/pg\"\n", 1)
 		setupFile := filepath.Join(buildDir, "setup.go")
-		if err := os.WriteFile(setupFile, []byte(strings.Replace(string(setup), marker, marker+producer, 1)), 0600); err != nil {
+		if err := os.WriteFile(setupFile, []byte(strings.Replace(patched, marker, marker+producer, 1)), 0600); err != nil {
 			t.Fatal(err)
 		}
 		replacements[setupPath] = setupFile

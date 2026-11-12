@@ -1,11 +1,13 @@
 package checker
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
-	"magpie/internal/database"
+	"magpie/internal/checkpace"
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/security"
 
 	"gorm.io/driver/sqlite"
@@ -35,9 +37,9 @@ func setupCheckerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("auto migrate: %v", err)
 	}
 
-	database.DB = db
+	pg.DB = db
 	t.Cleanup(func() {
-		database.DB = nil
+		pg.DB = nil
 	})
 
 	return db
@@ -62,4 +64,22 @@ func createCheckerWorkspace(t *testing.T, db *gorm.DB, user domain.User) {
 	if err := db.Create(&workspace).Error; err != nil {
 		t.Fatalf("create checker workspace: %v", err)
 	}
+}
+
+// startTestRuntime runs a checker runtime's batchers for one test and stops
+// them when the test ends. Each test gets its own batchers.
+func startTestRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	r := NewRuntime(checkpace.NewPacer())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunBatchers(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return r
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
 	"magpie/internal/security"
 
 	"gorm.io/gorm"
@@ -181,8 +182,8 @@ func TestProxyInventoryBatchesPropagateErrors(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		DB = db.WithContext(ctx)
-		defer func() { DB = db }()
+		pg.DB = db.WithContext(ctx)
+		defer func() { pg.DB = db }()
 		calls = 0
 		if err := ForEachProxyBatch(1, func([]domain.Proxy) error { calls++; return nil }); !errors.Is(err, context.Canceled) || calls != 0 {
 			t.Fatalf("query error %v, calls %d", err, calls)

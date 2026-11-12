@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
+	"magpie/internal/readmodel"
 	"magpie/internal/support/reputation"
 
 	"github.com/charmbracelet/log"
@@ -50,7 +53,7 @@ type proxyReputationSummary struct {
 
 // RecalculateProxyReputations recomputes per-proxy, per-protocol reputation scores for the given proxy IDs.
 func RecalculateProxyReputations(ctx context.Context, proxyIDs []uint64) error {
-	return recalculateProxyReputations(DB, ctx, proxyIDs)
+	return recalculateProxyReputations(pg.DB, ctx, proxyIDs)
 }
 
 // Keep one database handle throughout a job, including jobs that outlive their
@@ -452,7 +455,7 @@ func upsertProxyReputations(db *gorm.DB, reputations []domain.ProxyReputation) e
 		if err := upsertProxyReputationsChunk(db, chunk); err != nil {
 			if isMissingUniqueConstraintError(err) {
 				// Avoid full-table dedupe in the hot path. Try creating the index without cleanup.
-				if ensureErr := ensureProxyReputationIndex(db); ensureErr != nil {
+				if ensureErr := schema.EnsureProxyReputationIndex(db); ensureErr != nil {
 					log.Warn("reputation: ensure unique index failed; falling back to constraintless upsert", "error", ensureErr)
 				} else if retryErr := upsertProxyReputationsChunk(db, chunk); retryErr == nil {
 					continue
@@ -483,7 +486,7 @@ func upsertProxyReputations(db *gorm.DB, reputations []domain.ProxyReputation) e
 		seen[rep.ProxyID] = struct{}{}
 		proxyIDs = append(proxyIDs, rep.ProxyID)
 	}
-	QueueReadModelRefreshForProxyIDs(proxyIDs)
+	readmodel.QueueReadModelRefreshForProxyIDs(proxyIDs)
 	return nil
 }
 
@@ -590,11 +593,11 @@ func GetProxyReputations(ctx context.Context, proxyIDs []uint64) (map[uint64][]d
 	if len(proxyIDs) == 0 {
 		return result, nil
 	}
-	if DB == nil {
+	if pg.DB == nil {
 		return nil, fmt.Errorf("database not initialised")
 	}
 
-	db := DB.WithContext(ctx)
+	db := pg.DB.WithContext(ctx)
 
 	var rows []domain.ProxyReputation
 	if err := db.

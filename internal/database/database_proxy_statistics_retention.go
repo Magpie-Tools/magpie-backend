@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"magpie/internal/platform/pg"
 )
 
 func DeleteOldProxyStatistics(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("proxy statistics retention: database not initialised")
 	}
 
@@ -19,10 +21,10 @@ func DeleteOldProxyStatistics(ctx context.Context, olderThan time.Time, limit in
 	}
 
 	if limit <= 0 {
-		limit = deleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}
@@ -60,7 +62,7 @@ WHERE id IN (
 }
 
 func PruneProxyStatisticResponseBodies(ctx context.Context, olderThan time.Time, limit int) (int64, error) {
-	if DB == nil {
+	if pg.DB == nil {
 		return 0, fmt.Errorf("proxy statistic response retention: database not initialised")
 	}
 
@@ -69,10 +71,10 @@ func PruneProxyStatisticResponseBodies(ctx context.Context, olderThan time.Time,
 	}
 
 	if limit <= 0 {
-		limit = deleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 
-	db := DB
+	db := pg.DB
 	if ctx != nil {
 		db = db.WithContext(ctx)
 	}

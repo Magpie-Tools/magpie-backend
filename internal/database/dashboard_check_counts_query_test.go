@@ -64,7 +64,7 @@ func TestDashboardCheckCountsBoundaryAndOwnershipSemantics(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "postgres"} {
 		t.Run(dialect, func(t *testing.T) {
 			db := boundaryCountsDB(t, dialect)
-			today := startOfUTCDay(time.Now())
+			today := StartOfUTCDay(time.Now())
 			owners := map[uint]map[uint64]bool{101: {1: true, 2: true, 3: true}, 102: {1: true, 4: true}}
 			for _, row := range []struct {
 				workspace, proxy uint
@@ -120,7 +120,7 @@ func TestDashboardCheckCountsBoundaryAndOwnershipSemantics(t *testing.T) {
 				t.Helper()
 				var want dashboardCheckCounts
 				cutoff = cutoff.UTC()
-				nextDay := startOfUTCDay(cutoff).Add(24 * time.Hour)
+				nextDay := StartOfUTCDay(cutoff).Add(24 * time.Hour)
 				for _, row := range daily {
 					if owners[workspace][row.proxy] && row.day.Before(today) {
 						want.TotalChecks += row.count
@@ -199,7 +199,7 @@ func TestDashboardCheckCountsErrorsReturnNoPartialCounts(t *testing.T) {
 
 func TestDashboardCheckCountsOneOwnershipScanPostgres(t *testing.T) {
 	db := boundaryCountsDB(t, "postgres")
-	today := startOfUTCDay(time.Now())
+	today := StartOfUTCDay(time.Now())
 	for _, sql := range []string{
 		"INSERT INTO user_proxies(workspace_id,proxy_id,state) SELECT w,p,CASE WHEN p%3=0 THEN 'paused' WHEN p%3=1 THEN 'archived' ELSE 'active' END FROM generate_series(101,108) w CROSS JOIN generate_series(1,4096) p",
 		"INSERT INTO proxy_check_totals(proxy_id,checks_count,compacted_before) SELECT p,5,CURRENT_TIMESTAMP - INTERVAL '15 days' FROM generate_series(1,4096) p",

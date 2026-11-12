@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"magpie/internal/checkpace"
 )
 
 func TestDashboardPrewarmDeadlineAllowsStartup(t *testing.T) {
@@ -147,7 +150,7 @@ func TestSetupAlreadyCanceledDoesNotReadConfiguration(t *testing.T) {
 	t.Setenv("DEVELOPMENT_FIXTURES", "invalid")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	running, err := Setup(ctx)
+	running, err := Setup(ctx, checkpace.NewPacer())
 	if err != context.Canceled {
 		t.Fatalf("canceled setup performed initialization: %v", err)
 	}
@@ -155,6 +158,21 @@ func TestSetupAlreadyCanceledDoesNotReadConfiguration(t *testing.T) {
 	defer stop()
 	if err := running.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("canceled setup left a background routine running: %v", err)
+	}
+}
+
+// Setup has no Pacer of its own to fall back on: the process's Pacer is
+// constructed by app and passed in.
+func TestSetupRequiresTheProcessPacer(t *testing.T) {
+	t.Setenv("DEVELOPMENT_FIXTURES", "invalid")
+	running, err := Setup(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "Pacer") {
+		t.Fatalf("setup without a Pacer = %v, want an error naming the Pacer", err)
+	}
+	shutdownCtx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if err := running.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("rejected setup left a background routine running: %v", err)
 	}
 }
 
