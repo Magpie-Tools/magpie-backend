@@ -159,3 +159,46 @@ package adds a row to `AGENTS.md`, which all five tasks read. Of the planned
 work, only the `readmodel` pilot moves anchors of the task set (the
 projection task).
 
+
+### Re-run after the `readmodel` pilot (D7)
+
+Measured on `59aab12`, the pilot commit, with the anchor resolver of
+`277ebf1`. Four anchors had stopped resolving after changes that kept their
+symbols (three functions became `checker.Runtime` methods, and
+`ensureReadModelSchema` became `schema.EnsureReadModelSchema`); the resolver
+now follows them. On `f5baa1f` it reproduces the D5 checkpoint exactly.
+
+| Task | Files in full | Files in part | Must-read tokens | of which listings | Search-space files | Search-space tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Add a field to alert rules | 11 | 6 | 16102 | 873 | 101 | 93949 |
+| Change how failed proxies are requeued | 11 | 4 | 31935 | 201 | 7 | 21623 |
+| Add a column to the proxy filter projection | 11 | 5 | 20841 | 1374 | 91 | 134198 |
+| Change workspace invitation acceptance | 8 | 11 | 17319 | 643 | 64 | 78207 |
+| Change the email outbox retry policy | 7 | 4 | 10376 | 633 | 38 | 21675 |
+| **Task set** | 48 | 30 | 96573 | 3724 | 301 | 349652 |
+
+The task set rose from 94,791 to 96,573 must-read tokens (+1,782, +1.9%).
+That is no drop, so **the stop rule fires: no further package is split out of
+the core.** The rise has four sources, each measured on its own commit:
+
+| Commit | Change | Task set | Difference |
+| --- | --- | ---: | ---: |
+| `f5baa1f` | D5 checkpoint | 94,791 | |
+| `189f40b` | Batcher owner, `CountActiveInstances`, GraphQL schema split | 95,223 | +432 |
+| `e24dc03` | Pacer owner of the check usage meter | 95,861 | +638 |
+| `0422769` | Read-model schema and chunk size to the platform, test preparation | 96,105 | +244 |
+| `59aab12` | `readmodel` pilot | 96,573 | +468 |
+
+- The requeue task grew by 1,120 tokens with the two hot-path ownership
+  changes: its anchors are the checker worker's methods, which now read the
+  runtime's Pacer.
+- The projection task, the only one whose anchors left the core, grew by 512:
+  its anchors now span `domain`, `platform/schema`, `readmodel` and the core's
+  proxy list query. The pilot added `readmodel/doc.go` and a package-map row;
+  the core's listing shrank (1,427 to 1,374 tokens), but by less.
+- Every task reads the package map, which grew by one row.
+
+The pilot is kept for its other results: a compiler-checked dependency
+direction and a core 1,179 lines smaller, with the gates recorded in
+[verification-log.md](verification-log.md). It does not make the task set
+cheaper to read.
