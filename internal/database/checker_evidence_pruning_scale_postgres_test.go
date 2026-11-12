@@ -97,7 +97,7 @@ SELECT w.id,'current','tcp',n,1,TRUE,n,CURRENT_TIMESTAMP FROM workspaces w CROSS
 	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	defer func() { pg.DB = db }()
 	var capturedSQL string
-	measure := func(name string, expectedDeleted int64) {
+	measure := func(name string, expectedDeleted int64) CheckerEvidencePrunePage {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -180,14 +180,62 @@ SELECT w.id,'current','tcp',n,1,TRUE,n,CURRENT_TIMESTAMP FROM workspaces w CROSS
 		t.Logf("%s scanned=%d deleted=%d elapsed=%s plan_ms=%.3f visited=%v", name, page.Scanned, page.Deleted, elapsed, plans[0].ExecutionTime, visited)
 		result, _ := json.Marshal(map[string]any{"routes": routes, "owners": 8, "scanned": page.Scanned, "deleted": page.Deleted, "elapsed_ms": elapsed.Milliseconds(), "plan_ms": plans[0].ExecutionTime, "visited": visited})
 		writeEvidencePruneArtifact(t, name+"-latency.json", result)
+		return page
 	}
 	measure("all-current", 0)
 	// An obsolete prefix proves the same bounded candidate scan also deletes
 	// pointers, rather than merely optimizing a current-only early exit.
-	if err := db.Exec(`UPDATE proxy_latest_statistics SET config_key='!obsolete' WHERE workspace_id=1 AND proxy_id%64=0`).Error; err != nil {
+	//
+	// The page follows the primary key, whose config_key order is the
+	// database collation's. Under en_US.utf8 (the postgres image default)
+	// punctuation is ignored at the first comparison level, so a key such as
+	// "!obsolete" sorts after "current" and a million-route workspace's first
+	// page holds no obsolete pointer at all. "archived" precedes "current" in
+	// the C collation and in the usual linguistic ones; the premise check
+	// below fails the fixture, not the pruning, if a collation disagrees.
+	const obsoleteKey = "archived"
+	if err := db.Exec(`UPDATE proxy_latest_statistics SET config_key=? WHERE workspace_id=1 AND proxy_id%64=0`, obsoleteKey).Error; err != nil {
 		t.Fatal(err)
 	}
-	measure("obsolete-prefix", int64(min(batch, routes/64)))
+	obsoleteRows := int64(routes / 64)
+	expectedDeleted := min(int64(batch), obsoleteRows)
+	var premise struct{ Obsolete, Rows int64 }
+	if err := db.Raw(`SELECT count(*) FILTER (WHERE config_key = ?) AS obsolete, count(*) AS rows FROM (
+SELECT config_key FROM proxy_latest_statistics ORDER BY workspace_id, config_key, proxy_id, protocol_id LIMIT ?) page`, obsoleteKey, batch).Scan(&premise).Error; err != nil {
+		t.Fatal(err)
+	}
+	if premise.Obsolete != expectedDeleted || premise.Rows != int64(min(batch, routes*8)) {
+		t.Fatalf("fixture: the first candidate page holds %d of %d obsolete pointers in %d rows; check the collation of config_key", premise.Obsolete, expectedDeleted, premise.Rows)
+	}
+	first := measure("obsolete-prefix", expectedDeleted)
+	// Deletion touched only obsolete pointers, and every current one remains.
+	var remaining struct{ Obsolete, Current int64 }
+	if err := db.Raw(`SELECT count(*) FILTER (WHERE config_key = ?) AS obsolete, count(*) FILTER (WHERE config_key = 'current') AS current
+FROM proxy_latest_statistics`, obsoleteKey).Scan(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if remaining.Obsolete != obsoleteRows-expectedDeleted || remaining.Current != int64(routes*8)-obsoleteRows {
+		t.Fatalf("prune page removed the wrong pointers: obsolete left=%d (want %d) current=%d (want %d)", remaining.Obsolete, obsoleteRows-expectedDeleted, remaining.Current, int64(routes*8)-obsoleteRows)
+	}
+	// The cursor resumes after the page instead of rescanning it.
+	if routes*8 <= batch {
+		if first.Next != nil {
+			t.Fatal("a single-page inventory returned a cursor")
+		}
+		return
+	}
+	if first.Next == nil {
+		t.Fatal("a partial page returned no cursor")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	start := time.Now()
+	next, err := PruneObsoleteCheckerEvidencePage(ctx, first.Next, batch)
+	elapsed := time.Since(start)
+	if err != nil || next.Scanned != int64(min(batch, routes*8-batch)) || next.Deleted != obsoleteRows-expectedDeleted || elapsed > 10*time.Second {
+		t.Fatalf("resumed page=%+v elapsed=%s error=%v", next, elapsed, err)
+	}
+	t.Logf("resumed scanned=%d deleted=%d elapsed=%s", next.Scanned, next.Deleted, elapsed)
 }
 
 func writeEvidencePruneArtifact(t *testing.T, name string, data []byte) {
