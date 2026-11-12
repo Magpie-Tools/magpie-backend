@@ -34,21 +34,10 @@ func seedCheckerTag(t *testing.T, db *gorm.DB, workspaceID uint, name string) do
 func TestCheckerTagProjectionWritesOnlyChangedRoutesPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	a, _, proxy, judge := seedCheckerEvidenceTest(t, db)
-	// This fixture writes real evidence below. Keep its asynchronous notification
-	// out of later tests without discarding any work that predates this fixture.
-	readModelDirtyMu.Lock()
-	previousDirty, previousBatch := readModelDirtyProxyIDs, readModelPendingBatch
-	previousRound := readModelDirtyRound
-	readModelDirtyProxyIDs = make(map[uint64]struct{})
-	readModelDirtyRound = nil
-	readModelPendingBatch = nil
-	readModelDirtyMu.Unlock()
-	t.Cleanup(func() {
-		readModelDirtyMu.Lock()
-		readModelDirtyProxyIDs, readModelPendingBatch = previousDirty, previousBatch
-		readModelDirtyRound = previousRound
-		readModelDirtyMu.Unlock()
-	})
+	// This fixture writes real evidence below, and ingestion queues a
+	// read-model refresh for it. Finish that work against this test's schema
+	// before the package handle is restored, so later tests do not receive it.
+	t.Cleanup(func() { drainReadModel(t) })
 	ruleTag := seedCheckerTag(t, db, a.ID, "Checker")
 	classTag := seedCheckerTag(t, db, a.ID, "Classification")
 	a.CheckerConfig.Rules = []dto.TagCheckerRule{{TagID: ruleTag.ID, Mode: "remove", Protocols: []string{"http"}}}
