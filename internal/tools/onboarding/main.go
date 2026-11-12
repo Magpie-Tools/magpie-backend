@@ -294,19 +294,65 @@ func funcName(decl *ast.FuncDecl) string {
 // resolveAnchor finds the one declaration an anchor names. "pkg.Name" limits
 // the search to packages with that package clause; "Name" searches them all;
 // "file:dir/base.ext" names a non-Go file by the end of its path.
+//
+// The task set is fixed, so an anchor follows its symbol through the changes
+// that keep the symbol but not its exact spelling. When the name has no exact
+// match, the name with its export case flipped is tried (a move into another
+// package exports it), and then a method of that name in the same packages (a
+// function that became a method of its package's owner type). Exact matches
+// always win, so a revision where the anchor resolves measures as before.
 func (r *repository) resolveAnchor(anchor string) ([]*declaration, string) {
 	wantPkg, name := "", anchor
 	if before, after, found := strings.Cut(anchor, "."); found {
 		wantPkg, name = before, after
 	}
-	var matches []*declaration
-	for _, pkg := range r.packages {
-		if wantPkg != "" && pkg.name != wantPkg {
-			continue
+	lookup := func(match func(pkg *pkgInfo) []*declaration) []*declaration {
+		var matches []*declaration
+		for _, pkg := range r.packages {
+			if wantPkg != "" && pkg.name != wantPkg {
+				continue
+			}
+			matches = append(matches, match(pkg)...)
 		}
-		matches = append(matches, pkg.decls[name]...)
+		return matches
 	}
-	return matches, name
+	if matches := lookup(func(pkg *pkgInfo) []*declaration { return pkg.decls[name] }); len(matches) > 0 {
+		return matches, name
+	}
+	if folded := flipExportCase(name); folded != name {
+		if matches := lookup(func(pkg *pkgInfo) []*declaration { return pkg.decls[folded] }); len(matches) > 0 {
+			return matches, name
+		}
+	}
+	if strings.Contains(name, "#") {
+		return nil, name
+	}
+	return lookup(func(pkg *pkgInfo) []*declaration {
+		var methods []*declaration
+		for declared, decls := range pkg.decls {
+			if _, method, found := strings.Cut(declared, "#"); found && method == name {
+				methods = append(methods, decls...)
+			}
+		}
+		return methods
+	}), name
+}
+
+// flipExportCase changes the case of the first letter of name, or of the
+// method name in "Type#Method".
+func flipExportCase(name string) string {
+	prefix, rest := "", name
+	if before, after, found := strings.Cut(name, "#"); found {
+		prefix, rest = before+"#", after
+	}
+	if rest == "" {
+		return name
+	}
+	first := rest[:1]
+	if upper := strings.ToUpper(first); upper != first {
+		return prefix + upper + rest[1:]
+	}
+	return prefix + strings.ToLower(first) + rest[1:]
 }
 
 func (r *repository) measure(item task) measurement {
