@@ -81,6 +81,9 @@ with 20 logical CPUs and 38 GB of memory, Go 1.27.4.
 | `277ebf1` | onboarding: follow anchors through export-case and method changes | pass | pass | pass | pass | pass | - |
 | `5462a6f` | Record the D2, D7 and D8 work, the scale regressions and the stop rule | pass | pass | pass | pass | pass | - |
 | `95111d2` | Bound the rebuild test's database cleanup by a hung drop, not by load | pass | pass | pass | pass | pass | - |
+| `c3b5cd2` | Put the prune scale test's obsolete pointers in its first page | pass | pass | package | - | package | - |
+| `16eade9` | Measure every statement of the index-cost test's 5,000-route batch | pass | pass | package | - | package | - |
+| `4229b46` | Expect the pair-cost test's unchanged retry to skip the upsert | pass | pass | pass | pass | pass | - |
 
 Notes:
 
@@ -107,6 +110,13 @@ Notes:
   pass every package in both the plain and the race phase. The per-commit
   integration runs in the table use servers with `fsync=off` and did not show
   it.
+- `c3b5cd2`, `16eade9` and `4229b46` change one opt-in scale test each and
+  no production code. The full set, including the race suite against the
+  real services, ran on `4229b46`. On the two earlier commits, "package"
+  means build, `go vet ./...` and
+  `go test ./internal/database ./internal/readmodel ./internal/archtest`
+  without the services. Each changed test also ran at its documented scale;
+  see [Three scale regressions fixed](#three-scale-regressions-fixed).
 - The race suite against the real services also ran for `e99019b`,
   `e24dc03` and `59aab12`, the commits that change hot-path ownership or
   split the core: pass each time.
@@ -284,7 +294,7 @@ scale was changed.
 | --- | --- | --- |
 | `TestReadModelProjectionScopesPopulatedEvidencePostgres` | fail | Projecting 5,000 routes x 8 owners exceeds the test's own 15-second budget on this machine. 87-90 s per run on all four revisions. |
 | `TestReadModelPairCostPopulatedPostgres` | fail | Trial 1 expects 5,000 conflicting rows that the conflict filter rejects. The no-op filter, in the same commit as the test (`5f6e5a7`), now excludes them before the insert. Trial 0 with checkpoints held off: WAL 11.92-11.94 MB, 141,105-141,108 records, 0 full-page images, SQL 396-409 ms on all four. The first run had default checkpoints and logged 12 MB on `3f66f5d` and `f5baa1f` but 107-116 MB on `0422769` and `59aab12`; the controlled rerun shows that difference was full-page images. |
-| `TestProxyFilterIndexUpdateCostPopulatedPostgres` | fail | Expects every pre-existing row updated; the same no-op filter skips unchanged rows. The three logged trials: WAL records identical across revisions (55,070-55,071, 54,575-54,578, 54,616-54,620), SQL 150-169 ms, one 97 ms trial on `f5baa1f`. |
+| `TestProxyFilterIndexUpdateCostPopulatedPostgres` | fail | Expects every pre-existing row updated. The cause first given here, the no-op filter, was wrong: the test analyzed only the last of the eight statements of its 5,000-route batch; see [Three scale regressions fixed](#three-scale-regressions-fixed). The three logged trials: WAL records identical across revisions (55,070-55,071, 54,575-54,578, 54,616-54,620), SQL 150-169 ms, one 97 ms trial on `f5baa1f`. |
 | `TestStatisticsTransactionCostPopulatedPostgres` | pass | Three runs per revision. The statement counts of every variant are identical and WAL agrees within 0.6%. The 4-worker variants' medians and ranges overlap; the widest, at-tail with chunks of 5,000, is 13.9 s (12.7-17.6) on `3f66f5d`, 15.9 s (14.7-16.2) on `f5baa1f` and 14.4 s (13.2-16.2) on `59aab12`. |
 | `TestSmallSourceHealthAggregatesCandidatesPostgres` | pass | 39-40 s. The aggregate's plan is the same except for one access path: an index-only scan of `user_proxies_pkey` on `3f66f5d`, an index scan of `idx_user_proxies_proxy_id` on `f5baa1f` and `59aab12`. It executes in 0.065 ms and 0.043-0.044 ms. One run each, so a statistics-sampling flip is not ruled out. |
 | `TestCheckerRefreshAndRecentChecksScalePostgres` | pass | Reconciliation 1.7-2.1 ms; edits 4.8-64 ms; recent checks 2.3-3.0 ms. |
@@ -301,6 +311,108 @@ measurement-only filter-options test shows between runs of one revision.
 Five of the twelve fail already on `3f66f5d` in this environment; see the open
 items. Limits: one machine, `fsync=off`, and one to four runs per revision for
 these long tests, apart from the harness above.
+
+### Three scale regressions fixed
+
+Three of the five failures were defects in the tests, not in production code.
+Each fix is test-only and in its own commit; no route count, budget or
+assertion of bounded access was lowered. Every run below used one disposable
+PostgreSQL 17.9 container (`shared_buffers=512MB`, `work_mem=16MB`,
+`fsync=off`, `checkpoint_timeout=1d`, `max_wal_size=400GB`, database
+collation `en_US.utf8`, a `CHECKPOINT` before each test) and Redis 7, both
+started for this work and never shared. "Before" is `ed647d1`; "after" is the
+working tree whose test files were then committed unchanged as `c3b5cd2`,
+`16eade9` and `4229b46`. One run each.
+
+Commands, from `magpie-backend`, with `MAGPIE_TEST_POSTGRES_DSN` pointing at
+that container (the evidence-directory variables only save plans):
+
+```sh
+MAGPIE_TEST_EVIDENCE_PRUNE_ROUTES=1000000 \
+  go test ./internal/database -run '^TestCheckerEvidencePrunePageBoundsPopulatedInventoryPostgres$' -count=1 -v -timeout=20m
+MAGPIE_TEST_PROXY_FILTER_INDEX_ROUTES=1000000 \
+  go test ./internal/readmodel -run '^TestProxyFilterIndexUpdateCostPopulatedPostgres$' -count=1 -v -timeout=30m
+MAGPIE_TEST_READ_MODEL_PAIR_ROUTES=1000000 \
+  go test ./internal/readmodel -run '^TestReadModelPairCostPopulatedPostgres$' -count=1 -v -timeout=35m
+```
+
+| Test | Before | After |
+| --- | --- | --- |
+| `TestCheckerEvidencePrunePageBoundsPopulatedInventoryPostgres` | fail, 88.2 s: the obsolete-prefix page scanned 50,000 and deleted 0 of the expected 15,625 | pass, 89.4 s |
+| `TestProxyFilterIndexUpdateCostPopulatedPostgres` | fail, 352.5 s: the 193-route trials passed; the first 5,000-route trial counted 5,000 conflicting tuples where it expected 40,000 | pass, 431.5 s |
+| `TestReadModelPairCostPopulatedPostgres` | fail, 203.1 s: prefix 0's unchanged retry reported 0 conflicting tuples and 0 rows removed by the conflict filter where it expected 5,000 of each | pass, 337.4 s |
+
+**Evidence pruning (`c3b5cd2`): fixture defect, measured.** The fixture
+marked every 64th pointer of workspace 1 with the config key `!obsolete` and
+expected it in the first 50,000-row page. The page follows the primary key,
+`(workspace_id, config_key, proxy_id, protocol_id)`, in the database
+collation. A temporary diagnostic test (not committed) on the same
+million-route fixture measured: workspace IDs 1-8; database and column
+collation `en_US.utf8`, where `'!obsolete' < 'current'` is false (true under
+`COLLATE "C"`); the first page was 50,000 `current` pointers of workspace 1,
+proxies 1-50,793; 984,375 rows sort before the first `!obsolete` key, which
+lands in page 20. Walking the full cursor with production code took 160 pages
+and 82.1 s, deleted exactly 15,625 pointers, all in page 20, and left all
+7,984,375 current pointers. Pruning is correct in this collation; the
+fixture's ordering assumption was not. The fixture now uses `archived`,
+asserts before measuring that the database's own first page holds the
+expected obsolete pointers, and afterwards checks that only obsolete pointers
+went, that every current one remains, and that the cursor resumes after the
+page. At a million routes: all-current page 50,000 scanned, 0 deleted, 514 ms
+(plan 518 ms); obsolete-prefix page 50,000 scanned, 15,625 deleted, 447 ms
+(plan 652 ms), 81,251 latest-row visits against the test's budget of 81,252
+and 50,000 ownership visits; resumed page 50,000 scanned, 0 deleted, 538 ms.
+At the default 10,000 routes: 156 deleted, resumed page 30,000 scanned.
+
+**Projection index cost (`16eade9`): test defect, measured.** A 5,000-route
+batch is 40,000 owner pairs, which production refreshes in statements of at
+most `readModelProjectionPairBudget()` (5,000) pairs. The test analyzed only
+the last statement, 625 routes, so it saw 5,000 conflicting tuples (none
+rejected by the conflict filter, so no row was unchanged), and its pre-trial
+evidence update advanced 4,375 routes that it never re-projected. The test now
+analyzes all eight statements and sums them, checks the statement count
+against the pair budget, and requires before each trial that all batch x 8
+owner rows have changed projected data and after it that all were updated,
+none rejected by the conflict filter and none left stale. Each phase, three
+trials:
+
+| Phase | Batch | SQL ms per trial | WAL records, three trials | WAL bytes per trial |
+| --- | ---: | --- | ---: | --- |
+| 32 original indexes | 193 | 94-171 | 163,727 | 4.42-4.79 M |
+| 32 original indexes | 5,000 (8 statements) | 4,661-6,160 | 4,235,758 | 114.5-114.9 M |
+| 19 canonical indexes | 193 | 136-157 | 102,815 | 2.98-3.02 M |
+| 19 canonical indexes | 5,000 (8 statements) | 4,303-4,400 | 2,666,610 | 78.6 M |
+| 23 final indexes | 193 | 144-150 | 121,845 | 3.58-3.66 M |
+| 23 final indexes | 5,000 (8 statements) | 4,475-4,831 | 3,152,648 | 92.5-93.1 M |
+
+Index bytes 3,410,436,096 to 2,439,331,840 to 3,040,518,144. The WAL-record
+reduction after removing the copies, inventory and final freshness checks
+held as before.
+
+**Pair cost (`4229b46`): outdated expectation, measured.** The test repeats
+each 5,000-pair upsert and expected the repeat to reach the conflict filter.
+The no-op filter excludes unchanged rows before the INSERT, so before the fix
+the repeat reported 0 conflicting tuples, 0 rejected rows, no insert, 94 WAL
+records (14,288 bytes, no full-page image) and no tuple write. The changed
+trial still requires 5,000 conflicting tuples, none rejected and no insert,
+and now also that all 5,000 rows match the current evidence and metadata; the
+unchanged retry requires 0 conflicting tuples, no insert and an unchanged
+`ctid`/`xmin` fingerprint of all 5,000 rows. At a million routes, all eight
+prefixes: changed trials 338-426 ms SQL and 11.64-12.11 MB WAL; unchanged
+retries 66-110 ms SQL and 0 WAL bytes in this run. Every prefix visited at
+most 5,000 rows of each candidate relation, and the orphan-cleanup pages
+stayed within their budgets (5,000 ownership and 5,001 projection visits;
+100 and 101 for source counts). The 94 WAL records of the earlier retry
+probably come from page maintenance, since no row was written; that is not
+established. The test does not assert zero WAL, only no tuple writes.
+
+Required checks on `4229b46`, from a `git archive` export: `go build -o
+/dev/null ./cmd/magpie`, `go vet ./...`, `go test ./... -count=1` and
+`go test -race ./... -count=1`, each without and with
+`MAGPIE_TEST_POSTGRES_DSN`, `MAGPIE_TEST_REDIS_URL` and
+`MAGPIE_TEST_QUEUE_REDIS_URL` set: all pass, with 39 packages reporting ok in each run. No hot-path code
+changed: +0 cryptographic operations, JSON encodes, Redis commands and
+database queries per check.
 
 ## Items still open
 
@@ -331,14 +443,13 @@ These spec items are deferred; none blocks the commits above.
 - **`readmodel` names.** The pure move kept every name, so several read
   `readmodel.RefreshReadModelIndexes`-style. Shorter names would be a
   rename-only change of their own.
-- **Five opt-in scale regressions fail on the original base.** At their
-  documented scales on this machine, `TestReadModelPairCostPopulatedPostgres`
-  and `TestProxyFilterIndexUpdateCostPopulatedPostgres` still expect the
-  conflict filter to see rows that the later no-op filter excludes;
-  `TestReadModelProjectionScopesPopulatedEvidencePostgres` misses its
-  15-second budget; `TestCheckerEvidencePrunePageBoundsPopulatedInventoryPostgres`
-  deletes no obsolete pointers; and
+- **Two opt-in scale regressions still fail.** Of the five that failed on
+  every revision measured, three were test defects, fixed by `c3b5cd2`,
+  `16eade9` and `4229b46` (see
+  [Three scale regressions fixed](#three-scale-regressions-fixed)). Still
+  failing at their documented scales on this machine, unchanged and not
+  investigated here: `TestReadModelProjectionScopesPopulatedEvidencePostgres`
+  misses its 15-second budget, and
   `TestRotatorEvidenceScopesSharedInventoryPostgres` visits the whole shared
-  inventory. Each fails the same way on every revision measured. Updating
-  them is test work outside this change.
+  inventory. Their coverage is unchanged.
 - **Browser scraper tests** need a local Chromium and did not run.
