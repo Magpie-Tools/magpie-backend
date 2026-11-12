@@ -61,7 +61,7 @@ func seedBulkDeletePostgres(t *testing.T, routes int) (*gorm.DB, domain.Workspac
 	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	for _, statement := range []struct {

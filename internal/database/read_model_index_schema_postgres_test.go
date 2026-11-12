@@ -65,7 +65,7 @@ func createOldProxyFilterIndexes(t testing.TB, db *gorm.DB) {
 
 func TestProxyFilterIndexStartupDeduplicatesAndStaysIdempotentPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.EnsureProxyListPerformanceSchema(db); err != nil {
@@ -88,7 +88,7 @@ FROM user_proxy_filter_indexes t`).Scan(&before).Error; err != nil {
 		if err := db.AutoMigrate(&domain.WorkspaceProxyFilterIndex{}); err != nil {
 			t.Fatal(err)
 		}
-		if err := ensureReadModelSchema(db); err != nil {
+		if err := schema.EnsureReadModelSchema(db); err != nil {
 			t.Fatal(err)
 		}
 		if got := proxyFilterIndexDefinitions(t, db); !reflect.DeepEqual(got, canonical) {
@@ -107,7 +107,7 @@ FROM user_proxy_filter_indexes t`).Scan(&after).Error; err != nil {
 
 func TestProxyFilterIndexCleanupPreservesDifferentAndCustomIndexesPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec(`CREATE INDEX custom_host_copy ON user_proxy_filter_indexes (host)`).Error; err != nil {
@@ -135,7 +135,7 @@ func TestProxyFilterIndexCleanupPreservesDifferentAndCustomIndexesPostgres(t *te
 				t.Fatal(err)
 			}
 			before := proxyFilterIndexDefinitions(t, db)
-			if err := ensureReadModelSchema(db); err != nil {
+			if err := schema.EnsureReadModelSchema(db); err != nil {
 				t.Fatal(err)
 			}
 			if got := proxyFilterIndexDefinitions(t, db); !reflect.DeepEqual(got, before) {
@@ -153,7 +153,7 @@ func TestProxyFilterIndexCleanupPreservesDifferentAndCustomIndexesPostgres(t *te
 	if err := db.Exec(`ALTER TABLE user_proxy_filter_indexes CLUSTER ON idx_user_proxy_filter_indexes_host`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := proxyFilterIndexDefinitions(t, db)["idx_user_proxy_filter_indexes_host"]; !ok {
@@ -177,7 +177,7 @@ func TestProxyFilterIndexCleanupPreservesDifferentAndCustomIndexesPostgres(t *te
 			}
 		}
 		before := proxyFilterIndexDefinitions(t, db)
-		if err := ensureReadModelSchema(db); err != nil {
+		if err := schema.EnsureReadModelSchema(db); err != nil {
 			t.Fatal(err)
 		}
 		if got := proxyFilterIndexDefinitions(t, db); !reflect.DeepEqual(got, before) {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"magpie/internal/domain"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 )
@@ -43,7 +44,7 @@ func setupSourceStatsShutdownTest(t *testing.T) (*gorm.DB, []sourceStatsKey) {
 		sourceStatsDirtyMu.Unlock()
 	})
 	workspace, _, proxy, judge := seedCheckerEvidenceTest(t, db)
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	var keys []sourceStatsKey

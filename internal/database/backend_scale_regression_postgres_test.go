@@ -13,6 +13,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
 	"magpie/internal/platform/pg"
+	"magpie/internal/platform/schema"
 )
 
 func TestWorkspaceCheckUsageInventoryScalePostgres(t *testing.T) {
@@ -181,7 +182,7 @@ func TestSourceStatisticsRefreshCoalescesLargePoolPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	a, _, p, _ := seedCheckerEvidenceTest(t, db)
 	const routes = 10000
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	site := domain.ScrapeSite{URL: "https://example.test/review"}

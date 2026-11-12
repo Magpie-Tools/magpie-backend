@@ -32,7 +32,7 @@ func TestStatisticsTransactionCostPopulatedPostgres(t *testing.T) {
 		t.Fatal("statistics cost fixture requires at least 20000 routes", value)
 	}
 	db := setupProxyIngestionPostgresTest(t)
-	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyStatisticsRetentionSchema, schema.EnsureProxyQueryIndexSchema} {
+	for _, initialize := range []func(*gorm.DB) error{schema.EnsureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyStatisticsRetentionSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
 		}

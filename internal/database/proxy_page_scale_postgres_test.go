@@ -18,7 +18,7 @@ import (
 
 func TestProxyPageAndCountUseWorkspaceIndexesPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.EnsureProxyListPerformanceSchema(db); err != nil {

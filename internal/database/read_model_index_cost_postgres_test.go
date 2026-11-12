@@ -31,7 +31,7 @@ func TestProxyFilterIndexUpdateCostPopulatedPostgres(t *testing.T) {
 		t.Fatal("invalid projection-index route count", value)
 	}
 	db := setupProxyIngestionPostgresTest(t)
-	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
+	for _, initialize := range []func(*gorm.DB) error{schema.EnsureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
 		}
@@ -198,7 +198,7 @@ WHERE proxy_id IN ?`, ids).Error; err != nil {
 		t.Fatal(err)
 	}
 	migrationStart := time.Now()
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	migrationMS := float64(time.Since(migrationStart).Microseconds()) / 1000

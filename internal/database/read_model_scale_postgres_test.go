@@ -13,6 +13,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	"magpie/internal/platform/schema"
 
 	"gorm.io/gorm"
 )
@@ -42,7 +43,7 @@ func TestReadModelProjectionScopesPopulatedEvidencePostgres(t *testing.T) {
 		ids = append(ids, uint64(1+routes*i/batch))
 	}
 	ids = append(ids, uint64(routes+1))
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	for i, name := range domain.CheckerProtocols {

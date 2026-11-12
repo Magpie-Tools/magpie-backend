@@ -51,7 +51,7 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	if err := db.Model(&a).Updates(map[string]any{"checker_config": a.CheckerConfig, "checker_generation": 1, "checker_revision": 1, "checker_full_revision": 1, "checker_projected_revision": 1, "checker_http_key": fixture.Default.Keys[0]}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureReadModelSchema(db); err != nil {
+	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.EnsureCheckerSettingsSchema(db); err != nil {

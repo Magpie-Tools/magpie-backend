@@ -30,7 +30,7 @@ func TestReadModelPairCostPopulatedPostgres(t *testing.T) {
 		t.Fatal("invalid populated projection route count", value)
 	}
 	db := setupProxyIngestionPostgresTest(t)
-	for _, initialize := range []func(*gorm.DB) error{ensureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
+	for _, initialize := range []func(*gorm.DB) error{schema.EnsureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
 		}
