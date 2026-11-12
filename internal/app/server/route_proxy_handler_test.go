@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"mime/multipart"
@@ -12,6 +13,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/security"
+	"magpie/internal/workspace"
 )
 
 func TestIngestProxyUploadUsesExplicitWorkspaceID(t *testing.T) {
@@ -264,5 +266,35 @@ func TestParseHealthPercentParam_ClampsRange(t *testing.T) {
 		if got := parseHealthPercentParam(input); got != want {
 			t.Fatalf("parseHealthPercentParam(%q) = %d, want %d", input, got, want)
 		}
+	}
+}
+
+func TestGetProxyStatisticHours_RejectsInvalidParameters(t *testing.T) {
+	testCases := map[string]struct{ id, query, message string }{
+		"invalid id":  {id: "nope", query: "", message: "Invalid proxy id"},
+		"zero hours":  {id: "42", query: "?hours=0", message: "hours must be between 1 and 168"},
+		"too many":    {id: "42", query: "?hours=169", message: "hours must be between 1 and 168"},
+		"not numeric": {id: "42", query: "?hours=week", message: "hours must be between 1 and 168"},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/proxies/"+tc.id+"/statistics/hourly"+tc.query, nil)
+			req = req.WithContext(context.WithValue(req.Context(), workspaceContextKey{}, workspace.WorkspaceAccess{WorkspaceID: 7}))
+			req.SetPathValue("id", tc.id)
+			rec := httptest.NewRecorder()
+
+			getProxyStatisticHours(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status code = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			var payload map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("unmarshal error response: %v", err)
+			}
+			if payload["error"] != tc.message {
+				t.Fatalf("error = %q, want %q", payload["error"], tc.message)
+			}
+		})
 	}
 }

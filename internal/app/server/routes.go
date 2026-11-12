@@ -128,6 +128,7 @@ func OpenRoutes(ctx context.Context, port int, pace *checkpace.Pacer) error {
 	apiMux.Handle("GET /getProxyPage/{page}", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyPage))))
 	apiMux.Handle("GET /proxyFilters", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyFilters))))
 	apiMux.Handle("GET /proxies/{id}/statistics", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyStatistics))))
+	apiMux.Handle("GET /proxies/{id}/statistics/hourly", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyStatisticHours))))
 	apiMux.Handle("GET /proxies/{id}/statistics/{statisticId}", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyStatisticResponseBody))))
 	apiMux.Handle("GET /proxies/{id}", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyDetail))))
 	apiMux.Handle("PUT /proxies/{id}/lifecycle", auth.RequireAuth(withWorkspaceOperator(http.HandlerFunc(updateManagedProxyLifecycle))))
