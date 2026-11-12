@@ -166,7 +166,8 @@ SELECT ?,n,'192.0.2.1','192.0.2.1',3128,'active',FALSE,FALSE,'2026-09-01'::times
 			t.Fatal("missing projection SQL")
 		}
 		// A fresh latest time changes an indexed projection value for every
-		// measured row. Do not measure only the no-op retry path.
+		// measured row. Do not measure only the no-op retry path; trial 1
+		// measures it separately.
 		keys := make([][]any, len(prefix))
 		for i, pair := range prefix {
 			keys[i] = []any{pair.WorkspaceID, pair.ProxyID}
@@ -175,6 +176,31 @@ SELECT ?,n,'192.0.2.1','192.0.2.1',3128,'active',FALSE,FALSE,'2026-09-01'::times
 WHERE (workspace_id,proxy_id) IN ?`, keys).Error; err != nil {
 			t.Fatal(err)
 		}
+		// projected counts prefix rows whose content matches the current
+		// evidence and metadata. fingerprint names each row's physical version,
+		// so an unchanged fingerprint proves that no row was written.
+		projected := func() int64 {
+			var count int64
+			if err := db.Raw(`SELECT count(*) FROM user_proxy_filter_indexes ufi
+JOIN proxy_latest_statistics pls ON pls.workspace_id=ufi.workspace_id AND pls.proxy_id=ufi.proxy_id
+WHERE (ufi.workspace_id,ufi.proxy_id) IN ? AND ufi.latest_check=pls.checked_at AND ufi.alive AND ufi.alive_http
+AND ufi.response_time=37 AND ufi.attempt=1 AND ufi.health_overall=100 AND ufi.reputation_label='good' AND ufi.reputation_score=70`, keys).Scan(&count).Error; err != nil {
+				t.Fatal(err)
+			}
+			return count
+		}
+		fingerprint := func() string {
+			var version string
+			if err := db.Raw(`SELECT md5(string_agg(ctid::text||':'||xmin::text, ',' ORDER BY workspace_id, proxy_id))
+FROM user_proxy_filter_indexes WHERE (workspace_id,proxy_id) IN ?`, keys).Row().Scan(&version); err != nil {
+				t.Fatal(err)
+			}
+			return version
+		}
+		if current := projected(); current != 0 {
+			t.Fatal("fixture: rows already match the advanced evidence before the measured update", next, current)
+		}
+		var changedVersion string
 		for trial := 0; trial < 2; trial++ {
 			var encoded string
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -215,9 +241,24 @@ WHERE (workspace_id,proxy_id) IN ?`, keys).Error; err != nil {
 				}
 			}
 			root := plan[0].Plan
-			filtered, _ := root["Rows Removed by Conflict Filter"].(float64)
-			if root["Conflicting Tuples"] != float64(5000) || (trial == 0 && filtered != 0) || (trial == 1 && filtered != 5000) {
+			// Trial 0: every pair has a fresh latest time, so all 5000 rows
+			// enter the upsert and the conflict filter rejects none. Trial 1
+			// repeats the statement unchanged: the no-op filter before the
+			// INSERT excludes every row, so none reaches the conflict path.
+			wantConflicting := map[int]float64{0: 5000, 1: 0}[trial]
+			if root["Tuples Inserted"] != float64(0) || root["Conflicting Tuples"] != wantConflicting || root["Rows Removed by Conflict Filter"] != float64(0) {
 				t.Fatal("changed/no-op measurement did not cover all existing pairs", next, trial, root)
+			}
+			if current := projected(); current != int64(len(prefix)) {
+				t.Fatal("projection does not match current evidence", next, trial, current)
+			}
+			switch version := fingerprint(); trial {
+			case 0:
+				changedVersion = version
+			case 1:
+				if version != changedVersion {
+					t.Fatal("unchanged retry rewrote projection rows", next)
+				}
 			}
 			sample := map[string]any{"prefix": next / 5000, "trial": trial, "pairs": len(prefix), "initial_update_ms": float64(elapsed.Microseconds()) / 1000,
 				"wall_ms": float64(wall.Microseconds()) / 1000, "sql_ms": plan[0].ExecutionTime, "visits": visits, "root": root}
