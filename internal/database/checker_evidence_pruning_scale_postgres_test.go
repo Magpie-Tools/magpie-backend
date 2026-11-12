@@ -12,6 +12,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -92,7 +93,7 @@ SELECT w.id,'current','tcp',n,1,TRUE,n,CURRENT_TIMESTAMP FROM workspaces w CROSS
 		encoded, _ := json.Marshal(map[string]any{"elapsed_ms": elapsed.Milliseconds(), "error": fmt.Sprint(err)})
 		writeEvidencePruneArtifact(t, "baseline-latency.json", encoded)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	defer func() { pg.DB = db }()
 	var capturedSQL string
@@ -121,8 +122,8 @@ SELECT w.id,'current','tcp',n,1,TRUE,n,CURRENT_TIMESTAMP FROM workspaces w CROSS
 		page, err := PruneObsoleteCheckerEvidencePage(ctx, nil, batch)
 		elapsed := time.Since(start)
 		if err != nil || page.Scanned != int64(min(batch, routes*8)) || page.Deleted != expectedDeleted {
-			if len(queries.queries) > 0 {
-				query := queries.queries[len(queries.queries)-1]
+			if len(queries.Queries) > 0 {
+				query := queries.Queries[len(queries.Queries)-1]
 				writeEvidencePruneArtifact(t, name+"-failed-query.sql", []byte(query))
 				var plan string
 				if db.Raw("EXPLAIN (FORMAT JSON) "+query).Row().Scan(&plan) == nil {
@@ -131,7 +132,7 @@ SELECT w.id,'current','tcp',n,1,TRUE,n,CURRENT_TIMESTAMP FROM workspaces w CROSS
 			}
 			t.Fatalf("%s page=%+v error=%v", name, page, err)
 		}
-		query := queries.queries[len(queries.queries)-1]
+		query := queries.Queries[len(queries.Queries)-1]
 		capturedSQL = query
 		writeEvidencePruneArtifact(t, name+"-query.sql", []byte(query))
 		if encoded == "" {

@@ -18,10 +18,6 @@ func TestReadModelDirtyRoundUnseenRouteReadsNewCommittedEvidencePostgres(t *test
 	if err := db.First(&judge).Error; err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := LoadCheckerWorkspace(context.Background(), workspace.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var added []domain.Proxy
 	for _, host := range []string{"198.51.100.78", "198.51.100.79"} {
 		proxy := domain.Proxy{IP: host, Port: 3128}
@@ -46,14 +42,10 @@ func TestReadModelDirtyRoundUnseenRouteReadsNewCommittedEvidencePostgres(t *test
 	// the final route must be read by its future statement, without a duplicate
 	// round or a captured stale evidence snapshot.
 	checkedAt := time.Now().UTC().Truncate(time.Microsecond)
-	statistic := domain.ProxyStatistic{
-		ProxyID: added[1].ID, JudgeID: judge.ID, ProtocolID: 1, Alive: true,
-		CreatedAt:     checkedAt,
-		CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: workspace.ID, ConfigKey: snapshot.Default.Keys[0], Alive: true}},
-	}
-	if err := InsertProxyStatistics(context.Background(), []domain.ProxyStatistic{statistic}, 1); err != nil {
-		t.Fatal(err)
-	}
+	recordReadModelEvidence(t, db, domain.ProxyLatestStatistic{
+		WorkspaceID: workspace.ID, ConfigKey: readModelCheckerKey, ProxyID: added[1].ID, ProtocolID: 1,
+		Alive: true, StatisticID: 2, JudgeID: judge.ID, CheckedAt: checkedAt,
+	})
 	readModelDirtyMu.Lock()
 	_, duplicated := readModelDirtyProxyIDs[added[1].ID]
 	readModelDirtyMu.Unlock()

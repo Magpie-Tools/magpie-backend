@@ -15,12 +15,13 @@ import (
 	"magpie/internal/evidence"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
 
 func TestReadModelProjectionScopesPopulatedEvidencePostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupReadModelPostgresTest(t)
 	routes := 10000
 	if value := os.Getenv("MAGPIE_TEST_READ_MODEL_ROUTES"); value != "" {
 		n, err := strconv.Atoi(value)
@@ -146,7 +147,7 @@ VALUES (?,?,'unchanged.example',8080,'2000-01-01')`, []any{workspaces[0].ID, rou
 		result, _ := json.Marshal(map[string]any{"routes": routes, "owners": 8, "batch": batch + 1, "elapsed_ms": elapsed.Milliseconds(), "error": fmt.Sprint(err)})
 		writeReadModelEvidence(t, "baseline-latency.json", result)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	measured := db.Session(&gorm.Session{Logger: queries})
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -156,7 +157,7 @@ VALUES (?,?,'unchanged.example',8080,'2000-01-01')`, []any{workspaces[0].ID, rou
 	}
 	elapsed := time.Since(start)
 	var projectionStatements []string
-	for _, sql := range queries.queries {
+	for _, sql := range queries.Queries {
 		if strings.Contains(sql, "INSERT INTO user_proxy_filter_indexes") {
 			projectionStatements = append(projectionStatements, sql)
 		}

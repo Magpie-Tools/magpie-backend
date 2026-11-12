@@ -11,6 +11,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -251,17 +252,17 @@ func TestReadModelProjectionPairBudget(t *testing.T) {
 
 func TestReadModelBackgroundOperationCountsPostgres(t *testing.T) {
 	db, proxyID, _ := seedReadModelFanoutTest(t)
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	QueueReadModelRefreshForProxyIDs([]uint64{proxyID})
-	if len(queries.queries) != 0 {
-		t.Fatal("queue notification added a direct database operation", queries.queries)
+	if len(queries.Queries) != 0 {
+		t.Fatal("queue notification added a direct database operation", queries.Queries)
 	}
 	for readModelProxyWorkPending() {
 		flushReadModelDirtyProxyIDs(context.Background(), false)
 	}
-	counts := map[string]int{"total": len(queries.queries)}
-	for _, sql := range queries.queries {
+	counts := map[string]int{"total": len(queries.Queries)}
+	for _, sql := range queries.Queries {
 		switch {
 		case strings.Contains(sql, "INSERT INTO user_proxy_filter_indexes"):
 			counts["projection_upserts"]++

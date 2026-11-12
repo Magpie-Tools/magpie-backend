@@ -11,13 +11,14 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
 
 func setupSourceStatsShutdownTest(t *testing.T) (*gorm.DB, []sourceStatsKey) {
 	t.Helper()
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupReadModelPostgresTest(t)
 	t.Setenv("READ_MODEL_REFRESH_INTERVAL_SECONDS", "3600")
 	t.Setenv("SCRAPE_SOURCE_STATS_REFRESH_INTERVAL_SECONDS", "3600")
 	t.Setenv("SCRAPE_SOURCE_STATS_REFRESH_BATCH_SIZE", "1")
@@ -43,7 +44,7 @@ func setupSourceStatsShutdownTest(t *testing.T) (*gorm.DB, []sourceStatsKey) {
 		sourceStatsDirty = previousSources
 		sourceStatsDirtyMu.Unlock()
 	})
-	workspace, _, proxy, judge := seedCheckerEvidenceTest(t, db)
+	workspace, _, proxy, judge := testdb.SeedCheckerEvidence(t, db)
 	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
@@ -65,18 +66,11 @@ func setupSourceStatsShutdownTest(t *testing.T) (*gorm.DB, []sourceStatsKey) {
 		t.Fatal(err)
 	}
 	assertSourceStatsCounts(t, db, keys, 0, 1)
-	snapshot, err := LoadCheckerWorkspace(context.Background(), workspace.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	statistic := domain.ProxyStatistic{
-		ProxyID: proxy.ID, JudgeID: judge.ID, ProtocolID: 1, Alive: true,
-		CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: workspace.ID, ConfigKey: snapshot.Default.Keys[0], Alive: true}},
-		CreatedAt:     time.Now().UTC(),
-	}
-	if err := InsertProxyStatistics(context.Background(), []domain.ProxyStatistic{statistic}, 1); err != nil {
-		t.Fatal(err)
-	}
+	useReadModelCheckerKey(t, db, workspace.ID)
+	recordReadModelEvidence(t, db, domain.ProxyLatestStatistic{
+		WorkspaceID: workspace.ID, ConfigKey: readModelCheckerKey, ProxyID: proxy.ID, ProtocolID: 1,
+		Alive: true, StatisticID: 1, JudgeID: judge.ID, CheckedAt: time.Now().UTC(),
+	})
 	return db, keys
 }
 

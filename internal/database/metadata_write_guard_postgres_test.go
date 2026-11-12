@@ -13,6 +13,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -50,7 +51,7 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 	if err := locked.Exec("SELECT id FROM proxies WHERE id=1 FOR UPDATE").Error; err != nil {
 		t.Fatal(err)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	pg.DB = db.WithContext(ctx).Session(&gorm.Session{Logger: queries})
@@ -58,10 +59,10 @@ INSERT INTO observed_metadata_updates VALUES(NEW.id); RETURN NEW; END $$`,
 		t.Fatal("unchanged metadata waited for a locked route", err)
 	}
 	_ = locked.Rollback().Error
-	if len(queries.queries) != 1 {
-		t.Fatal("metadata guard added database statements", queries.queries)
+	if len(queries.Queries) != 1 {
+		t.Fatal("metadata guard added database statements", queries.Queries)
 	}
-	guardedSQL := queries.queries[0]
+	guardedSQL := queries.Queries[0]
 	pg.DB = db
 	if err := UpdateProxyMetadataBatch(pg.DB, batch, LocalProxyMetadata); err != nil {
 		t.Fatal(err)
@@ -138,7 +139,7 @@ func TestCheckUsageDoesNotWaitForSubscriptionLockPostgres(t *testing.T) {
 	if err := locked.Exec("SELECT workspace_id FROM workspace_subscriptions WHERE workspace_id=? FOR UPDATE", workspace.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -147,7 +148,7 @@ func TestCheckUsageDoesNotWaitForSubscriptionLockPostgres(t *testing.T) {
 	}); err != nil {
 		t.Fatal("check usage waited for a subscription lock", err)
 	}
-	for _, sql := range queries.queries {
+	for _, sql := range queries.Queries {
 		if strings.Contains(sql, "user_proxies") || strings.Contains(sql, "workspace_subscriptions") {
 			t.Fatal("check usage touched inventory or subscription locks", sql)
 		}

@@ -14,6 +14,7 @@ import (
 	"magpie/internal/evidence"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 )
 
 func TestWorkspaceCheckUsageInventoryScalePostgres(t *testing.T) {
@@ -94,7 +95,7 @@ func TestRotatorCountLargePoolPostgres(t *testing.T) {
 	if err := db.Model(&a).Update("http_protocol", true).Error; err != nil {
 		t.Fatal(err)
 	}
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	start := time.Now()
 	created, err := CreateRotatingProxy(a.ID, dto.RotatingProxyCreateRequest{Name: "large-pool", Protocol: "http"})
@@ -105,7 +106,7 @@ func TestRotatorCountLargePoolPostgres(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].AliveProxyCount != routes {
 		t.Fatalf("large-pool listing failed: %+v %v", listed, err)
 	}
-	for _, query := range queries.queries {
+	for _, query := range queries.Queries {
 		if strings.Contains(query, "username_encrypted") || strings.Contains(query, "password_encrypted") {
 			t.Fatalf("rotator count loaded credentials: %s", query)
 		}
@@ -209,7 +210,7 @@ func TestSourceStatisticsRefreshCoalescesLargePoolPostgres(t *testing.T) {
 	sourceStatsDirty = make(map[sourceStatsKey]struct{})
 	sourceStatsDirtyMu.Unlock()
 	t.Cleanup(func() { sourceStatsDirtyMu.Lock(); sourceStatsDirty = previousDirty; sourceStatsDirtyMu.Unlock() })
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	measured := db.Session(&gorm.Session{Logger: queries})
 	start := time.Now()
 	for i := 0; i < 10; i++ {
@@ -217,7 +218,7 @@ func TestSourceStatisticsRefreshCoalescesLargePoolPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, query := range queries.queries {
+	for _, query := range queries.Queries {
 		if strings.Contains(query, "INSERT INTO user_scrape_source_stats") {
 			t.Fatal("route refresh recounted the source")
 		}
@@ -239,7 +240,7 @@ func TestSourceStatisticsRefreshCoalescesLargePoolPostgres(t *testing.T) {
 		t.Fatalf("coalesced source count=%d, want %d", stat.ProxyCount, routes)
 	}
 	aggregates := 0
-	for _, query := range queries.queries {
+	for _, query := range queries.Queries {
 		if strings.Contains(query, "INSERT INTO user_scrape_source_stats") {
 			aggregates++
 		}

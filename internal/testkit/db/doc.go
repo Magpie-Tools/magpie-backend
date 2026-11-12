@@ -6,6 +6,8 @@
 //     test. Outside integration mode (MAGPIE_TEST_POSTGRES_DSN unset) it skips
 //     the test; inside it, an unreachable server fails the test. A PostgreSQL
 //     test never falls back to SQLite.
+//   - QueryRecorder is a GORM logger that records each statement's SQL, for
+//     tests that count or inspect the statements a function issues.
 //
 // Both migrate through platform/schema and set a proxy encryption key with a
 // fresh cipher, so encrypted model hooks work.

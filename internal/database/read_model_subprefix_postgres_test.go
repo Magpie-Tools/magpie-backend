@@ -12,6 +12,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -474,7 +475,7 @@ func TestReadModelSubprefixOrdinaryPassLimitAndOperationCountsPostgres(t *testin
 	t.Setenv("READ_MODEL_REFRESH_BATCH_SIZE", "2")
 	t.Setenv("READ_MODEL_REFRESH_MAX_BATCHES", "4")
 	t.Setenv("READ_MODEL_REFRESH_TIMEOUT_SECONDS", "1")
-	queries := &checkerScaleQueryLogger{Interface: db.Logger}
+	queries := &testdb.QueryRecorder{Interface: db.Logger}
 	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	attempts := captureReadModelSubprefixAttempts(t, db)
 	removeTrigger := installReadModelSubprefixDeadlineTrigger(t, db, owners[1])
@@ -493,7 +494,7 @@ func TestReadModelSubprefixOrdinaryPassLimitAndOperationCountsPostgres(t *testin
 	}
 	finishReadModelSubprefixDrain(t)
 	counts := map[string]int{}
-	for _, sql := range queries.queries {
+	for _, sql := range queries.Queries {
 		switch {
 		case strings.Contains(sql, "INSERT INTO user_proxy_filter_indexes"):
 			counts["projection_attempts"]++

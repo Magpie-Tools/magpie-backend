@@ -14,6 +14,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -258,7 +259,7 @@ CROSS JOIN LATERAL (VALUES (w.checker_http_key,TRUE),('obsolete',FALSE)) k(key,c
 	}
 	for _, owners := range []int{1, 8} {
 		t.Run(fmt.Sprintf("owners-%d", owners), func(t *testing.T) {
-			queries := &checkerScaleQueryLogger{Interface: db.Logger}
+			queries := &testdb.QueryRecorder{Interface: db.Logger}
 			measured := db.Session(&gorm.Session{Logger: queries})
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			start := time.Now()
@@ -273,13 +274,13 @@ CROSS JOIN LATERAL (VALUES (w.checker_http_key,TRUE),('obsolete',FALSE)) k(key,c
 					t.Fatalf("alive count=%d want=%d", count, routes/8)
 				}
 			}
-			if len(queries.queries) != 1 || strings.Contains(queries.queries[0], "LATERAL") {
-				t.Fatalf("alive count must use one grouped query: %v", queries.queries)
+			if len(queries.Queries) != 1 || strings.Contains(queries.Queries[0], "LATERAL") {
+				t.Fatalf("alive count must use one grouped query: %v", queries.Queries)
 			}
 			ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			var encoded string
-			if err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + queries.queries[0]).Row().Scan(&encoded); err != nil {
+			if err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + queries.Queries[0]).Row().Scan(&encoded); err != nil {
 				t.Fatal(err)
 			}
 			writeSnapshotEvidence(t, fmt.Sprintf("scoped-%d-plan.json", owners), []byte(encoded))

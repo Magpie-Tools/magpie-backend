@@ -13,6 +13,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -29,7 +30,7 @@ func TestReadModelPairCostPopulatedPostgres(t *testing.T) {
 	if err != nil || routes < 10000 {
 		t.Fatal("invalid populated projection route count", value)
 	}
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupReadModelPostgresTest(t)
 	for _, initialize := range []func(*gorm.DB) error{schema.EnsureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
@@ -119,7 +120,7 @@ SELECT ?,n,'192.0.2.1','192.0.2.1',3128,'active',FALSE,FALSE,'2026-09-01'::times
 	for i := range ids {
 		ids[i] = uint64(1 + routes*i/len(ids))
 	}
-	before := &checkerScaleQueryLogger{Interface: db.Logger}
+	before := &testdb.QueryRecorder{Interface: db.Logger}
 	discoveryStart := time.Now()
 	pairs, err := loadReadModelProjectionPairs(db.Session(&gorm.Session{Logger: before}), ids)
 	if err != nil || len(pairs) != 40000 {
@@ -146,7 +147,7 @@ SELECT ?,n,'192.0.2.1','192.0.2.1',3128,'active',FALSE,FALSE,'2026-09-01'::times
 	var samples []map[string]any
 	for next := 0; next < len(pairs); next += 5000 {
 		prefix := pairs[next:min(next+5000, len(pairs))]
-		queries := &checkerScaleQueryLogger{Interface: db.Logger}
+		queries := &testdb.QueryRecorder{Interface: db.Logger}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		started := time.Now()
 		err := refreshWorkspaceProxyFilterPairs(db.Session(&gorm.Session{Logger: queries}).WithContext(ctx), prefix)
@@ -156,7 +157,7 @@ SELECT ?,n,'192.0.2.1','192.0.2.1',3128,'active',FALSE,FALSE,'2026-09-01'::times
 			t.Fatal("bounded changed-row prefix failed", next, elapsed, err)
 		}
 		var query string
-		for _, sql := range queries.queries {
+		for _, sql := range queries.Queries {
 			if strings.Contains(sql, "INSERT INTO user_proxy_filter_indexes") {
 				query = sql
 			}
@@ -252,7 +253,7 @@ func measurePopulatedReadModelOrphanPlans(t *testing.T, db *gorm.DB, routes int)
 		{"user_scrape_source_stats", "user_scrape_site", "scrape_site_id", 100, 10000},
 	} {
 		for page, after := range []readModelRepairKey{{}, {WorkspaceID: 4, RowID: uint64(cfg.inventory / 2)}, {WorkspaceID: 8, RowID: uint64(cfg.inventory - cfg.budget)}} {
-			queries := &checkerScaleQueryLogger{Interface: db.Logger}
+			queries := &testdb.QueryRecorder{Interface: db.Logger}
 			var keys []readModelRepairKey
 			if err := db.Session(&gorm.Session{Logger: queries}).Table(cfg.derived).Select("workspace_id, "+cfg.key+" AS row_id").
 				Where("(workspace_id, "+cfg.key+") > (?, ?)", after.WorkspaceID, after.RowID).
@@ -262,15 +263,15 @@ func measurePopulatedReadModelOrphanPlans(t *testing.T, db *gorm.DB, routes int)
 			if len(keys) != cfg.budget {
 				t.Fatal("incomplete cleanup candidate page", cfg.derived, page, len(keys))
 			}
-			selectSQL := queries.queries[len(queries.queries)-1]
+			selectSQL := queries.Queries[len(queries.Queries)-1]
 			if err := db.Exec("DELETE FROM "+cfg.ownership+" WHERE workspace_id=? AND "+cfg.key+"=?", keys[0].WorkspaceID, keys[0].RowID).Error; err != nil {
 				t.Fatal(err)
 			}
-			queries.queries = nil
+			queries.Queries = nil
 			if err := deleteOrphanReadModelRows(db.Session(&gorm.Session{DryRun: true, Logger: queries}), cfg.derived, cfg.ownership, cfg.key, keys); err != nil {
 				t.Fatal(err)
 			}
-			deleteSQL := queries.queries[len(queries.queries)-1]
+			deleteSQL := queries.Queries[len(queries.Queries)-1]
 			for phase, sql := range map[string]string{"candidates": selectSQL, "delete": deleteSQL} {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				var encoded string

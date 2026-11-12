@@ -15,6 +15,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 	"magpie/internal/platform/schema"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -30,7 +31,7 @@ func TestProxyFilterIndexUpdateCostPopulatedPostgres(t *testing.T) {
 	if err != nil || routes < 1000 {
 		t.Fatal("invalid projection-index route count", value)
 	}
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupReadModelPostgresTest(t)
 	for _, initialize := range []func(*gorm.DB) error{schema.EnsureReadModelSchema, schema.EnsureProxyListPerformanceSchema, schema.EnsureProxyQueryIndexSchema} {
 		if err := initialize(db); err != nil {
 			t.Fatal(err)
@@ -136,12 +137,12 @@ FROM workspaces w CROSS JOIN generate_series(1,?::bigint) n`, []any{routes}},
 		var samples []sample
 		for _, batch := range batchSizes {
 			ids := idsByBatch[batch]
-			queries := &checkerScaleQueryLogger{Interface: db.Logger}
+			queries := &testdb.QueryRecorder{Interface: db.Logger}
 			if err := refreshWorkspaceProxyFilterIndexesForProxyIDs(db.Session(&gorm.Session{Logger: queries}), ids); err != nil {
 				t.Fatal(err)
 			}
 			var query string
-			for _, sql := range queries.queries {
+			for _, sql := range queries.Queries {
 				if strings.Contains(sql, "INSERT INTO user_proxy_filter_indexes") {
 					query = sql
 				}

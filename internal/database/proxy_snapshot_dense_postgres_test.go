@@ -9,6 +9,7 @@ import (
 
 	"magpie/internal/domain"
 	"magpie/internal/evidence"
+	testdb "magpie/internal/testkit/db"
 
 	"gorm.io/gorm"
 )
@@ -44,7 +45,7 @@ SELECT w.id,w.checker_http_key,'tcp',n,1,TRUE,n,37,CURRENT_TIMESTAMP FROM worksp
 	}
 	for _, owners := range []int{1, 8} {
 		t.Run(fmt.Sprintf("owners-%d", owners), func(t *testing.T) {
-			queries := &checkerScaleQueryLogger{Interface: db.Logger}
+			queries := &testdb.QueryRecorder{Interface: db.Logger}
 			measured := db.Session(&gorm.Session{Logger: queries})
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -57,11 +58,11 @@ SELECT w.id,w.checker_http_key,'tcp',n,1,TRUE,n,37,CURRENT_TIMESTAMP FROM worksp
 					t.Fatalf("owner %d count=%d want=%d", id, counts[id], routes)
 				}
 			}
-			if len(queries.queries) != 1 {
-				t.Fatalf("snapshot count used %d queries", len(queries.queries))
+			if len(queries.Queries) != 1 {
+				t.Fatalf("snapshot count used %d queries", len(queries.Queries))
 			}
 			var encoded string
-			if err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + queries.queries[0]).Row().Scan(&encoded); err != nil {
+			if err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + queries.Queries[0]).Row().Scan(&encoded); err != nil {
 				t.Fatal(err)
 			}
 			writeSnapshotEvidence(t, fmt.Sprintf("dense-%d-plan.json", owners), []byte(encoded))

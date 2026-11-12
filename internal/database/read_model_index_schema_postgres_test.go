@@ -64,7 +64,7 @@ func createOldProxyFilterIndexes(t testing.TB, db *gorm.DB) {
 }
 
 func TestProxyFilterIndexStartupDeduplicatesAndStaysIdempotentPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupReadModelPostgresTest(t)
 	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ FROM user_proxy_filter_indexes t`).Scan(&after).Error; err != nil {
 }
 
 func TestProxyFilterIndexCleanupPreservesDifferentAndCustomIndexesPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
+	db := setupReadModelPostgresTest(t)
 	if err := schema.EnsureReadModelSchema(db); err != nil {
 		t.Fatal(err)
 	}
