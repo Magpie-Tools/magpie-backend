@@ -124,8 +124,8 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 			return err
 		}
 		// Rewrite only changed routes, including overrides that disappeared.
-		for start := 0; start < len(changedIDs); start += DeleteChunkSize {
-			end := min(start+DeleteChunkSize, len(changedIDs))
+		for start := 0; start < len(changedIDs); start += pg.DeleteChunkSize {
+			end := min(start+pg.DeleteChunkSize, len(changedIDs))
 			if err := tx.Where("workspace_id = ? AND proxy_id IN ?", workspaceID, changedIDs[start:end]).Delete(&domain.ProxyCheckerPlan{}).Error; err != nil {
 				return err
 			}
@@ -198,8 +198,8 @@ func loadCheckerAssignments(tx *gorm.DB, workspaceID uint, tagIDs, affected []ui
 		err := load(nil)
 		return assignments, err
 	}
-	for start := 0; start < len(affected); start += DeleteChunkSize {
-		if err := load(affected[start:min(start+DeleteChunkSize, len(affected))]); err != nil {
+	for start := 0; start < len(affected); start += pg.DeleteChunkSize {
+		if err := load(affected[start:min(start+pg.DeleteChunkSize, len(affected))]); err != nil {
 			return nil, err
 		}
 	}
@@ -262,8 +262,8 @@ func checkerProjectionDelta(tx *gorm.DB, workspaceID uint, snapshot *checkerconf
 		return rows.Err()
 	}
 	if incremental {
-		for start := 0; start < len(affected); start += DeleteChunkSize {
-			if err := load(affected[start:min(start+DeleteChunkSize, len(affected))]); err != nil {
+		for start := 0; start < len(affected); start += pg.DeleteChunkSize {
+			if err := load(affected[start:min(start+pg.DeleteChunkSize, len(affected))]); err != nil {
 				return nil, err
 			}
 		}
@@ -299,7 +299,7 @@ func PruneObsoleteCheckerEvidence(ctx context.Context, limit int) (int64, error)
 		return 0, fmt.Errorf("checker evidence pruning: database not initialised")
 	}
 	if limit <= 0 {
-		limit = DeleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 	result := pg.DB.WithContext(ctx).Exec(`DELETE FROM proxy_latest_statistics WHERE (workspace_id, config_key, proxy_id, protocol_id) IN (
 SELECT candidate.workspace_id, candidate.config_key, candidate.proxy_id, candidate.protocol_id
@@ -326,10 +326,10 @@ func MarkCheckerAssignmentsDirty(tx *gorm.DB, workspaceID uint, tagIDs, proxyIDs
 			if err := tx.Model(&domain.Workspace{}).Where("id = ?", workspaceID).UpdateColumns(map[string]any{"checker_dirty": true, "checker_revision": workspace.CheckerRevision}).Error; err != nil {
 				return false, err
 			}
-			for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
+			for start := 0; start < len(proxyIDs); start += pg.DeleteChunkSize {
 				if err := tx.Exec(`INSERT INTO checker_proxy_changes (workspace_id,proxy_id,revision)
 SELECT workspace_id,proxy_id,CAST(? AS bigint) FROM user_proxies WHERE workspace_id=? AND proxy_id IN ?
-ON CONFLICT (workspace_id,proxy_id) DO UPDATE SET revision=excluded.revision, deleted=FALSE, updated_at=CURRENT_TIMESTAMP`, workspace.CheckerRevision, workspaceID, proxyIDs[start:min(start+DeleteChunkSize, len(proxyIDs))]).Error; err != nil {
+ON CONFLICT (workspace_id,proxy_id) DO UPDATE SET revision=excluded.revision, deleted=FALSE, updated_at=CURRENT_TIMESTAMP`, workspace.CheckerRevision, workspaceID, proxyIDs[start:min(start+pg.DeleteChunkSize, len(proxyIDs))]).Error; err != nil {
 					return false, err
 				}
 			}
@@ -394,7 +394,7 @@ func PruneDeletedCheckerRoutes(ctx context.Context, before time.Time, limit int)
 		return 0, nil
 	}
 	if limit <= 0 {
-		limit = DeleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 	var count int64
 	err := pg.DB.WithContext(ctx).Raw(`WITH candidates AS MATERIALIZED (

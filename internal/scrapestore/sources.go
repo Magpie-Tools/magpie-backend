@@ -402,7 +402,7 @@ func DeleteScrapeSiteRelation(userId uint, scrapeSite []int) (int64, []domain.Sc
 		return 0, nil, nil
 	}
 
-	chunkSize := database.DeleteChunkSize
+	chunkSize := pg.DeleteChunkSize
 	if chunkSize > len(scrapeSite) {
 		chunkSize = len(scrapeSite)
 	}

@@ -24,7 +24,7 @@ func deleteOldRowsByCreatedAt(ctx context.Context, table string, olderThan time.
 		return 0, nil
 	}
 	if limit <= 0 {
-		limit = DeleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 
 	db := pg.DB

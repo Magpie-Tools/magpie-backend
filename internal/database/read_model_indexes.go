@@ -399,8 +399,8 @@ func refreshWorkspaceProxyFilterIndexesForProxyIDs(tx *gorm.DB, proxyIDs []uint6
 	if tx == nil || len(proxyIDs) == 0 {
 		return nil
 	}
-	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
-		end := min(start+DeleteChunkSize, len(proxyIDs))
+	for start := 0; start < len(proxyIDs); start += pg.DeleteChunkSize {
+		end := min(start+pg.DeleteChunkSize, len(proxyIDs))
 		pairs, err := loadReadModelProjectionPairs(tx, proxyIDs[start:end])
 		if err != nil {
 			return err
@@ -421,8 +421,8 @@ func refreshWorkspaceProxyFilterIndexesForWorkspaceProxyIDs(tx *gorm.DB, workspa
 	if tx == nil {
 		return nil
 	}
-	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
-		end := start + DeleteChunkSize
+	for start := 0; start < len(proxyIDs); start += pg.DeleteChunkSize {
+		end := start + pg.DeleteChunkSize
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
@@ -657,8 +657,8 @@ func refreshWorkspaceScrapeSourceStatsForSites(tx *gorm.DB, siteIDs []uint64) er
 	if tx == nil || len(siteIDs) == 0 {
 		return nil
 	}
-	for start := 0; start < len(siteIDs); start += DeleteChunkSize {
-		end := start + DeleteChunkSize
+	for start := 0; start < len(siteIDs); start += pg.DeleteChunkSize {
+		end := start + pg.DeleteChunkSize
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
@@ -673,8 +673,8 @@ func RefreshWorkspaceScrapeSourceStatsForWorkspaceSites(tx *gorm.DB, workspaceID
 	if tx == nil || workspaceID == 0 || len(siteIDs) == 0 {
 		return nil
 	}
-	for start := 0; start < len(siteIDs); start += DeleteChunkSize {
-		end := start + DeleteChunkSize
+	for start := 0; start < len(siteIDs); start += pg.DeleteChunkSize {
+		end := start + pg.DeleteChunkSize
 		if end > len(siteIDs) {
 			end = len(siteIDs)
 		}
@@ -690,8 +690,8 @@ func refreshWorkspaceScrapeSourceStatsForProxyIDs(tx *gorm.DB, proxyIDs []uint64
 		return nil
 	}
 
-	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
-		end := start + DeleteChunkSize
+	for start := 0; start < len(proxyIDs); start += pg.DeleteChunkSize {
+		end := start + pg.DeleteChunkSize
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}
@@ -782,8 +782,8 @@ func refreshWorkspaceScrapeSourceStatsForWorkspaceProxyIDs(tx *gorm.DB, workspac
 
 	affectedSiteIDs := make([]uint64, 0)
 	seenSites := make(map[uint64]struct{})
-	for start := 0; start < len(proxyIDs); start += DeleteChunkSize {
-		end := start + DeleteChunkSize
+	for start := 0; start < len(proxyIDs); start += pg.DeleteChunkSize {
+		end := start + pg.DeleteChunkSize
 		if end > len(proxyIDs) {
 			end = len(proxyIDs)
 		}

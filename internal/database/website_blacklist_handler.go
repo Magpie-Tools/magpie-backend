@@ -168,7 +168,7 @@ func deleteWorkspaceJudgeRelations(tx *gorm.DB, judgeIDs []uint, totalRemoved *i
 		return nil
 	}
 
-	chunkSize := DeleteChunkSize
+	chunkSize := pg.DeleteChunkSize
 	if chunkSize > len(judgeIDs) {
 		chunkSize = len(judgeIDs)
 	}
@@ -199,7 +199,7 @@ func deleteWorkspaceScrapeRelations(tx *gorm.DB, siteIDs []uint64, totalRemoved 
 		return nil
 	}
 
-	chunkSize := DeleteChunkSize
+	chunkSize := pg.DeleteChunkSize
 	if chunkSize > len(siteIDs) {
 		chunkSize = len(siteIDs)
 	}

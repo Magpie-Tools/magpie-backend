@@ -15,8 +15,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const DeleteChunkSize = 5000 // Keep large deletes under Postgres parameter limits
-
 var ErrNoProxiesSelected = errors.New("no proxies selected for deletion")
 
 var ErrWorkspaceCapacityReached = errors.New("workspace active route capacity reached")
@@ -45,7 +43,7 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 		}
 	}()
 	hasFilterIndex := pg.DB.Migrator().HasTable(&domain.WorkspaceProxyFilterIndex{})
-	chunkSize := DeleteChunkSize
+	chunkSize := pg.DeleteChunkSize
 	if chunkSize > len(proxies) {
 		chunkSize = len(proxies)
 	}
@@ -112,9 +110,9 @@ func DeleteProxyRelation(workspaceID uint, proxies []int) (totalDeleted int64, o
 		uniqueIDs = append(uniqueIDs, id)
 	}
 
-	for start := 0; start < len(uniqueIDs); start += DeleteChunkSize {
+	for start := 0; start < len(uniqueIDs); start += pg.DeleteChunkSize {
 		var batch []domain.Proxy
-		if err := pg.DB.Where("id IN ?", uniqueIDs[start:min(start+DeleteChunkSize, len(uniqueIDs))]).Find(&batch).Error; err != nil {
+		if err := pg.DB.Where("id IN ?", uniqueIDs[start:min(start+pg.DeleteChunkSize, len(uniqueIDs))]).Find(&batch).Error; err != nil {
 			return totalDeleted, nil, err
 		}
 		orphans = append(orphans, batch...)

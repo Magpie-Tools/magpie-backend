@@ -73,7 +73,7 @@ func PruneObsoleteCheckerEvidencePage(ctx context.Context, cursor *CheckerEviden
 		return CheckerEvidencePrunePage{Scanned: deleted, Deleted: deleted}, err
 	}
 	if limit <= 0 {
-		limit = DeleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 	boundary := `SELECT workspace_id, config_key, proxy_id, protocol_id FROM proxy_latest_statistics
 ORDER BY workspace_id DESC, config_key DESC, proxy_id DESC, protocol_id DESC LIMIT 1`

@@ -21,7 +21,7 @@ func DeleteOldProxyStatistics(ctx context.Context, olderThan time.Time, limit in
 	}
 
 	if limit <= 0 {
-		limit = DeleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 
 	db := pg.DB
@@ -71,7 +71,7 @@ func PruneProxyStatisticResponseBodies(ctx context.Context, olderThan time.Time,
 	}
 
 	if limit <= 0 {
-		limit = DeleteChunkSize
+		limit = pg.DeleteChunkSize
 	}
 
 	db := pg.DB

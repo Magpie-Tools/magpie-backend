@@ -68,7 +68,7 @@ func (b *readModelProjectionBatch) commitPrefix(end int) {
 func readModelProjectionPairBudget() int {
 	// Each pair uses two extended-protocol parameters. Keep the existing SQL
 	// chunk ceiling even if an operator raises the queue-drain setting.
-	return min(DeleteChunkSize, readModelRefreshBatchSize())
+	return min(pg.DeleteChunkSize, readModelRefreshBatchSize())
 }
 
 func readModelProxyWorkPending() bool {
