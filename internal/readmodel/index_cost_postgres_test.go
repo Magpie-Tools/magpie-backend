@@ -124,6 +124,7 @@ FROM workspaces w CROSS JOIN generate_series(1,?::bigint) n`, []any{routes}},
 
 	type sample struct {
 		Batch            int     `json:"batch"`
+		Statements       int     `json:"statements"`
 		Rows             int     `json:"existing_rows_updated"`
 		ElapsedMS        float64 `json:"elapsed_ms"`
 		SQLMS            float64 `json:"sql_ms"`
@@ -133,6 +134,17 @@ FROM workspaces w CROSS JOIN generate_series(1,?::bigint) n`, []any{routes}},
 		SharedReadBlocks float64 `json:"shared_read_blocks"`
 		SharedDirtied    float64 `json:"shared_dirtied_blocks"`
 	}
+	// staleOwnerRows counts the batch's projection rows whose latest check
+	// differs from current evidence, that is, rows with changed projected data.
+	staleOwnerRows := func(ids []uint64) int64 {
+		var stale int64
+		if err := db.Raw(`SELECT count(*) FROM user_proxy_filter_indexes ufi
+JOIN proxy_latest_statistics pls ON pls.workspace_id=ufi.workspace_id AND pls.proxy_id=ufi.proxy_id
+WHERE ufi.proxy_id IN ? AND ufi.latest_check IS DISTINCT FROM pls.checked_at`, ids).Scan(&stale).Error; err != nil {
+			t.Fatal(err)
+		}
+		return stale
+	}
 	measure := func(phase string) []sample {
 		var samples []sample
 		for _, batch := range batchSizes {
@@ -141,14 +153,20 @@ FROM workspaces w CROSS JOIN generate_series(1,?::bigint) n`, []any{routes}},
 			if err := refreshWorkspaceProxyFilterIndexesForProxyIDs(db.Session(&gorm.Session{Logger: queries}), ids); err != nil {
 				t.Fatal(err)
 			}
-			var query string
+			// A batch of routes expands to batch*8 owner pairs, which production
+			// splits into statements of at most readModelProjectionPairBudget()
+			// pairs. Measure every statement, not only the last one.
+			var statements []string
 			for _, sql := range queries.Queries {
 				if strings.Contains(sql, "INSERT INTO user_proxy_filter_indexes") {
-					query = sql
+					statements = append(statements, sql)
 				}
 			}
-			if query == "" {
-				t.Fatal("projection query was not captured")
+			if want := (batch*8 + readModelProjectionPairBudget() - 1) / readModelProjectionPairBudget(); len(statements) != want {
+				t.Fatal("projection statements were not captured", batch, len(statements), want)
+			}
+			if stale := staleOwnerRows(ids); stale != 0 {
+				t.Fatal("refresh left stale owner rows before measuring", batch, stale)
 			}
 			for trial := 0; trial < 3; trial++ {
 				// Every measurement changes an indexed value, as a fresh checker
@@ -157,33 +175,56 @@ FROM workspaces w CROSS JOIN generate_series(1,?::bigint) n`, []any{routes}},
 WHERE proxy_id IN ?`, ids).Error; err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				start := time.Now()
-				var encoded string
-				err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) " + query).Row().Scan(&encoded)
-				elapsed := time.Since(start)
-				cancel()
-				if err != nil {
-					t.Fatal(err)
+				// Every row counted below as an update must have changed data.
+				if stale := staleOwnerRows(ids); stale != int64(batch*8) {
+					t.Fatal("not every measured owner row has changed projected data", batch, trial, stale)
 				}
-				var plan []struct {
-					Plan          map[string]any
-					ExecutionTime float64 `json:"Execution Time"`
+				s := sample{Batch: batch, Statements: len(statements), Rows: batch * 8}
+				var conflicting, filtered float64
+				for index, query := range statements {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					start := time.Now()
+					var encoded string
+					err := db.WithContext(ctx).Raw("EXPLAIN (ANALYZE, BUFFERS, WAL, FORMAT JSON) " + query).Row().Scan(&encoded)
+					elapsed := time.Since(start)
+					cancel()
+					if err != nil {
+						t.Fatal(err)
+					}
+					var plan []struct {
+						Plan          map[string]any
+						ExecutionTime float64 `json:"Execution Time"`
+					}
+					if err := json.Unmarshal([]byte(encoded), &plan); err != nil {
+						t.Fatal(err)
+					}
+					root := plan[0].Plan
+					if root["Tuples Inserted"] != float64(0) {
+						t.Fatal("measurement inserted projection rows", batch, trial, index, root)
+					}
+					tuples, _ := root["Conflicting Tuples"].(float64)
+					removed, _ := root["Rows Removed by Conflict Filter"].(float64)
+					conflicting += tuples
+					filtered += removed
+					s.ElapsedMS += float64(elapsed.Microseconds()) / 1000
+					s.SQLMS += plan[0].ExecutionTime
+					s.WALRecords += root["WAL Records"].(float64)
+					s.WALBytes += root["WAL Bytes"].(float64)
+					s.SharedHitBlocks += root["Shared Hit Blocks"].(float64)
+					s.SharedReadBlocks += root["Shared Read Blocks"].(float64)
+					s.SharedDirtied += root["Shared Dirtied Blocks"].(float64)
+					writeProxyFilterIndexEvidence(t, fmt.Sprintf("%s-%d-%d-statement-%d-plan.json", phase, batch, trial, index), []byte(encoded))
 				}
-				if err := json.Unmarshal([]byte(encoded), &plan); err != nil {
-					t.Fatal(err)
+				// All changed rows reach the update and none is rejected as
+				// unchanged after taking its lock.
+				if conflicting != float64(batch*8) || filtered != 0 {
+					t.Fatal("measurement did not update exactly the preexisting owner rows", batch, trial, conflicting, filtered)
 				}
-				root := plan[0].Plan
-				if root["Tuples Inserted"] != float64(0) || root["Conflicting Tuples"] != float64(batch*8) {
-					t.Fatal("measurement did not update exactly the preexisting owner rows", root)
+				if stale := staleOwnerRows(ids); stale != 0 {
+					t.Fatal("measured upsert left stale owner rows", batch, trial, stale)
 				}
-				s := sample{Batch: batch, Rows: batch * 8, ElapsedMS: float64(elapsed.Microseconds()) / 1000,
-					SQLMS: plan[0].ExecutionTime, WALRecords: root["WAL Records"].(float64), WALBytes: root["WAL Bytes"].(float64),
-					SharedHitBlocks: root["Shared Hit Blocks"].(float64), SharedReadBlocks: root["Shared Read Blocks"].(float64),
-					SharedDirtied: root["Shared Dirtied Blocks"].(float64)}
 				samples = append(samples, s)
-				t.Logf("%s batch=%d owner_rows=%d trial=%d SQL_ms=%.3f elapsed_ms=%.3f WAL_records=%.0f WAL_bytes=%.0f shared_hit=%.0f read=%.0f dirtied=%.0f", phase, batch, s.Rows, trial, s.SQLMS, s.ElapsedMS, s.WALRecords, s.WALBytes, s.SharedHitBlocks, s.SharedReadBlocks, s.SharedDirtied)
-				writeProxyFilterIndexEvidence(t, fmt.Sprintf("%s-%d-%d-plan.json", phase, batch, trial), []byte(encoded))
+				t.Logf("%s batch=%d owner_rows=%d statements=%d trial=%d SQL_ms=%.3f elapsed_ms=%.3f WAL_records=%.0f WAL_bytes=%.0f shared_hit=%.0f read=%.0f dirtied=%.0f", phase, batch, s.Rows, s.Statements, trial, s.SQLMS, s.ElapsedMS, s.WALRecords, s.WALBytes, s.SharedHitBlocks, s.SharedReadBlocks, s.SharedDirtied)
 			}
 		}
 		return samples
