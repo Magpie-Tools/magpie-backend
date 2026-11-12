@@ -148,4 +148,3 @@ others cover the checker loop around it and did not change.
 Every difference is inside the run-to-run range of both sides, and allocations
 are identical. `BenchmarkProxyCheckRequest/65536` varies by a factor of three
 within each side.
-
