@@ -30,7 +30,7 @@ func TestLongRouteRetriesRenewLeaseBetweenAttempts(t *testing.T) {
 		proxyqueue.PublicProxyQueue = originalQueue
 	})
 	proxy := domain.Proxy{ID: 1, IP: "192.0.2.1", Port: 8080, Hash: []byte("long-route"), Workspaces: []domain.Workspace{{ID: 1}}}
-	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+	if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
 	worker, _, err := queue.GetNextProxyContext(context.Background())
@@ -79,7 +79,7 @@ func TestBulkRequeueKeepsRetryingWorkerExclusive(t *testing.T) {
 	})
 	proxy := domain.Proxy{ID: 1, IP: "192.0.2.1", Port: 8080, Hash: []byte("retrying-route"), Workspaces: []domain.Workspace{{ID: 1}}}
 	ctx := context.Background()
-	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+	if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
 	worker, _, err := queue.GetNextProxyContext(ctx)

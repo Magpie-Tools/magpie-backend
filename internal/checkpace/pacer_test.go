@@ -118,13 +118,13 @@ func TestNilSnapshotUsesTheFallbackAndKeepsMetering(t *testing.T) {
 			t.Fatalf("%s has a snapshot", name)
 		}
 		snapshot := p.Current()
-		if got := p.RouteCheckInterval(snapshot, owners); got != FallbackInterval {
-			t.Fatalf("%s: route interval %s, want the fallback", name, got)
+		if wait := p.FirstRouteCheck(snapshot, 9, owners, now).Sub(now); wait <= 0 || wait > FallbackInterval {
+			t.Fatalf("%s: a route is first due after %s, want within the fallback interval", name, wait)
 		}
 		if got := p.SourceScrapeInterval(snapshot, []uint{1, 2}); got != FallbackInterval {
 			t.Fatalf("%s: scrape interval %s, want the fallback", name, got)
 		}
-		if !p.CheckDue(snapshot, 1, 9, now, FallbackInterval) || !snapshot.ScrapeDue(1, 9, now, FallbackInterval) {
+		if !dueAt(p, snapshot, 1, 9, now, now) || !snapshot.ScrapeDue(1, 9, now, FallbackInterval) {
 			t.Fatalf("%s: an owner was not due", name)
 		}
 		if !p.ChargeRequest(snapshot, 1, true, now) {
@@ -142,5 +142,65 @@ func TestNilSnapshotUsesTheFallbackAndKeepsMetering(t *testing.T) {
 	case <-store.p.refreshCh:
 	default:
 		t.Fatal("a refresh request before the first load was dropped")
+	}
+}
+
+func TestRequestedRefreshGapGrowsWithTheCostOfALoad(t *testing.T) {
+	for lastLoad, want := range map[time.Duration]time.Duration{
+		0:                      minRequestedRefreshGap,
+		100 * time.Millisecond: minRequestedRefreshGap,
+		time.Second:            20 * time.Second,
+		10 * time.Second:       RefreshInterval,
+	} {
+		if got := requestedRefreshGap(lastLoad); got != want {
+			t.Fatalf("after a load of %s the next requested load waits %s, want %s", lastLoad, got, want)
+		}
+	}
+}
+
+// Imports and scrapes request refreshes all the time. A request that comes
+// right after a load is carried out when the gap has passed, and any number
+// of requests in between cause one load.
+func TestRequestedRefreshWaitsForTheGapAndIsNotDropped(t *testing.T) {
+	store := useFakeStore(t, 1_000)
+	loads := func() int {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		return store.loads
+	}
+	const gap = 300 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		store.p.run(ctx, func(time.Duration) time.Duration { return gap })
+	}()
+	defer func() { cancel(); <-done }()
+	waitFor := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for loads() < want {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d loads, want %d", loads(), want)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitFor(1)
+	loaded := time.Now()
+	for range 20 {
+		store.p.RequestRefresh()
+		time.Sleep(time.Millisecond)
+	}
+	if got := loads(); got != 1 && time.Since(loaded) < gap {
+		t.Fatalf("%d loads within the gap after the first", got)
+	}
+	waitFor(2)
+	if waited := time.Since(loaded); waited < gap-50*time.Millisecond {
+		t.Fatalf("the requested load ran %s after the previous one, sooner than the gap of %s", waited, gap)
+	}
+	time.Sleep(2 * gap)
+	if got := loads(); got != 2 {
+		t.Fatalf("%d loads for one burst of requests, want 2", got)
 	}
 }

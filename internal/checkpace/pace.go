@@ -22,8 +22,9 @@ const (
 	// which keeps small allowances from refetching a list every few minutes.
 	MinimumScrapeInterval = 15 * time.Minute
 	// MaxRouteInterval bounds how long a queued route or source waits before it
-	// is revisited. Slower workspace cadences are enforced by the due test, so
-	// an allowance refill or upgrade takes effect within this bound.
+	// is revisited. A revisit checks nothing unless an owner has reached one of
+	// its cadence points, so slower cadences stay slower, and an allowance
+	// refill, an upgrade or a shorter interval takes effect within this bound.
 	MaxRouteInterval = 6 * time.Hour
 	// FallbackInterval applies before the first snapshot is published and to
 	// workspaces created since the last refresh.
@@ -80,6 +81,10 @@ type Pace struct {
 
 	Allowance Allowance
 
+	// The cadences as fixed points in time. See grid.
+	checkGrid  grid
+	scrapeGrid grid
+
 	// counter and flushedMark connect a published snapshot to this
 	// instance's check meter, so checks made since the load count at once.
 	counter     *monthCounter
@@ -135,12 +140,14 @@ func Compute(now time.Time, allowances []Allowance) *Snapshot {
 			continue
 		}
 		checkFloor := CheckFloor(allowance.MinimumCheckInterval)
-		checkInterval, checksExhausted := interval(remaining, allowance.UnlimitedChecks, allowance.MonthlyChecks, allowance.UsedChecks, allowance.ChecksPerCycle, checkFloor, allowance.RequestedCheckInterval)
-		scrapeInterval, scrapesExhausted := interval(remaining, allowance.UnlimitedScrapes, allowance.MonthlyScrapes, allowance.UsedScrapes, allowance.ScrapesPerCycle, MinimumScrapeInterval, allowance.RequestedScrapeInterval)
+		checkInterval, checksExhausted, checksSpread := interval(remaining, allowance.UnlimitedChecks, allowance.MonthlyChecks, allowance.UsedChecks, allowance.ChecksPerCycle, checkFloor, allowance.RequestedCheckInterval)
+		scrapeInterval, scrapesExhausted, scrapesSpread := interval(remaining, allowance.UnlimitedScrapes, allowance.MonthlyScrapes, allowance.UsedScrapes, allowance.ScrapesPerCycle, MinimumScrapeInterval, allowance.RequestedScrapeInterval)
 		pace := Pace{
 			CheckInterval: checkInterval, ChecksExhausted: checksExhausted,
 			ScrapeInterval: scrapeInterval, ScrapesExhausted: scrapesExhausted,
-			Allowance: allowance,
+			Allowance:  allowance,
+			checkGrid:  cadenceGrid(checkInterval, checkFloor, checksExhausted, checksSpread),
+			scrapeGrid: cadenceGrid(scrapeInterval, MinimumScrapeInterval, scrapesExhausted, scrapesSpread),
 		}
 		periodLength := end.Sub(start)
 		if !checksExhausted {
@@ -174,28 +181,44 @@ func Compute(now time.Time, allowances []Allowance) *Snapshot {
 	return snapshot
 }
 
-func interval(remaining time.Duration, unlimited bool, allowance, used, perCycle uint64, floor, requested time.Duration) (time.Duration, bool) {
+// interval returns a cadence, whether the allowance is used up, and whether
+// the cadence was computed by spreading the remaining allowance. A spread
+// cadence changes at every refresh; every other cadence is a chosen constant.
+func interval(remaining time.Duration, unlimited bool, allowance, used, perCycle uint64, floor, requested time.Duration) (time.Duration, bool, bool) {
 	if unlimited {
 		if requested > 0 {
-			return max(floor, requested), false
+			return max(floor, requested), false, false
 		}
-		return max(floor, UnlimitedDefaultInterval), false
+		return max(floor, UnlimitedDefaultInterval), false, false
 	}
 	if used >= allowance {
-		return 0, true
+		return 0, true, false
 	}
 	if requested > 0 {
-		return max(floor, requested), false
+		return max(floor, requested), false, false
 	}
 	if perCycle == 0 {
-		return floor, false
+		return floor, false, false
 	}
 	cycles := float64(allowance-used) / float64(perCycle)
 	value := float64(remaining) / cycles
 	if value > float64(maxComputedInterval) || math.IsInf(value, 0) || math.IsNaN(value) {
 		value = float64(maxComputedInterval)
 	}
-	return max(floor, time.Duration(value)), false
+	return max(floor, time.Duration(value)), false, true
+}
+
+// cadenceGrid is the grid of one computed cadence. An exhausted allowance has
+// none.
+func cadenceGrid(cadence, floor time.Duration, exhausted, spread bool) grid {
+	switch {
+	case exhausted:
+		return grid{}
+	case spread:
+		return spreadGrid(cadence, floor)
+	default:
+		return fixedGrid(cadence)
+	}
 }
 
 // CheckFloor is the fastest check cadence a subscription permits.
@@ -259,8 +282,11 @@ func (s *Snapshot) lookup(workspaceID uint) *Pace {
 func Uniform(checkInterval, scrapeInterval time.Duration) *Snapshot {
 	start, end := UsagePeriod(time.Now())
 	return &Snapshot{
-		paces:                 map[uint]*Pace{},
-		uniform:               &Pace{CheckInterval: checkInterval, ScrapeInterval: scrapeInterval},
+		paces: map[uint]*Pace{},
+		uniform: &Pace{
+			CheckInterval: checkInterval, ScrapeInterval: scrapeInterval,
+			checkGrid: fixedGrid(checkInterval), scrapeGrid: fixedGrid(scrapeInterval),
+		},
 		PeriodStart:           start,
 		PeriodEnd:             end,
 		ComputedAt:            time.Now(),

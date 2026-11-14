@@ -38,8 +38,12 @@ var insertProxiesForWorkspace = database.InsertAndGetProxiesWithWorkspace
 var removeQueuedProxies = func(proxies []domain.Proxy) error {
 	return proxyqueue.PublicProxyQueue.RemoveFromQueue(proxies)
 }
+
+// enqueueProxiesNow makes routes due at once for every owner, ahead of their
+// cadences, and charges each owner the check. Only an instance administrator's
+// explicit requeue may use it.
 var enqueueProxiesNow = func(proxies []domain.Proxy) error {
-	return proxyqueue.PublicProxyQueue.AddToQueue(proxies)
+	return proxyqueue.PublicProxyQueue.AddToQueueNow(proxies)
 }
 
 func addProxies(w http.ResponseWriter, r *http.Request) {
@@ -472,7 +476,10 @@ func updateManagedProxyLifecycle(w http.ResponseWriter, r *http.Request) {
 	}
 	if proxy != nil {
 		if active {
-			err = enqueueProxiesNow([]domain.Proxy{*proxy})
+			// The route follows its owners' cadences. A workspace operator's
+			// lifecycle change must not make a shared route due early, which
+			// would spend the other owners' allowances.
+			err = proxyqueue.PublicProxyQueue.AddToQueue([]domain.Proxy{*proxy})
 		} else {
 			err = removeQueuedProxies([]domain.Proxy{*proxy})
 		}

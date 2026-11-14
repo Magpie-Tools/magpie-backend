@@ -21,6 +21,7 @@ type fakeStore struct {
 	flushed map[usageKey]CheckUsage
 	applied map[string]uint64
 	batches []UsageBatch
+	loads   int
 	// failFlush fails before committing; loseAck commits and then fails, as
 	// when the acknowledgement of a commit is lost.
 	failFlush bool
@@ -34,6 +35,7 @@ type fakeStore struct {
 func (f *fakeStore) load(_ context.Context, now time.Time) ([]Allowance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.loads++
 	start, _ := UsagePeriod(now)
 	return []Allowance{{WorkspaceID: 7, MonthlyChecks: f.monthly, UsedChecks: f.flushed[usageKey{7, start}].Attempts, ChecksPerCycle: 1}}, nil
 }
@@ -98,6 +100,10 @@ func TestRequestsStopAtTheAllowanceBeforeTheyAreFlushed(t *testing.T) {
 	if err := store.p.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	point, holds := ownPoint(store.p, store.p.Current(), 7, 1, time.Now())
+	if !holds || !dueAt(store.p, store.p.Current(), 7, 1, point, time.Now()) {
+		t.Fatal("a workspace with allowance left is not due at its cadence point")
+	}
 	// Three protocol checks, two with two retries: seven requests.
 	if check(store.p, 7, 1)+check(store.p, 7, 3)+check(store.p, 7, 3) != 7 {
 		t.Fatal("requests within the allowance were refused")
@@ -112,11 +118,14 @@ func TestRequestsStopAtTheAllowanceBeforeTheyAreFlushed(t *testing.T) {
 		t.Fatalf("sent %d requests with 3 checks left", sent)
 	}
 	pace, _ = store.p.Current().Pace(7)
-	if pace.CurrentUsedChecks() != 10 || !pace.CurrentChecksExhausted() || store.p.CheckDue(store.p.Current(), 7, 1, time.Now(), time.Minute) {
+	if pace.CurrentUsedChecks() != 10 || !pace.CurrentChecksExhausted() || dueAt(store.p, store.p.Current(), 7, 1, point, time.Now()) {
 		t.Fatal("a workspace at its allowance on this instance is still due")
 	}
-	if store.p.RouteCheckInterval(store.p.Current(), nil) <= 0 {
-		t.Fatal("route interval must stay positive")
+	if _, holds := ownPoint(store.p, store.p.Current(), 7, 1, time.Now()); holds {
+		t.Fatal("a workspace at its allowance on this instance still holds its routes in the queue")
+	}
+	if next := store.p.FirstRouteCheck(store.p.Current(), 1, nil, time.Now()); !next.After(time.Now()) {
+		t.Fatal("a route must always be due again later")
 	}
 }
 
@@ -265,6 +274,7 @@ func TestChecksPauseWhileUsageStaysUnwrittenAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.p.SetPauseAfter(time.Minute)
+	point, _ := ownPoint(store.p, store.p.Current(), 7, 1, time.Now())
 	store.failFlush = true
 	check(store.p, 7, 2)
 	if err := store.p.Flush(context.Background()); err == nil {
@@ -273,7 +283,7 @@ func TestChecksPauseWhileUsageStaysUnwrittenAndResume(t *testing.T) {
 	if health := store.p.Health(); !health.Healthy || health.Paused || health.FailingSince.IsZero() {
 		t.Fatalf("health right after one failure = %+v; want healthy, failing, not paused", health)
 	}
-	if check(store.p, 7, 1) != 1 {
+	if check(store.p, 7, 1) != 1 || !dueAt(store.p, store.p.Current(), 7, 1, point, time.Now()) {
 		t.Fatal("checking paused before the limit")
 	}
 	// Writes have now failed for longer than the limit.
@@ -281,7 +291,7 @@ func TestChecksPauseWhileUsageStaysUnwrittenAndResume(t *testing.T) {
 	if health := store.p.Health(); health.Healthy || !health.Paused || health.LastError == "" {
 		t.Fatalf("health after the limit = %+v; want unhealthy and paused", health)
 	}
-	if check(store.p, 7, 1) != 0 || store.p.CheckDue(store.p.Current(), 7, 1, time.Now(), time.Minute) {
+	if check(store.p, 7, 1) != 0 || dueAt(store.p, store.p.Current(), 7, 1, point, time.Now()) {
 		t.Fatal("checking continued after usage stayed unwritten past the limit")
 	}
 	// Nothing was discarded, and the first successful write resumes checking.
@@ -315,6 +325,11 @@ func TestStaleSnapshotKeepsLastKnownAllowanceInANewMonth(t *testing.T) {
 	snapshot := store.p.Current()
 	// Writes fail across midnight, so the snapshot stays on last month.
 	nextMonth := snapshot.PeriodEnd.Add(time.Hour)
+	// The last known cadence still applies while the allowance lasts.
+	point, holds := ownPoint(store.p, snapshot, 7, 1, nextMonth)
+	if !holds || !dueAt(store.p, snapshot, 7, 1, point, point) {
+		t.Fatal("a workspace with allowance left in the new month is not due at its cadence point")
+	}
 	admitted := 0
 	for range 5 {
 		if store.p.ChargeRequest(snapshot, 7, true, nextMonth) {
@@ -324,7 +339,7 @@ func TestStaleSnapshotKeepsLastKnownAllowanceInANewMonth(t *testing.T) {
 	if admitted != 3 {
 		t.Fatalf("admitted %d requests in the new month with a last known allowance of 3", admitted)
 	}
-	if store.p.CheckDue(snapshot, 7, 1, nextMonth, time.Minute) {
+	if dueAt(store.p, snapshot, 7, 1, point, point) {
 		t.Fatal("a workspace at its last known allowance in the new month is still due")
 	}
 	// The new month's usage is its own: last month's counter is untouched.

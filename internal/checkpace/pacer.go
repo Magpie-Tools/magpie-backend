@@ -147,30 +147,67 @@ func (p *Pacer) Flush(ctx context.Context) error {
 	return nil
 }
 
+// minRequestedRefreshGap is the shortest time between a load and the next
+// load that RequestRefresh causes.
+const minRequestedRefreshGap = 5 * time.Second
+
+// requestedRefreshShare bounds the time requested loads may take to one part
+// in this many. Imports and scrapes request a refresh continuously on a busy
+// instance, and a load reads every workspace.
+const requestedRefreshShare = 20
+
+// requestedRefreshGap is how long a requested load waits after the previous
+// load, which took lastLoad. It grows with the cost of a load, so requested
+// loads cannot take more than a fixed share of the time however many
+// workspaces there are, and never exceeds the regular refresh interval.
+func requestedRefreshGap(lastLoad time.Duration) time.Duration {
+	return min(max(minRequestedRefreshGap, requestedRefreshShare*lastLoad), RefreshInterval)
+}
+
 // Run refreshes immediately, then on RefreshInterval and on RequestRefresh,
-// and flushes metered usage every FlushInterval. Explicit requests are
-// coalesced to at most one load per five seconds. Usage is flushed once more
-// when ctx ends, so ctx must end only after the checker has stopped charging.
+// and flushes metered usage every FlushInterval. A requested refresh that
+// comes too soon after the previous load (see requestedRefreshGap) is carried
+// out when the gap has passed. Usage is flushed once more when ctx ends, so
+// ctx must end only after the checker has stopped charging.
 func (p *Pacer) Run(ctx context.Context) {
+	p.run(ctx, requestedRefreshGap)
+}
+
+func (p *Pacer) run(ctx context.Context, gap func(lastLoad time.Duration) time.Duration) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var (
+		last     time.Time     // when the latest load ended
+		took     time.Duration // how long it ran
+		deferred *time.Timer   // a requested refresh waiting for the gap
+		due      <-chan time.Time
+	)
 	refresh := func() {
+		if deferred != nil {
+			deferred.Stop()
+			deferred, due = nil, nil
+		}
+		started := time.Now()
 		loadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if err := p.Refresh(loadCtx); err != nil && ctx.Err() == nil {
 			log.Warn("refresh workspace check allowances", "error", err)
 		}
+		last = time.Now()
+		took = last.Sub(started)
 	}
 	refresh()
 	ticker := time.NewTicker(RefreshInterval)
 	defer ticker.Stop()
 	flushTicker := time.NewTicker(FlushInterval)
 	defer flushTicker.Stop()
-	var last time.Time
 	for {
 		select {
 		case <-ctx.Done():
+			if deferred != nil {
+				deferred.Stop()
+			}
 			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := p.Flush(flushCtx); err != nil {
 				log.Warn("final flush of workspace check usage", "error", err)
@@ -179,7 +216,6 @@ func (p *Pacer) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			refresh()
-			last = time.Now()
 		case <-flushTicker.C:
 			flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			if err := p.Flush(flushCtx); err != nil && ctx.Err() == nil {
@@ -188,11 +224,17 @@ func (p *Pacer) Run(ctx context.Context) {
 			cancel()
 			p.logPauseOnce()
 		case <-p.refreshCh:
-			if time.Since(last) < 5*time.Second {
-				continue
+			wait := gap(took) - time.Since(last)
+			switch {
+			case wait <= 0:
+				refresh()
+			case deferred == nil:
+				deferred = time.NewTimer(wait)
+				due = deferred.C
 			}
+		case <-due:
+			deferred, due = nil, nil
 			refresh()
-			last = time.Now()
 		}
 	}
 }

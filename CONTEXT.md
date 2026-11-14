@@ -40,6 +40,10 @@ _Avoid_: Scraper timer
 The interval between a workspace's checks. It is automatic by default, derived from the remaining allowance, active routes and enabled protocols. Workspace operators may choose a fixed interval instead, which runs until the allowance is used up. Either way, its lower limit is the subscription's minimum check interval. Administrators set allowances, never cadence.
 _Avoid_: Global check interval
 
+**Cadence point**:
+A moment at which one workspace is due on one of its proxy routes. A check cadence gives each route its own points: one per interval for a fixed interval, and for an automatic cadence points that are between half and twice the cadence apart and average it. A route is queued for the earliest point of any workspace that manages it. A dequeue checks it for the workspaces that have reached one of theirs, and for those whose next point comes before the route's next visit, which share the check. The points of all workspaces on one route are laid over each other, so equal cadences share every check.
+_Avoid_: Route interval, due window
+
 **Workspace capacity**:
 The maximum number of managed proxies that may be active in a workspace. Capacity belongs to the workspace and does not change when a member leaves.
 _Avoid_: Space, member allowance, donated slots

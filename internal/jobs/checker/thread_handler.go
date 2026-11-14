@@ -204,6 +204,8 @@ func (r *Runtime) work(parent context.Context) {
 	ctx, cleanup := createWorkerContext(parent)
 	defer cleanup()
 
+	// One due set per worker, reused by every cycle.
+	var due dueSet
 	for {
 		proxy, scheduledTime, err := proxyqueue.PublicProxyQueue.GetNextProxyContext(ctx)
 		if err != nil {
@@ -217,17 +219,21 @@ func (r *Runtime) work(parent context.Context) {
 		var payloadChanged bool
 		proxy, payloadChanged = refreshProxyWorkspaces(proxy)
 
-		dueProxy, anyDue := r.selectDueWorkspaces(proxy, scheduledTime)
-		if !anyDue {
-			// Every owner is between cadence boundaries or out of allowance.
-			// Revisit later without outbound requests or database work.
-			if err := requeueCheckedProxy(proxy, scheduledTime, payloadChanged); err != nil {
+		cycle := r.pace.BeginRouteCycle(r.pace.Current(), proxy.ID, scheduledTime, time.Now())
+		cycle.Select(proxy.Workspaces, &due)
+		if !due.Any {
+			// No owner has reached a cadence point, or every owner is out of
+			// allowance. Revisit later without outbound requests or database work.
+			if err := requeueCheckedProxy(proxy, cycle.Next(time.Now()), payloadChanged); err != nil {
 				log.Error("failed to requeue proxy without due workspaces", "proxy_id", proxy.ID, "error", err)
 			}
 			continue
 		}
+		// Positions in the due set refer to this list, which failure tracking
+		// may shorten below.
+		owners := proxy.Workspaces
 
-		judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries := buildRequestAssignments(dueProxy)
+		judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries := buildRequestAssignments(proxy, &due)
 		saveResponses := config.GetConfig().Checker.SaveResponses
 		if err := r.processJudgeAssignments(proxy, judgeRequests, workspaceSuccess, workspaceHasChecks, maxTimeout, maxRetries, saveResponses); err != nil {
 			continue
@@ -257,7 +263,7 @@ func (r *Runtime) work(parent context.Context) {
 		if err != nil {
 			log.Error("failed to verify proxy ownership before requeue", "proxy_id", proxy.ID, "error", err)
 			// Requeue to avoid dropping proxies on transient errors
-			if err := requeueCheckedProxy(proxy, scheduledTime, payloadChanged); err != nil {
+			if err := requeueCheckedProxy(proxy, nextRouteCheck(&cycle, owners, &due, removedWorkspaces, time.Now()), payloadChanged); err != nil {
 				log.Error("failed to requeue proxy after ownership check error", "proxy_id", proxy.ID, "error", err)
 			}
 			continue
@@ -270,52 +276,44 @@ func (r *Runtime) work(parent context.Context) {
 		}
 
 		// Requeue the proxy for the next check
-		if err := requeueCheckedProxy(proxy, scheduledTime, payloadChanged); err != nil {
+		if err := requeueCheckedProxy(proxy, nextRouteCheck(&cycle, owners, &due, removedWorkspaces, time.Now()), payloadChanged); err != nil {
 			log.Error("failed to requeue proxy", "proxy_id", proxy.ID, "error", err)
 		}
 	}
 }
 
-// selectDueWorkspaces keeps the owners whose monthly allowance cadence is due
-// this cycle. The route's fastest owner is always due, so single-owner routes
-// return the proxy unchanged without allocating. The decision uses only the
-// in-memory allowance snapshot: no Redis, database, JSON or cryptographic work.
-// Before the first snapshot every owner is due.
-func (r *Runtime) selectDueWorkspaces(proxy domain.Proxy, scheduled time.Time) (domain.Proxy, bool) {
-	snapshot := r.pace.Current()
-	if snapshot == nil || len(proxy.Workspaces) == 0 {
-		return proxy, len(proxy.Workspaces) > 0
-	}
-	routeInterval := r.pace.RouteCheckInterval(snapshot, proxy.Workspaces)
-	var due []domain.Workspace
-	for index, workspace := range proxy.Workspaces {
-		if r.pace.CheckDue(snapshot, workspace.ID, proxy.ID, scheduled, routeInterval) {
-			if due != nil {
-				due = append(due, workspace)
-			}
+// dueSet records which of a route's owners a cycle serves, by position in the
+// owner list. The cycle decides it from the in-memory allowance snapshot: no
+// Redis, database, JSON or cryptographic work, and no allocation once the set
+// has grown to the longest owner list the worker has seen. Before the first
+// snapshot every owner is served.
+type dueSet = checkpace.Selection
+
+// nextRouteCheck returns when a route whose checks ended at completed is due
+// again. The owners the cycle served wait for their first cadence point after
+// the cycle; the others already wait for theirs. An owner that failure
+// tracking removed no longer holds the route.
+func nextRouteCheck(cycle *checkpace.RouteCycle, owners []domain.Workspace, due *dueSet, removed map[uint]struct{}, completed time.Time) time.Time {
+	for index := range owners {
+		if !due.Has(index) {
 			continue
 		}
-		if due == nil {
-			due = make([]domain.Workspace, index, len(proxy.Workspaces))
-			copy(due, proxy.Workspaces[:index])
+		if _, gone := removed[owners[index].ID]; gone {
+			continue
 		}
+		cycle.Reschedule(owners[index].ID, completed)
 	}
-	if due == nil {
-		return proxy, true
-	}
-	filtered := proxy
-	filtered.Workspaces = due
-	return filtered, len(due) > 0
+	return cycle.Next(completed)
 }
 
 // requeueCheckedProxy rewrites the payload only when queued ownership changed.
 // Refreshed checker settings live in runtime snapshots and do not need a payload
 // write. Normal cycles must keep serialization and encryption out of requeueing.
-func requeueCheckedProxy(proxy domain.Proxy, scheduledTime time.Time, persistPayload bool) error {
+func requeueCheckedProxy(proxy domain.Proxy, nextCheck time.Time, persistPayload bool) error {
 	if persistPayload {
-		return proxyqueue.PublicProxyQueue.RequeueProxyWithPayload(proxy, scheduledTime)
+		return proxyqueue.PublicProxyQueue.RequeueProxyWithPayload(proxy, nextCheck)
 	}
-	return proxyqueue.PublicProxyQueue.RequeueProxy(proxy, scheduledTime)
+	return proxyqueue.PublicProxyQueue.RequeueProxy(proxy, nextCheck)
 }
 
 func createWorkerContext(parent context.Context) (context.Context, func()) {
@@ -450,10 +448,11 @@ type judgePick struct {
 // a cycle; only the first such plan advances its round-robin position, so
 // independent counters cannot split one route into one request per judge.
 // A workspace the route lists twice is served once, so an assignment never
-// holds two checks of one workspace.
+// holds two checks of one workspace. Owners that due leaves out get no checks
+// and appear in neither map; a nil due serves every owner.
 // The returned success and eligibility maps use workspace IDs; no eligible judge
 // means no failure-streak update. Maximum budgets support fallback assignments.
-func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
+func buildRequestAssignments(proxy domain.Proxy, due *dueSet) (map[string]*requestAssignment, map[uint]bool, map[uint]bool, uint16, uint8) {
 	requests := make(map[string]*requestAssignment)
 	var picks map[judgePick]int
 	if len(proxy.Workspaces) > 1 {
@@ -463,6 +462,9 @@ func buildRequestAssignments(proxy domain.Proxy) (map[string]*requestAssignment,
 	var maxTimeout uint16
 	var maxRetries uint8
 	for workspaceIndex, workspace := range proxy.Workspaces {
+		if !due.Has(workspaceIndex) {
+			continue
+		}
 		if _, listed := success[workspace.ID]; listed {
 			// A route lists a workspace twice only when the workspace refresh
 			// could not reach the database. Serving it once leaves every

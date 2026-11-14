@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
+	"github.com/charmbracelet/log"
 	"gorm.io/gorm"
 )
 
@@ -115,13 +117,11 @@ func loadWorkspaceAllowances(db *gorm.DB, now time.Time) ([]checkpace.Allowance,
 	}
 
 	allowances := make([]checkpace.Allowance, 0, len(workspaceIDs))
+	refreshPlanDeltas(db, workspaceIDs, usage, now, time.Now().Add(planDeltaLoadBudget))
 	for _, workspaceID := range workspaceIDs {
 		subscription := subscriptionByWorkspace[workspaceID]
 		used := usage[workspaceID]
-		protocolChecks, err := protocolChecksPerCycle(db, workspaceID, used.activeRoutes, now)
-		if err != nil {
-			return nil, err
-		}
+		protocolChecks := protocolChecksPerCycle(workspaceID, used.activeRoutes)
 		allowance := checkpace.Allowance{
 			WorkspaceID:          workspaceID,
 			UnlimitedChecks:      subscription.ChecksUnlimited(cfg.Checker.UnlimitedMonthlyChecks),
@@ -192,71 +192,204 @@ func countMissingActiveRoutes(db *gorm.DB, workspaceIDs []uint, usage map[uint]w
 
 // Tag rules can enable more or fewer protocols for some routes. Their effect on
 // checks per cycle depends on which of those routes are active, which needs a
-// database count. The result is cached per workspace until the checker
-// snapshot or the active route count changes, a lifecycle write on this
-// instance invalidates it, or planDeltaTTL passes (which also catches a pause
-// and an activation on another instance that leave the count unchanged).
-const planDeltaTTL = 10 * time.Minute
+// database count over the routes that have a tag-rule plan.
+//
+// While a workspace has at most planDeltaExactRoutes such routes, the count is
+// cheap and kept exact: it is cached until the checker snapshot or the active
+// route count changes, a lifecycle write on this instance invalidates it, or
+// planDeltaTTL passes (which also catches a pause and an activation on another
+// instance that leave the count unchanged).
+//
+// Beyond that the count takes one query per thousand routes, and a workspace
+// that imports or scrapes changes its route count before every refresh. Such a
+// workspace is counted once per planDeltaTTL. In between, the last count
+// follows the active route count in proportion, which is an estimate that the
+// recomputed cadence corrects.
+//
+// A refresh loads every workspace, so it must not depend on one workspace's
+// count. Counts run before the allowances are built, the one that has waited
+// longest first, and only while the load's budget lasts; each has its own
+// time limit. A workspace whose count did not run or failed keeps its last
+// count while its rules and defaults are unchanged, and is otherwise estimated
+// from the checker snapshot alone. A failed count is repeated after
+// planDeltaTTL. One large or slow workspace therefore cannot keep every
+// workspace's cadence from being refreshed, and no workspace waits behind the
+// same ones at every refresh.
+const (
+	planDeltaTTL          = 10 * time.Minute
+	planDeltaExactRoutes  = 5_000
+	planDeltaCountTimeout = 10 * time.Second
+	planDeltaLoadBudget   = 10 * time.Second
+)
 
 type planDeltaEntry struct {
 	snapshot     *checkerconfig.Workspace
+	signature    string // the snapshot's rules and settings, without its tag assignments
 	activeRoutes uint64
 	delta        int64
-	computedAt   time.Time
+	// computedAt is when the workspace was last counted, or when a count last
+	// failed. The workspace whose time is oldest is counted first.
+	computedAt time.Time
+	known      bool
+	failed     bool
+	// changed is set by a lifecycle write: the count is out of date.
+	changed bool
+	// throttled marks a workspace beyond planDeltaExactRoutes, whose entry
+	// lifecycle writes keep.
+	throttled bool
+}
+
+func loadPlanDelta(workspaceID uint) planDeltaEntry {
+	cached, _ := planDeltas.Load(workspaceID)
+	entry, _ := cached.(planDeltaEntry)
+	return entry
+}
+
+// due reports whether the workspace should be counted now.
+func (e planDeltaEntry) due(snapshot *checkerconfig.Workspace, activeRoutes uint64, now time.Time) bool {
+	switch {
+	case !e.known || now.Sub(e.computedAt) >= planDeltaTTL || e.signature != snapshot.InputSignature:
+		return true
+	case e.failed || snapshot.Proxies.Len() > planDeltaExactRoutes:
+		return false
+	default:
+		return e.changed || e.snapshot != snapshot || e.activeRoutes != activeRoutes
+	}
+}
+
+// value is the tag rules' effect on the checks of one cycle over activeRoutes
+// routes: the last count, in proportion to the route count, while the rules
+// and defaults are the ones that were counted. A count made under other rules
+// says nothing about these, so the effect is then estimated without one.
+func (e planDeltaEntry) value(snapshot *checkerconfig.Workspace, defaultProtocols int64, activeRoutes uint64) int64 {
+	switch {
+	case !e.known || e.signature != snapshot.InputSignature:
+		return uncountedPlanDelta(snapshot, defaultProtocols, activeRoutes)
+	case e.activeRoutes == 0 || e.activeRoutes == activeRoutes:
+		return e.delta
+	default:
+		return int64(math.Round(float64(e.delta) * float64(activeRoutes) / float64(e.activeRoutes)))
+	}
+}
+
+// uncountedPlanDelta estimates the tag rules' effect from the checker snapshot
+// alone, as if every route whose plan adds protocols were active. If there are
+// more routes with a plan than active ones, the active routes are taken to
+// have the same mix of plans. Plans that remove protocols are left out: they
+// may belong to paused routes, and counting them would plan fewer checks per
+// cycle than the workspace makes, which makes an automatic cadence too fast.
+// The estimate errs on the side of a slower cadence until the count has run.
+func uncountedPlanDelta(snapshot *checkerconfig.Workspace, defaultProtocols int64, activeRoutes uint64) int64 {
+	var delta int64
+	snapshot.Proxies.Range(func(_ uint64, plan *checkerconfig.Plan) {
+		delta += max(enabledProtocols(plan)-defaultProtocols, 0)
+	})
+	if planned := uint64(snapshot.Proxies.Len()); planned > activeRoutes {
+		delta = int64(math.Round(float64(delta) * float64(activeRoutes) / float64(planned)))
+	}
+	return delta
 }
 
 var planDeltas sync.Map // uint -> planDeltaEntry
 
-// invalidatePlanDeltas forgets a workspace's cached tag-rule effect after one
-// of its routes changed state.
-func invalidatePlanDeltas(workspaceID uint) { planDeltas.Delete(workspaceID) }
+// invalidatePlanDeltas asks for a new count after one of the workspace's
+// routes changed state. Until it ran, the last count follows the route count
+// in proportion. The workspace keeps its place among the counts that are due
+// and the waiting time after a failed count, so one that changes before every
+// load neither goes first every time nor repeats a failing count. A throttled
+// workspace is counted once per planDeltaTTL.
+func invalidatePlanDeltas(workspaceID uint) {
+	if entry := loadPlanDelta(workspaceID); entry.known && !entry.throttled && !entry.changed {
+		entry.changed = true
+		planDeltas.Store(workspaceID, entry)
+	}
+}
+
+// refreshPlanDeltas repeats the counts that are due, the one that has waited
+// longest first, until countsUntil, when the load's budget for them ends. A
+// workspace that was never counted has waited longest.
+func refreshPlanDeltas(db *gorm.DB, workspaceIDs []uint, usage map[uint]workspaceAllowanceUsage, now, countsUntil time.Time) {
+	type dueCount struct {
+		workspaceID  uint
+		snapshot     *checkerconfig.Workspace
+		activeRoutes uint64
+		last         time.Time
+	}
+	var due []dueCount
+	for _, workspaceID := range workspaceIDs {
+		activeRoutes := usage[workspaceID].activeRoutes
+		snapshot, _ := checkerconfig.Lookup(workspaceID)
+		if activeRoutes == 0 || snapshot == nil || snapshot.Default == nil || snapshot.Proxies.Len() == 0 {
+			continue
+		}
+		if entry := loadPlanDelta(workspaceID); entry.due(snapshot, activeRoutes, now) {
+			due = append(due, dueCount{workspaceID, snapshot, activeRoutes, entry.computedAt})
+		}
+	}
+	sort.SliceStable(due, func(i, j int) bool { return due[i].last.Before(due[j].last) })
+	for _, count := range due {
+		if time.Now().After(countsUntil) {
+			return
+		}
+		countPlanDelta(db, count.workspaceID, count.snapshot, count.activeRoutes, now)
+	}
+}
+
+// countPlanDelta counts one workspace and stores the result. A count that
+// fails keeps the workspace's current value and is repeated after
+// planDeltaTTL, so it does not use up the budget of every load.
+func countPlanDelta(db *gorm.DB, workspaceID uint, snapshot *checkerconfig.Workspace, activeRoutes uint64, now time.Time) {
+	defaultProtocols := enabledProtocols(snapshot.Default)
+	entry := planDeltaEntry{
+		snapshot: snapshot, signature: snapshot.InputSignature, activeRoutes: activeRoutes,
+		computedAt: now, known: true, throttled: snapshot.Proxies.Len() > planDeltaExactRoutes,
+	}
+	delta, err := activePlanDelta(db, workspaceID, snapshot, defaultProtocols)
+	if err != nil {
+		log.Warn("count active routes with tag-rule protocols; keeping the current estimate", "workspace_id", workspaceID, "error", err)
+		delta, entry.failed = loadPlanDelta(workspaceID).value(snapshot, defaultProtocols, activeRoutes), true
+	}
+	entry.delta = delta
+	planDeltas.Store(workspaceID, entry)
+}
 
 // protocolChecksPerCycle is how many protocol checks one cycle over the
 // workspace's active routes makes: active routes × default protocols,
 // adjusted by tag rules that apply to active routes. Paused and archived
-// routes are not checked and do not count.
-func protocolChecksPerCycle(db *gorm.DB, workspaceID uint, activeRoutes uint64, now time.Time) (uint64, error) {
+// routes are not checked and do not count. It reads what refreshPlanDeltas
+// counted and issues no query.
+func protocolChecksPerCycle(workspaceID uint, activeRoutes uint64) uint64 {
 	if activeRoutes == 0 {
-		return 0, nil
+		return 0
 	}
 	snapshot, _ := checkerconfig.Lookup(workspaceID)
 	if snapshot == nil || snapshot.Default == nil {
-		return activeRoutes, nil
+		return activeRoutes
 	}
 	defaultProtocols := enabledProtocols(snapshot.Default)
-	delta, err := cachedPlanDelta(db, workspaceID, snapshot, defaultProtocols, activeRoutes, now)
-	if err != nil {
-		return 0, err
+	total := int64(min(activeRoutes, math.MaxInt64/4)) * defaultProtocols
+	if snapshot.Proxies.Len() > 0 {
+		total += loadPlanDelta(workspaceID).value(snapshot, defaultProtocols, activeRoutes)
 	}
-	total := int64(min(activeRoutes, math.MaxInt64/4))*defaultProtocols + delta
 	if total < 0 {
-		return 0, nil
+		return 0
 	}
-	return uint64(total), nil
-}
-
-func cachedPlanDelta(db *gorm.DB, workspaceID uint, snapshot *checkerconfig.Workspace, defaultProtocols int64, activeRoutes uint64, now time.Time) (int64, error) {
-	if cached, ok := planDeltas.Load(workspaceID); ok {
-		entry := cached.(planDeltaEntry)
-		if entry.snapshot == snapshot && entry.activeRoutes == activeRoutes && now.Sub(entry.computedAt) < planDeltaTTL {
-			return entry.delta, nil
-		}
-	}
-	if snapshot.Proxies.Len() == 0 {
-		return 0, nil
-	}
-	delta, err := activePlanDelta(db, workspaceID, snapshot, defaultProtocols)
-	if err != nil {
-		return 0, err
-	}
-	planDeltas.Store(workspaceID, planDeltaEntry{snapshot: snapshot, activeRoutes: activeRoutes, delta: delta, computedAt: now})
-	return delta, nil
+	return uint64(total)
 }
 
 // activePlanDelta sums, over active routes with a tag-rule plan, how many
 // protocols the plan enables beyond the default. Routes whose plan enables
-// the same number as the default need no lookup.
+// the same number as the default need no lookup. The count is limited to
+// planDeltaCountTimeout, so a slow one fails alone and leaves the caller's
+// context usable.
 func activePlanDelta(db *gorm.DB, workspaceID uint, snapshot *checkerconfig.Workspace, defaultProtocols int64) (int64, error) {
+	parent := db.Statement.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	limited, cancel := context.WithTimeout(parent, planDeltaCountTimeout)
+	defer cancel()
+	db = db.WithContext(limited)
 	byDelta := map[int64][]uint64{}
 	snapshot.Proxies.Range(func(proxyID uint64, plan *checkerconfig.Plan) {
 		if difference := enabledProtocols(plan) - defaultProtocols; difference != 0 {

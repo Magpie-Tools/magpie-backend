@@ -31,8 +31,9 @@ func TestQueueImportsWriteNoIntervalState(t *testing.T) {
 	}
 }
 
-// A normal requeue uses the owning workspace's allowance cadence from the
-// in-memory snapshot, issues no extra command and keeps the payload intact.
+// A normal cycle takes the route's next due time from the owning workspace's
+// allowance cadence in the in-memory snapshot, and its requeue keeps the
+// payload intact.
 func TestRequeueUsesWorkspaceAllowanceCadence(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
@@ -56,7 +57,7 @@ func TestRequeueUsesWorkspaceAllowanceCadence(t *testing.T) {
 	defer cancel()
 	queue := proxyqueue.NewRedisProxyQueue(client, pacer)
 	proxy := domain.Proxy{ID: 42, IP: "192.0.2.42", Port: 40005, Hash: []byte("interval-regression-route"), Workspaces: []domain.Workspace{{ID: 1}}}
-	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+	if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
 	worker, scheduled, err := queue.GetNextProxyContext(ctx)
@@ -67,20 +68,37 @@ func TestRequeueUsesWorkspaceAllowanceCadence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	minimum := time.Now().Add(pace.CheckInterval - time.Second).UnixMilli()
-	if err := queue.RequeueProxy(worker, scheduled); err != nil {
+	// What a checker worker does with the dequeued route.
+	dequeued := time.Now()
+	cycle := pacer.BeginRouteCycle(pacer.Current(), worker.ID, scheduled, dequeued)
+	if !cycle.Due(1) {
+		t.Fatal("the owner is not checked by the cycle")
+	}
+	cycle.Reschedule(1, dequeued)
+	next := cycle.Next(dequeued)
+	// An automatic cadence is checked a span or half a span apart, which is
+	// more than half the cadence and at most twice the cadence.
+	if wait := next.Sub(dequeued); wait <= 0 || wait > 2*pace.CheckInterval {
+		t.Fatalf("the next check is %s away at a cadence of %s", wait, pace.CheckInterval)
+	}
+	if err := queue.RequeueProxy(worker, next); err != nil {
 		t.Fatal(err)
 	}
-	if score, err := client.ZScore(ctx, worker.QueueLease.QueueKey, string(worker.Hash)).Result(); err != nil || score < float64(minimum) {
-		t.Fatalf("normal requeue ignored the allowance cadence: score=%f, minimum=%d, error=%v", score, minimum, err)
+	if score, err := client.ZScore(ctx, worker.QueueLease.QueueKey, string(worker.Hash)).Result(); err != nil || score != float64(next.UnixMilli()) {
+		t.Fatalf("normal requeue ignored the allowance cadence: score=%f, want %d, error=%v", score, next.UnixMilli(), err)
 	}
 	if after, err := client.Get(ctx, "proxy:"+string(worker.Hash)).Result(); err != nil || after != payload {
 		t.Fatalf("normal requeue rewrote payload: error=%v", err)
 	}
 	limited, stop := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer stop()
-	if _, _, err := queue.GetNextProxyContext(limited); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("completed proxy became immediately available: %v", err)
+	// The queue hands the route out again only when that due time has come.
+	if _, due, err := queue.GetNextProxyContext(limited); err == nil {
+		if early := time.Until(due); early > 0 {
+			t.Fatalf("completed proxy became available %s before its due time", early)
+		}
+	} else if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
 	}
 }
 

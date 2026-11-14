@@ -398,9 +398,10 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 	if err := client.Set(ctx, proxyKey, originalPayload, 0).Err(); err != nil {
 		t.Fatalf("seed proxy payload: %v", err)
 	}
-	useUniformPace(t, queue, time.Second)
 
-	if err := queue.RequeueProxy(proxy, time.Now()); err != nil {
+	// The route is due again exactly when the caller says.
+	nextCheck := time.Now().Add(37 * time.Minute)
+	if err := queue.RequeueProxy(proxy, nextCheck); err != nil {
 		t.Fatalf("schedule-only requeue: %v", err)
 	}
 	unchanged, err := client.Get(ctx, proxyKey).Result()
@@ -410,12 +411,12 @@ func TestRequeueProxy_OnlyPersistsPayloadWhenRequested(t *testing.T) {
 	if unchanged != originalPayload {
 		t.Fatalf("schedule-only requeue changed payload to %s", unchanged)
 	}
-	if _, err := client.ZScore(ctx, queue.queueKeyForMember(string(proxy.Hash)), string(proxy.Hash)).Result(); err != nil {
-		t.Fatalf("schedule-only requeue did not update sorted set: %v", err)
+	if score, err := client.ZScore(ctx, queue.queueKeyForMember(string(proxy.Hash)), string(proxy.Hash)).Result(); err != nil || score != float64(nextCheck.UnixMilli()) {
+		t.Fatalf("schedule-only requeue left score %f, want %d: %v", score, nextCheck.UnixMilli(), err)
 	}
 
 	proxy.Workspaces = append(proxy.Workspaces, domain.Workspace{ID: 9})
-	if err := queue.RequeueProxyWithPayload(proxy, time.Now()); err != nil {
+	if err := queue.RequeueProxyWithPayload(proxy, nextCheck); err != nil {
 		t.Fatalf("payload-persisting requeue: %v", err)
 	}
 	rewrittenJSON, err := client.Get(ctx, proxyKey).Bytes()
