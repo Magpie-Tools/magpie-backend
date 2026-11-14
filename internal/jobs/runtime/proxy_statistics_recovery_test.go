@@ -104,7 +104,7 @@ func statisticsRecoveryFixture(t *testing.T) (*gorm.DB, *redis.Client, proxyStat
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&domain.ProxyStatistic{}, &domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.ProxyDailyCheck{}, &domain.ProxyLatestStatistic{}, &domain.ProxyOverallStatus{}); err != nil {
+	if err := db.AutoMigrate(&domain.ProxyStatistic{}, &domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.ProxyLatestStatistic{}, &domain.ProxyOverallStatus{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec("INSERT INTO proxies (id, host, port, country, estimated_type) VALUES (1, '192.0.2.1', 8080, '', '')").Error; err != nil {
@@ -137,11 +137,17 @@ func statisticsRecoveryFixture(t *testing.T) (*gorm.DB, *redis.Client, proxyStat
 
 func seedPendingStatistics(t *testing.T, client *redis.Client, cfg proxyStatisticStreamConfig, count int) {
 	t.Helper()
+	seedPendingStatistic(t, client, cfg, count, domain.ProxyStatistic{ProxyID: 1, ProtocolID: 1, JudgeID: 1, Alive: true, CreatedAt: time.Now().UTC()})
+}
+
+// seedPendingStatistic leaves count copies of stat delivered but unacknowledged.
+func seedPendingStatistic(t *testing.T, client *redis.Client, cfg proxyStatisticStreamConfig, count int, stat domain.ProxyStatistic) {
+	t.Helper()
 	ctx := context.Background()
 	if err := client.XGroupCreateMkStream(ctx, cfg.streamKey, cfg.groupName, "0").Err(); err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(domain.ProxyStatistic{ProxyID: 1, ProtocolID: 1, JudgeID: 1, Alive: true, CreatedAt: time.Now().UTC()})
+	payload, err := json.Marshal(stat)
 	if err != nil {
 		t.Fatal(err)
 	}

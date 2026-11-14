@@ -25,6 +25,7 @@ Every file in this directory has a row here. Add a row when adding a note.
 | [checker-evidence-pruning-2026-10-21.md](checker-evidence-pruning-2026-10-21.md) | historical | Bound obsolete latest-evidence pruning |
 | [checker-noop-writes-2026-10-21.md](checker-noop-writes-2026-10-21.md) | historical | Skip unchanged failure counters and proxy metadata |
 | [checker-owner-fanout-2026-10-31.md](checker-owner-fanout-2026-10-31.md) | historical | Share judge picks and stop rewriting dead-route streaks |
+| [daily-counter-removal-2026-11-15.md](daily-counter-removal-2026-11-15.md) | current | Ingestion without per-route daily check counters |
 | [dashboard-boundary-history-2026-10-22.md](dashboard-boundary-history-2026-10-22.md) | historical | Restrict dashboard history to contributing boundary rows |
 | [dashboard-check-counts-2026-10-27.md](dashboard-check-counts-2026-10-27.md) | historical | Dashboard check counts through one ownership join |
 | [dashboard-current-evidence-2026-10-21.md](dashboard-current-evidence-2026-10-21.md) | historical | Dashboard evidence reads and cancellation |

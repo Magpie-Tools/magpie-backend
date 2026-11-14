@@ -83,18 +83,15 @@ func TestStatisticsLegacyAggregateFollowsSharedBarriersPostgres(t *testing.T) {
 			if err := db.Model(&domain.ProxyLatestStatistic{}).Where("workspace_id=0 AND alive").Count(&alive).Error; err != nil || alive != 0 {
 				t.Fatalf("latest legacy protocol rows are not both dead: alive=%d err=%v", alive, err)
 			}
-			var history, ledger, daily int64
+			var history, ledger int64
 			if err := db.Model(&domain.ProxyStatistic{}).Count(&history).Error; err != nil {
 				t.Fatal(err)
 			}
 			if err := db.Model(&domain.ProxyStatisticEvent{}).Count(&ledger).Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Model(&domain.ProxyDailyCheck{}).Select("SUM(checks_count)").Scan(&daily).Error; err != nil {
-				t.Fatal(err)
-			}
-			if history != 4 || ledger != 4 || daily != 4 {
-				t.Fatalf("legacy replay changed accounting: history=%d ledger=%d daily=%d", history, ledger, daily)
+			if history != 4 || ledger != 4 {
+				t.Fatalf("legacy replay changed accounting: history=%d ledger=%d", history, ledger)
 			}
 			wantAttempts := uint64(4)
 			if scenario.Attribution == "different" {

@@ -62,7 +62,13 @@ func TestStatisticsCancellationDuringAckLeavesReplayableEvents(t *testing.T) {
 				t.Skip("multi-page recovery requires disposable PostgreSQL and Redis")
 			}
 			db, client, cfg := statisticsRecoveryFixture(t)
-			seedPendingStatistics(t, client, cfg, count)
+			if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}); err != nil {
+				t.Fatal(err)
+			}
+			// Attributed to one workspace, so usage witnesses exactly-once
+			// accounting alongside history and the replay ledger.
+			seedPendingStatistic(t, client, cfg, count, domain.ProxyStatistic{ProxyID: 1, ProtocolID: 1, JudgeID: 1, Alive: true, CreatedAt: time.Now().UTC(),
+				WorkspaceIDs: []uint{1}, CheckEvidence: []domain.WorkspaceCheckEvidence{{WorkspaceID: 1, ConfigKey: "current", Alive: true}}})
 			ctx, cancel := context.WithCancel(context.Background())
 			client.AddHook(&cancelStatisticsAckHook{cancel: cancel})
 			done := startRecoveryWorker(t, ctx, cancel)
@@ -119,8 +125,9 @@ func TestStatisticsCancellationDuringAckLeavesReplayableEvents(t *testing.T) {
 			if err := db.Model(&domain.ProxyStatisticEvent{}).Count(&rows).Error; err != nil || rows != int64(count) {
 				t.Fatalf("event ledger count=%d error=%v", rows, err)
 			}
-			if err := db.Model(&domain.ProxyDailyCheck{}).Select("SUM(checks_count)").Scan(&rows).Error; err != nil || rows != int64(count) {
-				t.Fatalf("replay double-counted daily checks: count=%d error=%v", rows, err)
+			var usage []domain.WorkspaceUsagePeriod
+			if err := db.Find(&usage).Error; err != nil || len(usage) != 1 || usage[0].WorkspaceID != 1 || usage[0].CheckAttempts != uint64(count) {
+				t.Fatalf("replay double-counted or lost usage attribution: usage=%+v error=%v", usage, err)
 			}
 		})
 	}

@@ -119,19 +119,45 @@ func TestDevelopmentSeedResetsAndPreservesUnrelatedDataPostgres(t *testing.T) {
 		if err := db.Model(&domain.AlertDestination{}).Where("enabled = ?", true).Count(&unsafe).Error; err != nil || unsafe != 0 {
 			t.Fatalf("fixture destinations enabled=%d error=%v", unsafe, err)
 		}
-		var statisticCount, dailyCount int64
+		var statisticCount int64
 		if err := db.Model(&domain.ProxyStatistic{}).Count(&statisticCount).Error; err != nil {
 			t.Fatal(err)
 		}
-		if err := db.Model(&domain.ProxyDailyCheck{}).Select("COALESCE(SUM(checks_count),0)").Scan(&dailyCount).Error; err != nil {
-			t.Fatal(err)
-		}
-		if statisticCount != int64(result.Statistics) || dailyCount != statisticCount {
-			t.Fatalf("history counters disagree: statistics=%d daily=%d result=%d", statisticCount, dailyCount, result.Statistics)
+		if statisticCount != int64(result.Statistics) {
+			t.Fatalf("history counters disagree: statistics=%d result=%d", statisticCount, result.Statistics)
 		}
 		var workspace domain.Workspace
 		if err := db.Where("name = ?", "Personal lab").First(&workspace).Error; err != nil {
 			t.Fatal(err)
+		}
+		// Usage rows give development dashboards their check figures: one
+		// pre-meter month with check attempts only, then one metered month per
+		// month of seeded history.
+		var owned int64
+		if err := db.Model(&domain.ProxyStatistic{}).Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
+			Where("up.workspace_id = ?", workspace.ID).Count(&owned).Error; err != nil {
+			t.Fatal(err)
+		}
+		var usage struct{ Periods, PreMeter, ProtocolChecks int64 }
+		if err := db.Model(&domain.WorkspaceUsagePeriod{}).Where("workspace_id = ?", workspace.ID).
+			Select("COUNT(*) AS periods, COUNT(*) FILTER (WHERE checks = 0 AND check_attempts > 0) AS pre_meter, " +
+				"COALESCE(SUM(protocol_checks), 0) AS protocol_checks").Scan(&usage).Error; err != nil {
+			t.Fatal(err)
+		}
+		if owned == 0 || usage.ProtocolChecks != owned || usage.PreMeter != 1 || usage.Periods < 2 {
+			t.Fatalf("seeded usage does not match history: owned statistics=%d usage=%+v", owned, usage)
+		}
+		// Every metered month carries exactly the requests of its history,
+		// in both request counters.
+		var mismatched int64
+		if err := db.Raw(`SELECT COUNT(*) FROM workspace_usage_periods u
+			LEFT JOIN (SELECT date_trunc('month', ps.created_at AT TIME ZONE 'UTC') AS month, COUNT(*) AS protocol_checks, SUM(ps.attempt + 1) AS requests
+				FROM proxy_statistics ps JOIN user_proxies up ON up.proxy_id = ps.proxy_id AND up.workspace_id = ? GROUP BY 1) h
+			  ON h.month = u.period_start AT TIME ZONE 'UTC'
+			WHERE u.workspace_id = ? AND u.checks > 0
+			  AND (h.month IS NULL OR u.checks <> h.requests OR u.check_attempts <> h.requests OR u.protocol_checks <> h.protocol_checks)`,
+			workspace.ID, workspace.ID).Scan(&mismatched).Error; err != nil || mismatched != 0 {
+			t.Fatalf("metered months that disagree with history: %d %v", mismatched, err)
 		}
 		if _, err := database.LoadCheckerWorkspace(context.Background(), workspace.ID); err != nil {
 			t.Fatal(err)

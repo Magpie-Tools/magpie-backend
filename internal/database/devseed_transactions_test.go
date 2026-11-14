@@ -52,21 +52,6 @@ func rollBackCaller(t *testing.T, db *gorm.DB, run func(tx *gorm.DB) error, insi
 	}
 }
 
-func TestMarkProxyDailyChecksBackfilledRollsBackWithItsCallerPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	_, proxy := rollbackSeedFixture(t, db)
-	count := func(handle *gorm.DB) int64 {
-		var rows int64
-		if err := handle.Model(&domain.ProxyDailyCheckProxyBackfill{}).Where("proxy_id = ?", proxy.ID).Count(&rows).Error; err != nil {
-			t.Fatal(err)
-		}
-		return rows
-	}
-	rollBackCaller(t, db, func(tx *gorm.DB) error {
-		return MarkProxyDailyChecksBackfilled(tx, []uint64{proxy.ID})
-	}, count, count, 1)
-}
-
 func TestRefreshWorkspaceProxyFilterIndexesRollsBackWithItsCallerPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	workspace, proxy := rollbackSeedFixture(t, db)

@@ -278,10 +278,8 @@ func resetDevelopmentWorkspaces(tx *gorm.DB, workspaceIDs []uint, result *Develo
 		if len(orphans) == 0 {
 			continue
 		}
-		for _, model := range []any{&domain.ProxyDailyCheck{}, &domain.ProxyDailyCheckProxyBackfill{}, &domain.ProxyReputationRefresh{}} {
-			if err := tx.Where("proxy_id IN ?", orphans).Delete(model).Error; err != nil {
-				return err
-			}
+		if err := tx.Where("proxy_id IN ?", orphans).Delete(&domain.ProxyReputationRefresh{}).Error; err != nil {
+			return err
 		}
 		if err := tx.Where("id IN ?", orphans).Delete(&domain.Proxy{}).Error; err != nil {
 			return err

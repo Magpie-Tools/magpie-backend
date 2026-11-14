@@ -21,7 +21,7 @@ func TestStatisticsReplayIsIdempotent(t *testing.T) {
 				db = setupProxyIngestionPostgresTest(t)
 			} else {
 				db = setupRotatingProxyTestDB(t)
-				if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.ProxyDailyCheck{}, &domain.WorkspaceUsagePeriod{}, &domain.ProxyReputationRefresh{}); err != nil {
+				if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.WorkspaceUsagePeriod{}, &domain.ProxyReputationRefresh{}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -61,22 +61,24 @@ func assertStatisticsAccounting(t *testing.T, db *gorm.DB, proxyID uint64, works
 	if err := db.Model(&domain.ProxyStatistic{}).Count(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
-	var daily domain.ProxyDailyCheck
-	if err := db.First(&daily, "proxy_id = ?", proxyID).Error; err != nil {
+	// The replay ledger keeps one row per accepted event after history
+	// retention deletes the statistic, so it witnesses accepted results.
+	var accepted int64
+	if err := db.Model(&domain.ProxyStatisticEvent{}).Count(&accepted).Error; err != nil {
 		t.Fatal(err)
 	}
 	var usage domain.WorkspaceUsagePeriod
 	if err := db.First(&usage, "workspace_id = ?", workspaceID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if rows != history || daily.ChecksCount != int64(attempts/3) || usage.CheckAttempts != attempts {
-		t.Fatalf("history=%d daily=%d attempts=%d, want %d/%d/%d", rows, daily.ChecksCount, usage.CheckAttempts, history, attempts/3, attempts)
+	if rows != history || accepted != int64(attempts/3) || usage.CheckAttempts != attempts {
+		t.Fatalf("history=%d accepted=%d attempts=%d, want %d/%d/%d", rows, accepted, usage.CheckAttempts, history, attempts/3, attempts)
 	}
 }
 
 func TestStatisticEventRollsBackWithFailedPersistence(t *testing.T) {
 	db := setupRotatingProxyTestDB(t)
-	if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.ProxyDailyCheck{}, &domain.WorkspaceUsagePeriod{}); err != nil {
+	if err := db.AutoMigrate(&domain.ProxyStatisticEvent{}, &domain.ProxyStatisticStream{}, &domain.WorkspaceUsagePeriod{}); err != nil {
 		t.Fatal(err)
 	}
 	a, _, proxy, judge := seedCheckerEvidenceTest(t, db)

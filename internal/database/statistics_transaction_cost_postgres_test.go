@@ -87,8 +87,6 @@ SELECT n,'192.0.2.1','192.0.2.1',3128,'N/A','N/A' FROM generate_series(1,?::bigi
 SELECT n,TRUE,0,37,'','tcp',1000,0,e.value,1,n,?,? FROM generate_series(1,?::bigint) n
 CROSS JOIN (SELECT jsonb_agg(jsonb_build_object('workspace_id',id,'config_key','current-http','alive',TRUE)) AS value FROM workspaces) e`, []any{judge.ID, seedTime, routes}},
 		{`SELECT setval(pg_get_serial_sequence('proxy_statistics','id'),?::bigint)`, []any{routes}},
-		{`INSERT INTO proxy_daily_checks (proxy_id,day,checks_count,created_at,updated_at)
-SELECT n,?::date,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP FROM generate_series(1,?::bigint) n`, []any{seedTime, routes}},
 		{`INSERT INTO proxy_statistic_events (stream,event_id,sort_id,created_at)
 SELECT 'checks','1-'||n::text,LPAD('1',20,'0')||'-'||LPAD(n::text,20,'0'),CURRENT_TIMESTAMP FROM generate_series(1,?::bigint) n`, []any{routes}},
 		{`INSERT INTO proxy_reputation_refreshes (proxy_id,version,requested_at,lease_until)
@@ -130,15 +128,15 @@ SELECT ?,'current-http','tcp',n,1,TRUE,n,37,0,?,?,CURRENT_TIMESTAMP,CURRENT_TIME
 	if err := db.Exec("ANALYZE").Error; err != nil {
 		t.Fatal(err)
 	}
-	type fixtureCounts struct{ Routes, Owners, Managed, Latest, History, Daily, Ledger, Reputation int64 }
+	type fixtureCounts struct{ Routes, Owners, Managed, Latest, History, Ledger, Reputation int64 }
 	var counts fixtureCounts
 	if err := db.Raw(`SELECT (SELECT count(*) FROM proxies) AS routes,(SELECT count(*) FROM workspaces) AS owners,
 (SELECT count(*) FROM user_proxies) AS managed,(SELECT count(*) FROM proxy_latest_statistics) AS latest,
-(SELECT count(*) FROM proxy_statistics) AS history,(SELECT count(*) FROM proxy_daily_checks) AS daily,
+(SELECT count(*) FROM proxy_statistics) AS history,
 (SELECT count(*) FROM proxy_statistic_events) AS ledger,(SELECT count(*) FROM proxy_reputation_refreshes) AS reputation`).Scan(&counts).Error; err != nil {
 		t.Fatal(err)
 	}
-	if counts.Routes != int64(routes) || counts.Owners != 8 || counts.Managed != int64(routes*8) || counts.Latest != int64(routes*8) || counts.History != int64(routes) || counts.Daily != int64(routes) || counts.Ledger != int64(routes) || counts.Reputation != int64(routes) {
+	if counts.Routes != int64(routes) || counts.Owners != 8 || counts.Managed != int64(routes*8) || counts.Latest != int64(routes*8) || counts.History != int64(routes) || counts.Ledger != int64(routes) || counts.Reputation != int64(routes) {
 		t.Fatal("incomplete representative fixture", counts)
 	}
 	result := map[string]any{"status": "running", "counts": counts, "validated_foreign_keys": len(foreignKeys), "restored_secondary_indexes": indexes,
@@ -265,7 +263,7 @@ SELECT ?,'current-http','tcp',n,1,TRUE,n,37,0,?,?,CURRENT_TIMESTAMP,CURRENT_TIME
 			t.Fatalf("owner %d lost accounting/capacity: %+v committed=%d err=%v", owner, usage, committedTotal, err)
 		}
 	}
-	for _, query := range []string{"SELECT count(*) FROM proxy_statistics", "SELECT count(*) FROM proxy_statistic_events", "SELECT sum(checks_count) FROM proxy_daily_checks", "SELECT sum(version) FROM proxy_reputation_refreshes"} {
+	for _, query := range []string{"SELECT count(*) FROM proxy_statistics", "SELECT count(*) FROM proxy_statistic_events", "SELECT sum(version) FROM proxy_reputation_refreshes"} {
 		var total int64
 		if err := db.Raw(query).Scan(&total).Error; err != nil || total != int64(routes)+committedTotal {
 			t.Fatalf("accounting mismatch query=%s total=%d committed=%d err=%v", query, total, committedTotal, err)
@@ -292,9 +290,6 @@ func insertStatisticsUsageBeforeLatestPrototype(ctx context.Context, db *gorm.DB
 			return err
 		}
 		if err := tx.CreateInBatches(&accepted, CalculateProxyStatisticBatchSize(len(accepted))).Error; err != nil {
-			return err
-		}
-		if err := incrementProxyDailyChecks(tx, accepted); err != nil {
 			return err
 		}
 		if err := recordWorkspaceCheckUsage(tx, accepted); err != nil {
