@@ -26,6 +26,7 @@ overload policy `block`, lease longer than the check.
 | Redis commands, statistics | `2A` | `XLEN` and `XADD` per statistic under `block` or `drop_new` with a stream cap. `evict_oldest` sends only `XADD`. |
 | Database queries issued by the worker | 0 | The worker issues none directly. |
 | Check usage metering | 0 Redis, 0 database | `Pacer.ChargeRequest` on the runtime's Pacer updates in-memory counters, once per workspace per request (`R` times the workspaces served). |
+| Cadence decisions | 0 Redis, 0 database, 0 allocations | A `checkpace.RouteCycle` on the worker's stack decides which owners are served and when the route is due again, from the in-memory snapshot: one hash per route, and per owner one map read and a few integer divisions. Owners share the route's checks: a shared route is claimed once per cadence point of the owner that has the most, or a few percent more often where the owners' grids are not nested (see ADR 0016). |
 
 Lease renewal sends one more `EVALSHA` (`renew.lua`) between attempts only when
 less than two minutes of the five-minute lease remain. An ownership change
@@ -59,13 +60,18 @@ every ten seconds per instance.
 | Failure tracking shares chunked statements | `TestFailureTrackerBatchesConcurrentRequests` in [batcher_composition_test.go](../../internal/jobs/checker/batcher_composition_test.go) |
 | Statistics persistence statement counts | `TestCheckerEvidencePersistenceOperationBudgetPostgres` in [checker_settings_performance_test.go](../../internal/database/checker_settings_performance_test.go) |
 | Metering charges each served workspace once per request, without allocating | `TestRequestMeterChargesEachWorkspaceOncePerRequest` and `TestRequestMeterDoesNotAllocateWhileAllowanceLasts` in [check_pace_test.go](../../internal/jobs/checker/check_pace_test.go) |
+| A cycle's cadence decisions allocate nothing | `TestDueSelectionServesAllOwnersOfASingleOwnerRouteWithoutAllocating` in [check_pace_test.go](../../internal/jobs/checker/check_pace_test.go) |
+| Owners of a route share its request sequences: a thousand owners on one interval cost one sequence per interval | `TestOwnersOnTheSameCadenceShareOneRequestSequence` in [check_pace_test.go](../../internal/jobs/checker/check_pace_test.go) |
+| A shared route is claimed once per point of the owner that has the most (at most 10% more often for a fixed beside an automatic cadence), and its queue score stays a watermark of its owners' points | `TestOwnersOfARouteShareItsChecks` and `TestRouteScoreStaysAWatermarkOfItsOwnersPoints` in [route_test.go](../../internal/checkpace/route_test.go) |
+| A requeue writes exactly the due time the checker decided | `TestRequeueProxy_OnlyPersistsPayloadWhenRequested` in [proxy_queue_test.go](../../internal/jobs/queue/proxy/proxy_queue_test.go) and `TestRequeueUsesWorkspaceAllowanceCadence` in [queue_interval_test.go](../../internal/app/bootstrap/queue_interval_test.go) |
 | One Pacer per process: constructed in `app`, shared by both queues, charged only by its own checker runtime | `TestOnlyAppConstructsAPacer` and `TestInstallPacedQueuesGivesBothQueuesTheProcessPacer` in [composition_test.go](../../internal/app/composition_test.go); `TestCheckerRuntimeChargesOnlyItsOwnPacer` in [check_pace_test.go](../../internal/jobs/checker/check_pace_test.go) |
 | The meter's final flush follows the checker workers and the batchers | `TestPacerFinalFlushFollowsCheckerWorkersAndBatchers` in [lifecycle_test.go](../../internal/app/bootstrap/lifecycle_test.go) |
 
 ```bash
 go test ./internal/jobs/queue/proxy -run 'TestPlaintextProxyCycleCommandBudgetAndPayload|TestQueuedProxyToDomainProxy_CurrentPlaintextPayloadReusesHashWithoutEncryptionKey|TestRequeueProxy_OnlyPersistsPayloadWhenRequested' -count=1 -v
-go test ./internal/jobs/checker -run 'TestOwnershipVerifierBatchesConcurrentRequests|TestFailureTrackerBatchesConcurrentRequests|TestCheckerRuntimeOwnsOneOfEachBatcher|TestStoppedBatchersProcessReceivedRequests|TestRequestMeter|TestCheckerRuntimeChargesOnlyItsOwnPacer' -count=1 -v
-go test ./internal/app ./internal/app/bootstrap -run 'TestOnlyAppConstructsAPacer|TestInstallPacedQueuesGivesBothQueuesTheProcessPacer|TestPacerFinalFlushFollowsCheckerWorkersAndBatchers' -count=1 -v
+go test ./internal/jobs/checker -run 'TestOwnershipVerifierBatchesConcurrentRequests|TestFailureTrackerBatchesConcurrentRequests|TestCheckerRuntimeOwnsOneOfEachBatcher|TestStoppedBatchersProcessReceivedRequests|TestRequestMeter|TestCheckerRuntimeChargesOnlyItsOwnPacer|TestDueSelectionServesAllOwnersOfASingleOwnerRouteWithoutAllocating|TestOwnersOnTheSameCadenceShareOneRequestSequence' -count=1 -v
+go test ./internal/checkpace -run 'TestOwnersOfARouteShareItsChecks|TestRouteScoreStaysAWatermarkOfItsOwnersPoints' -count=1 -v
+go test ./internal/app ./internal/app/bootstrap -run 'TestOnlyAppConstructsAPacer|TestInstallPacedQueuesGivesBothQueuesTheProcessPacer|TestPacerFinalFlushFollowsCheckerWorkersAndBatchers|TestRequeueUsesWorkspaceAllowanceCadence' -count=1 -v
 ```
 
 The queue command-budget test needs `MAGPIE_TEST_QUEUE_REDIS_URL`; without it
@@ -82,6 +88,62 @@ the counts above.
 | The two checker batchers moved from `init()` singletons to a `checker.Runtime` that `app/bootstrap` constructs, starts in its own routine group and stops after the checker workers and before the consumers. Workers reach the batchers through their runtime instead of a package variable; batch size, window and statements are unchanged. | +0 | +0 | +0 | +0 |
 | `CountActiveInstances` and the heartbeat index helpers moved from `jobs/runtime` to `instanceid`. `jobs/queue/proxy` imports `instanceid` instead of `jobs/runtime`, so neither queue depends on `internal/database` any more. The function runs when the checker and scraper size their workers (every 15 s), never per check, and sends the same Redis commands. | +0 | +0 | +0 | +0 |
 | The check usage meter and its snapshot moved from `checkpace` package variables to a `checkpace.Pacer` that `app` constructs once and passes to both queues, `app/bootstrap` (which configures and runs it among the consumers and gives it to the checker runtime and the scraper dispatcher) and the API. Per cycle, the worker reads the snapshot with `r.pace.Current()`, one atomic load as before, and calls `RouteCheckInterval`, `CheckDue` and `ChargeRequest` as methods of that `*Pacer` with the snapshot as an argument. The base reached the snapshot and the charge through two package-level function variables (`currentPace`, `chargeRequest`), so each request now makes two fewer indirect calls; no interface call is added. The requeue reads the queue's Pacer instead of the package variable. A nil snapshot still means "before the first load": every owner is due and routes use the fallback interval. | +0 | +0 | +0 | +0 |
+
+| Routes are scheduled on workspace cadence grids ([ADR 0016](../adr/0016-schedule-routes-on-workspace-cadence-grids.md)). The worker opens one `checkpace.RouteCycle` per claimed route, which decides the due owners and the route's next due time; `RequeueProxy` takes that time and no longer computes an interval, so the snapshot is read once per cycle instead of at the dequeue and again at the requeue. The served owners are marked in a mask the worker reuses, not copied. Owners still share a route's checks: their grids are laid over each other, and a cycle that checks a route also serves the owners whose next point comes before the route's next visit, so a shared route is claimed once per point of the owner that has the most, as before, or a few percent more often where the owners' grids are not nested. `pop.lua` and `complete.lua` are unchanged; `add.lua`, which runs per import and not per check, issues the same commands, writes the earliest due time with a plain `ZADD` where it used `ZADD NX`, and for an explicit requeue schedules a leased route like a waiting one. | +0 | +0 | +0 | +0 |
+
+### Measurement of the cadence grid change
+
+Six interleaved rounds (base, changed, base, ...) on one Linux amd64 machine
+with 20 logical CPUs, while no other test run was active. Base is `57231ce`.
+The base's `BenchmarkSelectDueWorkspaces` measured the due selection only, so
+the base side below adds the `RouteCheckInterval` call its requeue made: both
+sides measure all cadence work of one cycle, on the same route, whose owners
+have automatic cadences of 5, 10, 15, ... minutes.
+
+| Benchmark | Base median ns/op | Changed median ns/op | Change | Range base / changed | Memory base / changed |
+| --- | ---: | ---: | ---: | --- | --- |
+| Cadence decisions of one cycle, owners=1 | 57.9 | 75.9 | +31.1% | 53-60 / 70-77 | 0 B, 0 allocs both |
+| Cadence decisions of one cycle, owners=8 | 966.6 | 485.4 | -49.8% | 916-1086 / 448-490 | 4864 B, 1 alloc / 0 B, 0 allocs |
+| Cadence decisions of one cycle, owners=100 | 12520.0 | 4945.0 | -60.5% | 11263-21106 / 4531-5199 | 65536 B, 1 alloc / 0 B, 0 allocs |
+| Cadence decisions of one cycle, owners=1000 | 125925.5 | 51438.5 | -59.2% | 116135-165190 / 46806-51584 | 589824 B, 1 alloc / 0 B, 0 allocs |
+| BenchmarkRequestMeterAdmit/owners=1 | 62.8 | 63.9 | +1.8% | 60-66 / 60-65 | 0 B, 0 allocs both |
+| BenchmarkRequestMeterAdmit/owners=8 | 223.8 | 223.9 | +0.0% | 221-230 / 213-229 | 0 B, 0 allocs both |
+| BenchmarkRequestMeterAdmit/owners=64 | 2035.5 | 2022.5 | -0.6% | 1859-2097 / 1936-2099 | 0 B, 0 allocs both |
+| BenchmarkRequestMeterAdmit/owners=512 | 17731.0 | 18282.5 | +3.1% | 15272-18585 / 17257-19190 | 0 B, 0 allocs both |
+| BenchmarkChargeRequest | 16.7 | 16.7 | +0.3% | 16-19 / 16-17 | 0 B, 0 allocs both |
+| BenchmarkBuildRequestAssignmentsSharedRoute | 446041.0 | 469447.0 | +5.2% | 424602-514256 / 455290-486053 | 4038 allocs both |
+| BenchmarkProxyQueueCycle (`-benchtime=20000x`) | 135089.5 | 130643.5 | -3.3% | 122839-174371 / 123222-148455 | 47 allocs both |
+| BenchmarkProxyQueueCycleConcurrent (`-benchtime=20000x`) | 70245.0 | 45987.0 | -34.5% | 44934-86580 / 42659-46857 | 48 allocs both |
+
+A route with one owner costs 18 ns more per cycle. The base added the owner's
+interval to the completion time. The change computes the owner's next cadence
+point, one hash and two integer divisions more, because a due time on the
+grid is what keeps a recomputed automatic cadence regular and spreads a
+workspace's routes after its interval changed. That is under 0.02% of the two
+Redis round trips of the same cycle. A shared route costs about half or less
+and no longer allocates: the base copied the due owners into a new slice, 608
+bytes per owner, whenever not all of them were due.
+
+How often a shared route is claimed is what its owners' checks cost in
+requests, statistics and queue commands. Owners share a route's checks as
+before: a route with a thousand owners on a one-minute interval costs one
+claim and one request sequence per minute
+(`TestOwnersOnTheSameCadenceShareOneRequestSequence`), and in a replay of
+2,000 routes owned by a 5-minute and a 1-hour workspace for 20 days the
+routes were claimed 11,520,000 times for the 11,520,000 checks of the
+5-minute workspace, which the 960,000 checks of the other all shared. For
+fixed intervals in any combination and for automatic cadences with one
+minimum interval, a route is claimed once per point of the owner that has the
+most. Automatic cadences with different minimum intervals, or beside fixed
+ones, cannot always share one check: in 400 random sets of owners each, the
+median was still one claim per such point, 99 of 100 sets stayed within 14%
+of it, and the worst was 78% above it. ADR 0016 has the table.
+
+`BenchmarkBuildRequestAssignmentsSharedRoute` is 5.2% slower in the median
+with the changed range inside the base's; two earlier runs of the same pair
+gave +1.7% and -3.1%. The queue benchmarks send the same commands on both
+sides, and the base's concurrent rounds varied by a factor of 1.9, so its
+lower median is not a gain of this change.
 
 ### Measurement of the check usage meter ownership change
 

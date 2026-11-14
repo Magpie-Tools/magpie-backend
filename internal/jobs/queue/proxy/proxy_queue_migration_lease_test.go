@@ -96,7 +96,7 @@ func TestLegacyAliasMigrationPreservesActiveCanonicalLeaseAcrossShards(t *testin
 		t.Run(location, func(t *testing.T) {
 			queue, client, proxy := migrationLeaseFixture(t)
 			ctx := context.Background()
-			if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+			if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 				t.Fatal(err)
 			}
 			key := queue.queueKeyForMember(string(proxy.Hash))
@@ -168,7 +168,7 @@ func TestLegacyMigrationPreservesCanonicalClaimAndImportDuringDecode(t *testing.
 	writerQueue := NewRedisProxyQueue(writer, nil)
 	var worker domain.Proxy
 	client.AddHook(&beforeMigrationHook{mutate: func() {
-		if err := writerQueue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+		if err := writerQueue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 			t.Fatal(err)
 		}
 		limited, cancel := context.WithTimeout(ctx, time.Second)
@@ -304,7 +304,7 @@ func TestLegacyMigrationCannotUseStaleSourceLeaseOrPayload(t *testing.T) {
 func TestLegacyAliasMigrationRecoversExpiredCanonicalLease(t *testing.T) {
 	queue, client, proxy := migrationLeaseFixture(t)
 	ctx := context.Background()
-	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+	if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
 	oldWorker, scheduled, err := queue.GetNextProxyContext(ctx)

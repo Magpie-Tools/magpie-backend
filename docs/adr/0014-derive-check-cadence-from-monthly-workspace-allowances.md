@@ -157,6 +157,10 @@ still applies.
 
 ### Shared routes and slow cadences
 
+[ADR 0016](0016-schedule-routes-on-workspace-cadence-grids.md) replaces the
+rule in this section: routes are now scheduled at their owners' cadence points.
+The six-hour bound on revisits remains.
+
 A route is requeued after its fastest owner's interval, capped at six hours.
 On each dequeue, the checker includes an owner only when one of that owner's
 own cadence boundaries falls within the route's last cycle window. Each route
@@ -253,7 +257,9 @@ milliseconds.
 - On a shared route, the gap between a cycle's due time and its completion is
   not covered by any window. Slow owners can therefore receive slightly fewer
   checks than their cadence allows. The recomputed snapshot compensates by
-  shortening their interval.
+  shortening their interval. (No longer true for checks: see
+  [ADR 0016](0016-schedule-routes-on-workspace-cadence-grids.md), which also
+  changes what an administrator's requeue does.)
 - Allowances follow UTC calendar months, not billing periods
   (`current_period_start` and `current_period_end`). Aligning them with
   billing is future work.

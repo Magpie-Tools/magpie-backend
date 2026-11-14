@@ -78,9 +78,10 @@ type RedisProxyQueue struct {
 	popScript      *redis.Script
 	queueShardKeys []string
 	popQueueKeys   []string
-	// pace supplies the allowance snapshot that sets each route's requeue
-	// delay. A nil Pacer has no snapshot, so every route uses
+	// pace supplies the allowance snapshot that decides when an added route
+	// is first due. A nil Pacer has no snapshot, so every route uses
 	// checkpace.FallbackInterval, as before the first allowance load.
+	// Requeues take their due time from the checker.
 	pace *checkpace.Pacer
 }
 
@@ -222,7 +223,35 @@ func proxyQueueShardIndex(member string, shards int) int {
 // Callers supply the complete active workspace list, not just the importing
 // workspace. Imports may replace payloads while a checker is running; the Lua
 // script preserves its lease. An error can leave earlier pipeline batches saved.
+//
+// A route is first due at the earliest cadence point any of its owners
+// reaches, which spreads an import over its workspace's cadence. A route that
+// is already queued keeps an earlier due time and is pulled forward to a
+// sooner one, so a new owner with a faster cadence does not wait for the
+// cadence of the owners that queued it.
 func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
+	return rpq.addToQueue(proxies, false)
+}
+
+// AddToQueueNow publishes payloads like AddToQueue and makes the routes due at
+// once, ahead of their owners' cadences. The next dequeue checks each route
+// for every owner that has allowance left, and charges each of them. It serves
+// an explicit request to check a route again; imports and lifecycle changes
+// use AddToQueue, which never spends allowance early.
+//
+// Unlike AddToQueue it also takes a route from a worker that holds it, in
+// whichever shard the lease is: the worker's completion finds its lease gone
+// and does not reschedule the route, which stays due at once. Otherwise the
+// request would be lost whenever it arrives during a check.
+func (rpq *RedisProxyQueue) AddToQueueNow(proxies []domain.Proxy) error {
+	return rpq.addToQueue(proxies, true)
+}
+
+// dueForEveryOwner is a due time before every cadence point an owner could
+// still be waiting for: a route queued at it is checked for all its owners.
+const dueForEveryOwner = int64(1)
+
+func (rpq *RedisProxyQueue) addToQueue(proxies []domain.Proxy, dueNow bool) error {
 	if len(proxies) == 0 {
 		return nil
 	}
@@ -248,15 +277,14 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 	rpq.pace.RequestRefresh()
 	pace := rpq.pace.Current()
 	now := time.Now()
-	proxyLenDuration := time.Duration(len(queueable))
 	batchSize := 500 // Adjust based on your Redis server capabilities
 
 	for i, proxy := range queueable {
-		// Spread the batch over each route's own cadence so an import does not
-		// make every new route due at once.
-		interval := rpq.pace.RouteCheckInterval(pace, proxy.Workspaces)
-		offset := (interval * time.Duration(i)) / proxyLenDuration
-		nextCheck := now.Add(offset)
+		// An explicit requeue also takes the route from a worker that holds it.
+		due, take := dueForEveryOwner, "1"
+		if !dueNow {
+			due, take = rpq.pace.FirstRouteCheck(pace, proxy.ID, proxy.Workspaces, now).UnixMilli(), ""
+		}
 		hashKey := string(proxy.Hash)
 		proxyKey := proxyKeyPrefix + hashKey
 		queueKey := rpq.queueKeyForMember(hashKey)
@@ -269,7 +297,7 @@ func (rpq *RedisProxyQueue) AddToQueue(proxies []domain.Proxy) error {
 		// Imports may update ownership while a worker holds a lease in a legacy
 		// or different configured shard. Keep that member in its owned shard.
 		keys := append([]string{proxyQueueHeadKey, proxyKey, queueKey}, rpq.popKeys()...)
-		pipe.Eval(ctx, luaAddScript, keys, hashKey, nextCheck.UnixMilli(), proxyJSON)
+		pipe.Eval(ctx, luaAddScript, keys, hashKey, due, proxyJSON, take)
 
 		// Execute in batches to prevent oversized pipelines
 		if i%batchSize == 0 && i > 0 {
@@ -605,11 +633,13 @@ func coerceLuaInt64(value interface{}) (int64, error) {
 	}
 }
 
-// RequeueProxy completes the worker's lease and schedules the next check using
-// only sorted-set updates. It neither encodes nor rewrites the stored payload.
+// RequeueProxy completes the worker's lease and makes the route due again at
+// nextCheck, using only sorted-set updates. It neither encodes nor rewrites
+// the stored payload. The caller decides nextCheck from its owners' cadences
+// (checkpace.RouteCycle.Next); a time in the past makes the route due at once.
 // ErrProxyLeaseLost means a newer claim or removal fenced this worker out.
-func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, lastCheckTime time.Time) error {
-	return rpq.requeueProxy(proxy, lastCheckTime, false)
+func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, nextCheck time.Time) error {
+	return rpq.requeueProxy(proxy, nextCheck, false)
 }
 
 // RequeueProxyWithPayload persists changed ownership or credentials before
@@ -618,26 +648,18 @@ func (rpq *RedisProxyQueue) RequeueProxy(proxy domain.Proxy, lastCheckTime time.
 // If an import replaced the leased snapshot, completion merges the worker's
 // ownership delta into that payload, preserving newly published workspaces and
 // credentials. A stale lease cannot complete either form of requeue.
-func (rpq *RedisProxyQueue) RequeueProxyWithPayload(proxy domain.Proxy, lastCheckTime time.Time) error {
-	return rpq.requeueProxy(proxy, lastCheckTime, true)
+func (rpq *RedisProxyQueue) RequeueProxyWithPayload(proxy domain.Proxy, nextCheck time.Time) error {
+	return rpq.requeueProxy(proxy, nextCheck, true)
 }
 
-func (rpq *RedisProxyQueue) requeueProxy(proxy domain.Proxy, lastCheckTime time.Time, persistPayload bool) error {
+func (rpq *RedisProxyQueue) requeueProxy(proxy domain.Proxy, nextCheck time.Time, persistPayload bool) error {
 	client, err := rpq.clientOrErr()
 	if err != nil {
 		return err
 	}
 	ctx := rpq.baseContext()
 
-	// The fastest owning workspace's cadence, from the in-memory allowance
-	// snapshot. Requeueing issues no command beyond the completion script.
-	interval := rpq.pace.RouteCheckInterval(rpq.pace.Current(), proxy.Workspaces)
-	base := lastCheckTime
-	// Clamp to now so overdue proxies don't keep hogging the queue.
-	if now := time.Now(); now.After(base) {
-		base = now
-	}
-	nextCheck := base.Add(interval)
+	// Requeueing issues no command beyond the completion script.
 	hashKey := string(proxy.Hash)
 	queueKey := rpq.queueKeyForMember(hashKey)
 
@@ -937,7 +959,11 @@ func (rpq *RedisProxyQueue) RequeueAll() (int64, error) {
 }
 
 // requeueAllWindow spreads every route over the fastest workspace cadence, so
-// no route waits longer than it would have, bounded to avoid a burst.
+// no route waits longer than it would have, bounded to avoid a burst. A route
+// dequeued at such a time is checked only for owners that have reached a
+// cadence point; otherwise the checker puts it back at its owners' next
+// points. Requeueing everything therefore realigns the queue with the current
+// cadences without spending any workspace's allowance early.
 func requeueAllWindow(pace *checkpace.Snapshot) time.Duration {
 	if pace == nil || pace.FastestCheckInterval <= 0 {
 		return checkpace.FallbackInterval

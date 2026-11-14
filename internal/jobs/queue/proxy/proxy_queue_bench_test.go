@@ -49,7 +49,6 @@ func BenchmarkProxyQueueLegacyRekey(b *testing.B) {
 			}
 		}
 	})
-	useUniformPace(b, queue, time.Hour)
 	canonicalDue := float64(time.Now().Add(processingLease / 2).UnixMilli())
 	pipe := client.Pipeline()
 	for i := 0; i <= b.N; i++ {
@@ -97,7 +96,7 @@ func BenchmarkProxyQueueLegacyRekey(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	if err := queue.RequeueProxy(warm, time.Now()); err != nil {
+	if err := queue.RequeueProxy(warm, time.Now().Add(time.Hour)); err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
@@ -110,7 +109,7 @@ func BenchmarkProxyQueueLegacyRekey(b *testing.B) {
 		if len(proxy.Workspaces) != 9 {
 			b.Fatalf("migration lost owners: %d", len(proxy.Workspaces))
 		}
-		if err := queue.RequeueProxy(proxy, time.Now()); err != nil {
+		if err := queue.RequeueProxy(proxy, time.Now().Add(time.Hour)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -234,8 +233,8 @@ func benchmarkProxyQueueCycle(b *testing.B, concurrent bool) {
 			}
 		}
 	})
-	// Keep completed routes behind every still-ready route throughout the run.
-	useUniformPace(b, queue, time.Hour)
+	// Requeues an hour ahead keep completed routes behind every still-ready
+	// route throughout the run.
 	pipe := client.Pipeline()
 	for i := 0; i < b.N; i++ {
 		member := fmt.Sprintf("benchmark-route-%064d", i)
@@ -280,7 +279,7 @@ func benchmarkProxyQueueCycle(b *testing.B, concurrent bool) {
 					b.Error(err)
 					return
 				}
-				if err := queue.RequeueProxy(proxy, time.Now()); err != nil {
+				if err := queue.RequeueProxy(proxy, time.Now().Add(time.Hour)); err != nil {
 					b.Error(err)
 					return
 				}
@@ -293,7 +292,7 @@ func benchmarkProxyQueueCycle(b *testing.B, concurrent bool) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if err := queue.RequeueProxy(proxy, time.Now()); err != nil {
+		if err := queue.RequeueProxy(proxy, time.Now().Add(time.Hour)); err != nil {
 			b.Fatal(err)
 		}
 	}

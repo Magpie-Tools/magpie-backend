@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"magpie/internal/checkerconfig"
 	"magpie/internal/checkpace"
 	"magpie/internal/domain"
 	"magpie/internal/support"
@@ -23,99 +24,6 @@ func withPace(snapshot *checkpace.Snapshot) *Runtime {
 
 func paceFor(now time.Time, allowances ...checkpace.Allowance) *checkpace.Snapshot {
 	return checkpace.Compute(now, allowances)
-}
-
-func TestSelectDueWorkspacesKeepsSingleOwnerRouteWithoutCopy(t *testing.T) {
-	now := time.Now()
-	r := withPace(paceFor(now, checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: 1_000_000, ChecksPerCycle: 10}))
-	proxy := domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}
-	got, anyDue := r.selectDueWorkspaces(proxy, now)
-	if !anyDue || len(got.Workspaces) != 1 || &got.Workspaces[0] != &proxy.Workspaces[0] {
-		t.Fatalf("single-owner route should be due without copying: due=%v workspaces=%v", anyDue, got.Workspaces)
-	}
-	if allocations := testing.AllocsPerRun(100, func() { _, _ = r.selectDueWorkspaces(proxy, now) }); allocations != 0 {
-		t.Fatalf("due selection allocated %.0f times per cycle", allocations)
-	}
-}
-
-func TestSelectDueWorkspacesSkipsExhaustedAndSlowOwners(t *testing.T) {
-	now := time.Now()
-	_, end := checkpace.UsagePeriod(now)
-	remaining := end.Sub(now)
-	r := withPace(paceFor(now,
-		checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: uint64(remaining/time.Minute) + 1, ChecksPerCycle: 1},
-		checkpace.Allowance{WorkspaceID: 2, MonthlyChecks: 10, UsedChecks: 10, ChecksPerCycle: 1},
-		checkpace.Allowance{WorkspaceID: 3, MonthlyChecks: uint64(remaining/(30*time.Minute)) + 1, ChecksPerCycle: 1},
-	))
-	proxy := domain.Proxy{ID: 9, Workspaces: []domain.Workspace{{ID: 2}, {ID: 1}, {ID: 3}}}
-	slowDue := 0
-	scheduled := now
-	for cycle := 0; cycle < 300; cycle++ {
-		got, anyDue := r.selectDueWorkspaces(proxy, scheduled)
-		if !anyDue {
-			t.Fatal("the fastest owner must be due every cycle")
-		}
-		for _, workspace := range got.Workspaces {
-			switch workspace.ID {
-			case 2:
-				t.Fatal("an exhausted owner was selected")
-			case 3:
-				slowDue++
-			}
-		}
-		scheduled = scheduled.Add(time.Minute)
-	}
-	if len(proxy.Workspaces) != 3 {
-		t.Fatalf("selection mutated the route's owners: %v", proxy.Workspaces)
-	}
-	if slowDue < 9 || slowDue > 11 {
-		t.Fatalf("30-minute owner selected %d times in 300 one-minute cycles, want about 10", slowDue)
-	}
-}
-
-func TestSelectDueWorkspacesReportsIdleCycle(t *testing.T) {
-	now := time.Now()
-	r := withPace(paceFor(now, checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: 5, UsedChecks: 5, ChecksPerCycle: 1}))
-	if _, anyDue := r.selectDueWorkspaces(domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}, now); anyDue {
-		t.Fatal("a route whose only owner is out of allowance must not be checked")
-	}
-}
-
-func TestSelectDueWorkspacesChecksEveryoneBeforeFirstSnapshot(t *testing.T) {
-	r := withPace(nil)
-	proxy := domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}, {ID: 2}}}
-	if got, anyDue := r.selectDueWorkspaces(proxy, time.Now()); !anyDue || len(got.Workspaces) != 2 {
-		t.Fatalf("startup selection = %v, %v", got.Workspaces, anyDue)
-	}
-}
-
-// BenchmarkSelectDueWorkspaces measures the per-dequeue cadence decision. It is
-// map lookups and integer arithmetic over the route's owners.
-func BenchmarkSelectDueWorkspaces(b *testing.B) {
-	now := time.Now()
-	_, end := checkpace.UsagePeriod(now)
-	remaining := end.Sub(now)
-	for _, owners := range []int{1, 8} {
-		b.Run(fmt.Sprintf("owners=%d", owners), func(b *testing.B) {
-			allowances := make([]checkpace.Allowance, 0, owners)
-			proxy := domain.Proxy{ID: 77}
-			for i := 1; i <= owners; i++ {
-				cadence := time.Duration(i) * 5 * time.Minute
-				allowances = append(allowances, checkpace.Allowance{WorkspaceID: uint(i), MonthlyChecks: uint64(remaining / cadence), ChecksPerCycle: 1})
-				proxy.Workspaces = append(proxy.Workspaces, domain.Workspace{ID: uint(i)})
-			}
-			// Refresh attaches the check meter, so the measurement includes
-			// reading each owner's metered usage.
-			r := useMeteredPace(b, allowances...)
-			// Cycles stay within one month, as live routes do.
-			scheduled, _ := checkpace.UsagePeriod(now)
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				_, _ = r.selectDueWorkspaces(proxy, scheduled.Add(time.Duration(i%8000)*5*time.Minute))
-			}
-		})
-	}
 }
 
 // useMeteredPace returns a runtime whose own Pacer has loaded allowances, so
@@ -358,11 +266,237 @@ func TestCheckerRuntimeChargesOnlyItsOwnPacer(t *testing.T) {
 	// one Pacer is not exhausted on another.
 	exhausted := withPace(paceFor(time.Now(), checkpace.Allowance{WorkspaceID: 207, MonthlyChecks: 3, UsedChecks: 3, ChecksPerCycle: 1}))
 	route := domain.Proxy{ID: 9, Workspaces: []domain.Workspace{{ID: 207}}}
-	if _, due := exhausted.selectDueWorkspaces(route, time.Now()); due {
+	// The moment the route is due for the owner on the second runtime.
+	point := second.pace.FirstRouteCheck(second.pace.Current(), route.ID, route.Workspaces, time.Now())
+	if due, _ := selectDue(exhausted, route, point); due.Any {
 		t.Fatal("due selection ignored its Pacer's exhausted owner")
 	}
-	if _, due := second.selectDueWorkspaces(route, time.Now()); !due {
+	if due, _ := selectDue(second, route, point); !due.Any {
 		t.Fatal("due selection read another runtime's snapshot")
+	}
+}
+
+// selectDue runs the worker's due selection for a route that is dequeued at
+// the moment it is due.
+func selectDue(r *Runtime, proxy domain.Proxy, due time.Time) (*dueSet, *checkpace.RouteCycle) {
+	cycle := r.pace.BeginRouteCycle(r.pace.Current(), proxy.ID, due, due)
+	set := &dueSet{}
+	cycle.Select(proxy.Workspaces, set)
+	return set, &cycle
+}
+
+// every is a workspace on a fixed check interval without a monthly limit.
+func every(workspaceID uint, interval time.Duration) checkpace.Allowance {
+	return checkpace.Allowance{WorkspaceID: workspaceID, UnlimitedChecks: true, RequestedCheckInterval: interval, ChecksPerCycle: 1}
+}
+
+func TestDueSelectionServesAllOwnersOfASingleOwnerRouteWithoutAllocating(t *testing.T) {
+	now := time.Now()
+	r := withPace(paceFor(now, every(1, time.Minute)))
+	proxy := domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}
+	point := r.pace.FirstRouteCheck(r.pace.Current(), proxy.ID, proxy.Workspaces, now)
+	if wait := point.Sub(now); wait <= 0 || wait > time.Minute {
+		t.Fatalf("the route is first due after %s, want within its owner's minute", wait)
+	}
+	due, cycle := selectDue(r, proxy, point)
+	if !due.Any || !due.All || !due.Has(0) {
+		t.Fatalf("single-owner route at its cadence point: %+v", due)
+	}
+	if next := nextRouteCheck(cycle, proxy.Workspaces, due, nil, point); next.Sub(point) <= 0 || next.Sub(point) > time.Minute {
+		t.Fatalf("the route is due again %s after its point, want within the owner's minute", next.Sub(point))
+	}
+	// Between two points the route is not checked, and it goes back to the
+	// owner's next point.
+	early, cycle := selectDue(r, proxy, point.Add(-10*time.Second))
+	if early.Any {
+		t.Fatal("the route was checked before its owner's cadence point")
+	}
+	if next := cycle.Next(point.Add(-10 * time.Second)); !next.Equal(point) {
+		t.Fatalf("an early dequeue requeues the route at %s, want its owner's point %s", next, point)
+	}
+	var reused dueSet
+	if allocations := testing.AllocsPerRun(100, func() {
+		cycle := r.pace.BeginRouteCycle(r.pace.Current(), proxy.ID, point, point)
+		cycle.Select(proxy.Workspaces, &reused)
+		_ = nextRouteCheck(&cycle, proxy.Workspaces, &reused, nil, point)
+	}); allocations != 0 {
+		t.Fatalf("one cycle's cadence decisions allocated %.0f times", allocations)
+	}
+}
+
+func TestDueSelectionServesOnlyOwnersAtTheirCadencePoint(t *testing.T) {
+	now := time.Now()
+	r := withPace(paceFor(now,
+		every(1, time.Minute),
+		checkpace.Allowance{WorkspaceID: 2, MonthlyChecks: 10, UsedChecks: 10, ChecksPerCycle: 1},
+		every(3, 30*time.Minute),
+	))
+	proxy := domain.Proxy{ID: 9, Workspaces: []domain.Workspace{{ID: 2}, {ID: 1}, {ID: 3}}}
+	due := r.pace.FirstRouteCheck(r.pace.Current(), proxy.ID, proxy.Workspaces, now)
+	end := due.Add(300 * time.Minute)
+	fastDue, slowDue, cycles := 0, 0, 0
+	var set dueSet
+	for due.Before(end) {
+		cycle := r.pace.BeginRouteCycle(r.pace.Current(), proxy.ID, due, due)
+		cycle.Select(proxy.Workspaces, &set)
+		if !set.Any {
+			t.Fatal("the route was dequeued at a time no owner waited for")
+		}
+		if set.Has(0) {
+			t.Fatal("an exhausted owner was selected")
+		}
+		if set.Has(1) {
+			fastDue++
+		}
+		if set.Has(2) {
+			slowDue++
+		}
+		// The assignments follow the selection.
+		_, success, _, _, _ := buildRequestAssignments(proxy, &set)
+		if _, served := success[2]; served || len(success) != boolCount(set.Has(1), set.Has(2)) {
+			t.Fatalf("assignments serve %v, selection is %+v", success, set)
+		}
+		cycles++
+		due = nextRouteCheck(&cycle, proxy.Workspaces, &set, nil, due)
+	}
+	if len(proxy.Workspaces) != 3 {
+		t.Fatalf("selection changed the route's owners: %v", proxy.Workspaces)
+	}
+	if fastDue != 300 || slowDue != 10 {
+		t.Fatalf("one-minute owner selected %d times and 30-minute owner %d times in 300 minutes, want 300 and 10", fastDue, slowDue)
+	}
+	if cycles > 310 {
+		t.Fatalf("the route was dequeued %d times for 310 checks", cycles)
+	}
+}
+
+// Owners of one route share its outbound requests. This runs the worker's own
+// selection and assignment builder for a route with a thousand owners on the
+// same interval, with the same judge and protocol: every minute must cost one
+// request sequence, not one per owner.
+func TestOwnersOnTheSameCadenceShareOneRequestSequence(t *testing.T) {
+	previous := lookupCheckerWorkspace
+	t.Cleanup(func() { lookupCheckerWorkspace = previous })
+	const owners, minutes = 1000, 10
+	now := time.Now().UTC().Truncate(time.Hour)
+	judge := &domain.Judge{ID: 1, FullString: "http://judge.invalid/"}
+	judge.SetUp()
+	allowances := make([]checkpace.Allowance, 0, owners)
+	snapshots := make(map[uint]*checkerconfig.Workspace, owners)
+	proxy := domain.Proxy{ID: 77}
+	for id := uint(1); id <= owners; id++ {
+		workspace := domain.Workspace{ID: id, HTTPProtocol: true, Timeout: 1000}
+		allowances = append(allowances, every(id, time.Minute))
+		proxy.Workspaces = append(proxy.Workspaces, workspace)
+		snapshots[id] = checkerconfig.Build(workspace, nil, []domain.JudgeWithRegex{{Judge: judge, Regex: "default"}}, nil)
+	}
+	lookupCheckerWorkspace = func(id uint) (*checkerconfig.Workspace, bool) { return snapshots[id], true }
+	r := withPace(checkpace.Compute(now, allowances))
+	snapshot := r.pace.Current()
+
+	due := r.pace.FirstRouteCheck(snapshot, proxy.ID, proxy.Workspaces, now)
+	free, end := now, now.Add(minutes*time.Minute)
+	visits, sequences, checks := 0, 0, 0
+	var set dueSet
+	for due.Before(end) {
+		dequeued := due
+		if free.After(dequeued) {
+			dequeued = free
+		}
+		cycle := r.pace.BeginRouteCycle(snapshot, proxy.ID, due, dequeued)
+		cycle.Select(proxy.Workspaces, &set)
+		assignments, _, _, _, _ := buildRequestAssignments(proxy, &set)
+		for _, assignment := range assignments {
+			checks += len(assignment.checks)
+		}
+		sequences += len(assignments)
+		visits++
+		// A cycle takes 100 ms.
+		free = dequeued.Add(100 * time.Millisecond)
+		due = nextRouteCheck(&cycle, proxy.Workspaces, &set, nil, free)
+	}
+	if visits != minutes || sequences != minutes {
+		t.Fatalf("%d owners on one interval cost %d cycles and %d request sequences in %d minutes, want one per minute", owners, visits, sequences, minutes)
+	}
+	if checks != owners*minutes {
+		t.Fatalf("the owners were served %d checks, want %d", checks, owners*minutes)
+	}
+}
+
+func boolCount(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
+	}
+	return count
+}
+
+func TestDueSelectionReportsIdleCycleAndStartup(t *testing.T) {
+	now := time.Now()
+	exhausted := withPace(paceFor(now, checkpace.Allowance{WorkspaceID: 1, MonthlyChecks: 5, UsedChecks: 5, ChecksPerCycle: 1}))
+	proxy := domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}
+	due, cycle := selectDue(exhausted, proxy, now)
+	if due.Any {
+		t.Fatal("a route whose only owner is out of allowance must not be checked")
+	}
+	if wait := cycle.Next(now).Sub(now); wait <= 0 || wait > checkpace.MaxRouteInterval {
+		t.Fatalf("a route without a checkable owner is revisited after %s", wait)
+	}
+	// Before the first snapshot every owner is due.
+	shared := domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}, {ID: 2}}}
+	if due, _ := selectDue(withPace(nil), shared, now); !due.Any || !due.Has(0) || !due.Has(1) {
+		t.Fatalf("startup selection = %+v", due)
+	}
+	// A removed owner no longer holds the route.
+	r := withPace(paceFor(now, every(1, time.Minute), every(2, 2*time.Hour)))
+	point := r.pace.FirstRouteCheck(r.pace.Current(), shared.ID, shared.Workspaces[:1], now)
+	due, cycle = selectDue(r, shared, point)
+	if !due.Has(0) {
+		t.Fatal("the one-minute owner is not due at its point")
+	}
+	withFast := nextRouteCheck(cycle, shared.Workspaces, due, nil, point)
+	due, cycle = selectDue(r, shared, point)
+	withoutFast := nextRouteCheck(cycle, shared.Workspaces, due, map[uint]struct{}{1: {}}, point)
+	// Without it the route waits for the two-hour owner's next point.
+	slowPoint := r.pace.FirstRouteCheck(r.pace.Current(), shared.ID, shared.Workspaces[1:], point)
+	if withFast.Sub(point) > time.Minute || !withoutFast.Equal(slowPoint) {
+		t.Fatalf("next check %s with the fast owner and %s after it was removed, want %s", withFast.Sub(point), withoutFast.Sub(point), slowPoint.Sub(point))
+	}
+}
+
+// BenchmarkSelectDueWorkspaces measures the per-dequeue cadence decisions: the
+// due selection and the next due time. Its cost must grow in proportion to the
+// route's owners and must not allocate.
+func BenchmarkSelectDueWorkspaces(b *testing.B) {
+	now := time.Now()
+	_, end := checkpace.UsagePeriod(now)
+	remaining := end.Sub(now)
+	for _, owners := range []int{1, 8, 100, 1000} {
+		b.Run(fmt.Sprintf("owners=%d", owners), func(b *testing.B) {
+			allowances := make([]checkpace.Allowance, 0, owners)
+			proxy := domain.Proxy{ID: 77}
+			for i := 1; i <= owners; i++ {
+				cadence := time.Duration(i) * 5 * time.Minute
+				allowances = append(allowances, checkpace.Allowance{WorkspaceID: uint(i), MonthlyChecks: uint64(remaining/cadence) + 1, ChecksPerCycle: 1})
+				proxy.Workspaces = append(proxy.Workspaces, domain.Workspace{ID: uint(i)})
+			}
+			// Refresh attaches the check meter, so the measurement includes
+			// reading each owner's metered usage.
+			r := useMeteredPace(b, allowances...)
+			var due dueSet
+			scheduled := r.pace.FirstRouteCheck(r.pace.Current(), proxy.ID, proxy.Workspaces, now)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				// The dequeue time stays in this month, as live cycles do,
+				// while the due times walk along the owners' points.
+				cycle := r.pace.BeginRouteCycle(r.pace.Current(), proxy.ID, scheduled, now)
+				cycle.Select(proxy.Workspaces, &due)
+				scheduled = nextRouteCheck(&cycle, proxy.Workspaces, &due, nil, scheduled)
+			}
+		})
 	}
 }
 

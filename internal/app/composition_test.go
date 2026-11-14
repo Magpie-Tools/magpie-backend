@@ -21,8 +21,9 @@ import (
 )
 
 // The process has one Pacer, constructed here. Both installed queues schedule
-// with it: a requeued route waits for its owner's cadence from that Pacer's
-// snapshot, and RequeueAll spreads sources over its fastest scrape cadence.
+// with it: an added route waits for its owner's cadence point from that
+// Pacer's snapshot, and RequeueAll spreads sources over its fastest scrape
+// cadence.
 // bootstrap.Setup and server.OpenRoutes receive the same value from Run.
 func TestInstallPacedQueuesGivesBothQueuesTheProcessPacer(t *testing.T) {
 	server := miniredis.RunT(t)
@@ -43,21 +44,30 @@ func TestInstallPacedQueuesGivesBothQueuesTheProcessPacer(t *testing.T) {
 	defer cancel()
 	proxies := &proxyqueue.PublicProxyQueue
 	route := domain.Proxy{ID: 42, IP: "192.0.2.42", Port: 40005, Hash: []byte("composition-route"), Workspaces: []domain.Workspace{{ID: 1}}}
+	// The route is first due at its owner's cadence point on that Pacer, which
+	// no other cadence shares.
+	added := time.Now()
 	if err := proxies.AddToQueue([]domain.Proxy{route}); err != nil {
 		t.Fatal(err)
 	}
-	worker, scheduled, err := proxies.GetNextProxyContext(ctx)
-	if err != nil {
-		t.Fatal(err)
+	want := pace.FirstRouteCheck(pace.Current(), route.ID, route.Workspaces, added)
+	if wait := want.Sub(added); wait <= 0 || wait > checkCadence {
+		t.Fatalf("the Pacer's first check is %s away at a cadence of %s", wait, checkCadence)
 	}
-	minimum := time.Now().Add(checkCadence - time.Second).UnixMilli()
-	maximum := time.Now().Add(checkCadence + time.Minute).UnixMilli()
-	if err := proxies.RequeueProxy(worker, scheduled); err != nil {
-		t.Fatal(err)
+	var score float64
+	for _, key := range server.Keys() {
+		if server.Type(key) != "zset" || strings.Contains(key, "head") || strings.Contains(key, "scrape") {
+			continue
+		}
+		if found, err := client.ZScore(ctx, key, string(route.Hash)).Result(); err == nil {
+			score = found
+		}
 	}
-	score, err := client.ZScore(ctx, worker.QueueLease.QueueKey, string(worker.Hash)).Result()
-	if err != nil || score < float64(minimum) || score > float64(maximum) {
-		t.Fatalf("the proxy queue did not requeue at the Pacer's cadence: score=%f, want [%d, %d], error=%v", score, minimum, maximum, err)
+	// The queue read the clock after this test did; the point may have passed
+	// in between, and then the route waits for the next one.
+	later := pace.FirstRouteCheck(pace.Current(), route.ID, route.Workspaces, time.Now())
+	if score != float64(want.UnixMilli()) && score != float64(later.UnixMilli()) {
+		t.Fatalf("the proxy queue did not schedule the route at the Pacer's cadence point: score=%f, want %d", score, want.UnixMilli())
 	}
 
 	sites := &sitequeue.PublicScrapeSiteQueue

@@ -157,7 +157,11 @@ operations, JSON encodes, Redis commands, or database queries per proxy check.
 the route ID, host, port, credentials, stored hash and active workspace IDs.
 Routes are distributed across sorted-set shards. Scores are due times in Unix
 milliseconds; `proxy_queue_heads` indexes the earliest score in each shard.
-Batch imports spread initial due times across the checking interval.
+A route is first due at the earliest cadence point of any of its owners, which
+spreads an import across its workspace's cadence. An import that adds an owner
+with a faster cadence pulls an already queued route forward and never
+postpones one. `AddToQueueNow` makes a route due at once for every owner; only
+an administrator's explicit requeue of one route uses it.
 
 `GetNextProxyContext` waits until a route is due. `pop.lua` atomically reads its
 payload and moves its score to a five-minute lease expiry. The exact `0.5`
@@ -201,6 +205,23 @@ for a checker whose snapshots are not yet ready. The
 [tag settings decision](adr/0010-resolve-tag-checker-settings-from-runtime-snapshots.md)
 explains this boundary.
 
+Each workspace's check cadence gives it fixed points in time on each of its
+routes (`checkpace`'s grid). A worker begins a `checkpace.RouteCycle` for the
+claimed route and checks it for the owners that reached one of their points
+between the route's due time and the dequeue. A fixed interval has one point
+per interval. An automatic cadence is recomputed every minute, so its points
+lie on spans of the workspace's minimum interval times a power of two: one
+route's points are a span or half a span apart and average the cadence.
+
+Owners share a route's checks. Their grids are laid over each other, so equal
+cadences and cadences that divide each other are due at the same dequeues, and
+a cycle that checks the route also serves an owner whose next point comes
+before the route's next visit. A route is therefore checked once per point of
+the owner that has the most, or a few percent more often where the owners'
+grids are not nested. The decision reads the in-memory allowance snapshot and
+nothing else. If no owner is due, the route is requeued without requests or database
+work. See [ADR 0016](adr/0016-schedule-routes-on-workspace-cadence-grids.md).
+
 `buildRequestAssignments` shares one outbound request when judge, proxy
 protocol, transport, timeout and retry budget match. Each workspace still
 validates the returned body independently. Two workspaces can receive opposite
@@ -236,9 +257,17 @@ its own query. This is a point-in-time observation, not a reservation: managemen
 can change during a check. A negative result removes the queue entry. A lookup
 error leaves ownership unknown, so the worker attempts to requeue the route.
 
-`RequeueProxy` completes the lease and updates sorted-set scheduling state. It
-schedules from the later of the previous scheduled time and the current time,
-plus the checking interval. It does not rewrite `proxy:<hash>`, encode JSON or
+The worker then asks the route cycle when the route is due again: at the
+earliest point any owner waits for. An owner the cycle checked waits for its
+first point after the cycle ended, so a check that takes longer than the
+owner's interval does not run back to back. An owner it did not check still
+waits for its first point after the dequeue; if that point passed while the
+route was being checked for others, the route is due again at once. A route
+whose owners have no point within six hours is revisited at its own six-hour
+revisit point.
+
+`RequeueProxy` completes the lease and sets that due time in the sorted set. It
+does not rewrite `proxy:<hash>`, encode JSON or
 encrypt credentials. An ownership change uses `RequeueProxyWithPayload` instead.
 If an import changed the payload during the check, `complete.lua` merges the
 worker's ownership delta into that newer payload, retaining newly added

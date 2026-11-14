@@ -43,7 +43,7 @@ func TestTaggedAssignmentsShareProfileBudgetAndCaptureSettings(t *testing.T) {
 	if changed {
 		t.Fatal("settings refresh must not rewrite queue payload")
 	}
-	assignments, success, checks, maxTimeout, maxRetries := buildRequestAssignments(refreshed)
+	assignments, success, checks, maxTimeout, maxRetries := buildRequestAssignments(refreshed, nil)
 	if len(assignments) != 2 || !checks[1] {
 		t.Fatal(assignments, checks)
 	}
@@ -69,7 +69,7 @@ func TestTaggedAssignmentsShareProfileBudgetAndCaptureSettings(t *testing.T) {
 		}
 	}
 	// Empty selection creates no check and therefore no failure event.
-	assignments, _, checks, _, _ = buildRequestAssignments(refreshed)
+	assignments, _, checks, _, _ = buildRequestAssignments(refreshed, nil)
 	if len(assignments) != 0 || checks[1] {
 		t.Fatal("empty plan created failure eligibility")
 	}

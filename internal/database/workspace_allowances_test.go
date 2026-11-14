@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -248,6 +250,311 @@ func TestChecksPerCycleCountsOnlyActiveRoutesAndObservedRetries(t *testing.T) {
 	}
 }
 
+// A workspace with many tag-rule routes is counted once per planDeltaTTL. In
+// between, the count follows the active route count, route changes do not
+// discard it, and a count that fails neither fails the load nor loses it.
+func TestLargeTagRuleWorkspaceIsCountedOncePerPeriod(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	if err := db.AutoMigrate(&domain.WorkspaceUsagePeriod{}, &domain.WorkspaceUsageFlush{}, &domain.WorkspaceScrapeSite{}); err != nil {
+		t.Fatal(err)
+	}
+	owner := domain.User{Email: "large-tag-owner@example.test", Password: "hash", Role: "user"}
+	if err := db.Create(&owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	workspace := createTestWorkspaceForUser(t, db, owner)
+	planDeltas.Delete(workspace.ID)
+	t.Cleanup(func() { planDeltas.Delete(workspace.ID) })
+	addRoutes := func(first, count int) []domain.Proxy {
+		t.Helper()
+		batch := make([]domain.Proxy, 0, count)
+		for index := first; index < first+count; index++ {
+			batch = append(batch, domain.Proxy{IP: fmt.Sprintf("203.0.113.%d", 100+index), Port: 8080, Country: "N/A", EstimatedType: "N/A"})
+		}
+		routes, err := InsertAndGetProxiesWithWorkspace(batch, workspace.ID)
+		if err != nil || len(routes) != count {
+			t.Fatalf("create routes: %d %v", len(routes), err)
+		}
+		return routes
+	}
+	routes := addRoutes(0, 4)
+
+	// Default: HTTP only. A tag rule adds SOCKS5 to tagged routes: to some of
+	// the workspace's routes and to more routes than the exact count covers.
+	const tagID = 41
+	value := domain.Workspace{ID: workspace.ID, CheckerConfig: &dto.CheckerSettings{
+		Defaults: dto.CheckerProfileSettings{Protocols: []string{"http"}, Transport: "tcp", Timeout: 1000},
+		Rules:    []dto.TagCheckerRule{{TagID: tagID, Mode: "add", Protocols: []string{"socks5"}}},
+	}}
+	snapshotTagging := func(tagged ...domain.Proxy) *checkerconfig.Workspace {
+		assignments := make([]domain.ProxyTagAssignment, 0, len(tagged)+planDeltaExactRoutes)
+		for _, route := range tagged {
+			assignments = append(assignments, domain.ProxyTagAssignment{WorkspaceID: workspace.ID, ProxyID: route.ID, ProxyTagID: tagID})
+		}
+		sort.Slice(assignments, func(i, j int) bool { return assignments[i].ProxyID < assignments[j].ProxyID })
+		for index := 0; index < planDeltaExactRoutes; index++ {
+			assignments = append(assignments, domain.ProxyTagAssignment{WorkspaceID: workspace.ID, ProxyID: uint64(1_000_000 + index), ProxyTagID: tagID})
+		}
+		snapshot := checkerconfig.Build(value, assignments, nil, nil)
+		if snapshot.Proxies.Len() <= planDeltaExactRoutes {
+			t.Fatalf("tag rule plans = %d, want more than %d", snapshot.Proxies.Len(), planDeltaExactRoutes)
+		}
+		return snapshot
+	}
+	useCheckerSnapshot(t, workspace.ID, snapshotTagging(routes[0], routes[1]))
+
+	now := time.Now()
+	perCycle := func(at time.Time) uint64 {
+		t.Helper()
+		allowances, err := loadWorkspaceAllowances(db, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return allowances[0].ChecksPerCycle
+	}
+	// Four active HTTP routes, two of them with SOCKS5 as well.
+	if got := perCycle(now); got != 6 {
+		t.Fatalf("checks per cycle = %d, want 4 + 2", got)
+	}
+	// A third route is tagged. The rules are the same, so the count is not
+	// repeated yet.
+	useCheckerSnapshot(t, workspace.ID, snapshotTagging(routes[0], routes[1], routes[2]))
+	if got := perCycle(now.Add(time.Minute)); got != 6 {
+		t.Fatalf("checks per cycle = %d right after a tag assignment, want the previous count's 6", got)
+	}
+	// An import doubles the active routes. Its lifecycle write keeps the
+	// count, which follows the route count: twice the routes, twice the extra.
+	addRoutes(4, 4)
+	if got := perCycle(now.Add(2 * time.Minute)); got != 12 {
+		t.Fatalf("checks per cycle = %d after doubling the routes, want 8 + 4", got)
+	}
+	// A count that fails keeps the estimate and does not fail the load.
+	snapshot, _ := checkerconfig.Lookup(workspace.ID)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	later := now.Add(planDeltaTTL + time.Minute)
+	countPlanDelta(db.WithContext(cancelled), workspace.ID, snapshot, 8, later)
+	if got := loadPlanDelta(workspace.ID).value(snapshot, 1, 8); got != 4 {
+		t.Fatalf("a failed count left an extra of %d, want the estimate 4", got)
+	}
+	// The failed attempt is not repeated at once, and a load without budget
+	// left does not count either.
+	if got := perCycle(later.Add(time.Minute)); got != 12 {
+		t.Fatalf("checks per cycle = %d right after a failed count, want the estimate 12", got)
+	}
+	expired := later.Add(planDeltaTTL + time.Minute)
+	usage := map[uint]workspaceAllowanceUsage{workspace.ID: {activeRoutes: 8}}
+	refreshPlanDeltas(db, []uint{workspace.ID}, usage, expired, time.Now().Add(-time.Second))
+	if got := loadPlanDelta(workspace.ID).value(snapshot, 1, 8); got != 4 {
+		t.Fatalf("a load without budget counted: extra = %d, want the estimate 4", got)
+	}
+	// The next period's count is exact again: eight routes, three with SOCKS5.
+	if got := perCycle(expired); got != 11 {
+		t.Fatalf("checks per cycle = %d after the period, want 8 + 3", got)
+	}
+}
+
+// taggedSnapshot is a checker snapshot whose default is HTTP and whose tag
+// rule adds SOCKS5 to the given number of routes.
+func taggedSnapshot(workspaceID uint, routes int) *checkerconfig.Workspace {
+	const tagID = 41
+	assignments := make([]domain.ProxyTagAssignment, routes)
+	for index := range assignments {
+		assignments[index] = domain.ProxyTagAssignment{WorkspaceID: workspaceID, ProxyID: uint64(index + 1), ProxyTagID: tagID}
+	}
+	return checkerconfig.Build(domain.Workspace{ID: workspaceID, CheckerConfig: &dto.CheckerSettings{
+		Defaults: dto.CheckerProfileSettings{Protocols: []string{"http"}, Transport: "tcp", Timeout: 1000},
+		Rules:    []dto.TagCheckerRule{{TagID: tagID, Mode: "add", Protocols: []string{"socks5"}}},
+	}}, assignments, nil, nil)
+}
+
+// The load's budget covers every count, also the cheap exact ones: without it
+// many small workspaces could use the whole refresh. A workspace that was not
+// counted is estimated from its checker snapshot.
+func TestTagRuleCountsStopWhenTheLoadBudgetIsUsedUp(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	const workspaceID = 998877
+	snapshot := taggedSnapshot(workspaceID, 3)
+	planDeltas.Delete(uint(workspaceID))
+	t.Cleanup(func() { planDeltas.Delete(uint(workspaceID)) })
+	useCheckerSnapshot(t, workspaceID, snapshot)
+	queries := 0
+	if err := db.Callback().Query().Before("gorm:query").Register("test:count-queries", func(*gorm.DB) { queries++ }); err != nil {
+		t.Fatal(err)
+	}
+	usage := map[uint]workspaceAllowanceUsage{workspaceID: {activeRoutes: 10}}
+	refreshPlanDeltas(db, []uint{workspaceID}, usage, time.Now(), time.Now().Add(-time.Second))
+	if queries != 0 {
+		t.Fatalf("%d count queries started after the load's budget had ended", queries)
+	}
+	// Ten active HTTP routes; the three tagged ones are taken to be active.
+	if got := protocolChecksPerCycle(workspaceID, 10); got != 13 {
+		t.Fatalf("checks per cycle without a count = %d, want 10 + 3", got)
+	}
+	// With more tagged routes than active ones, the active routes are taken
+	// to be tagged in the same proportion: all of them.
+	if got := protocolChecksPerCycle(workspaceID, 2); got != 4 {
+		t.Fatalf("checks per cycle without a count = %d for two active routes, want 2 + 2", got)
+	}
+}
+
+// Counts that do not fit into one load must not always leave out the same
+// workspaces. The one that has waited longest is counted first, so every
+// workspace gets its turn however many there are.
+func TestTagRuleCountsTakeTurnsAcrossLoads(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	const workspaces = 20
+	snapshot := taggedSnapshot(1, planDeltaExactRoutes+1)
+	ids := make([]uint, 0, workspaces)
+	usage := map[uint]workspaceAllowanceUsage{}
+	for id := uint(1); id <= workspaces; id++ {
+		ids = append(ids, id)
+		usage[id] = workspaceAllowanceUsage{activeRoutes: 10_000}
+		planDeltas.Delete(id)
+	}
+	useCheckerSnapshotFor(t, snapshot, ids...)
+	t.Cleanup(func() {
+		for _, id := range ids {
+			planDeltas.Delete(id)
+		}
+	})
+	// Every count query takes longer than the budget of a load, so each load
+	// has time for one workspace.
+	if err := db.Callback().Query().After("gorm:query").Register("test:slow-count", func(*gorm.DB) { time.Sleep(time.Millisecond) }); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	counted := func() int {
+		total := 0
+		for _, id := range ids {
+			if entry := loadPlanDelta(id); entry.known && !entry.computedAt.IsZero() {
+				total++
+			}
+		}
+		return total
+	}
+	// One load per minute. The counts are repeated every ten minutes, and
+	// only one fits into a load: the same ten workspaces must not take every
+	// turn.
+	for load := 0; load < workspaces; load++ {
+		refreshPlanDeltas(db, ids, usage, start.Add(time.Duration(load)*time.Minute), time.Now().Add(time.Millisecond))
+		if got := counted(); got != load+1 {
+			t.Fatalf("after %d loads %d workspaces were counted", load+1, got)
+		}
+	}
+	// Afterwards the workspace counted first is the one that waited longest.
+	refreshPlanDeltas(db, ids, usage, start.Add(workspaces*time.Minute), time.Now().Add(time.Millisecond))
+	first, second := loadPlanDelta(1).computedAt, loadPlanDelta(2).computedAt
+	if !first.Equal(start.Add(workspaces*time.Minute)) || !second.Equal(start.Add(time.Minute)) {
+		t.Fatalf("the second round counted workspace 1 at %s and workspace 2 at %s", first.Sub(start), second.Sub(start))
+	}
+}
+
+// A lifecycle write asks for a new count. It must not move the workspace to
+// the front of the counts that are due, or a workspace that changes before
+// every load would take every turn, and it must not shorten the wait after a
+// count that failed.
+func TestRouteChangesKeepAWorkspacesTurnAndItsWaitAfterAFailedCount(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	ids := []uint{99101, 99102}
+	snapshot := taggedSnapshot(ids[0], 1)
+	useCheckerSnapshotFor(t, snapshot, ids...)
+	usage := map[uint]workspaceAllowanceUsage{ids[0]: {activeRoutes: 10}, ids[1]: {activeRoutes: 10}}
+	for _, id := range ids {
+		planDeltas.Delete(id)
+	}
+	t.Cleanup(func() {
+		for _, id := range ids {
+			planDeltas.Delete(id)
+		}
+	})
+	// Every load has time for one count.
+	if err := db.Callback().Query().After("gorm:query").Register("test:slow-count", func(*gorm.DB) { time.Sleep(3 * time.Millisecond) }); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for load := 0; load < 2; load++ {
+		invalidatePlanDeltas(ids[0])
+		refreshPlanDeltas(db, ids, usage, now.Add(time.Duration(load)*time.Minute), time.Now().Add(time.Millisecond))
+	}
+	if !loadPlanDelta(ids[1]).known {
+		t.Fatal("a workspace whose routes change before every load took the other workspace's turn")
+	}
+	// The changed workspace is counted again when its turn comes.
+	invalidatePlanDeltas(ids[0])
+	refreshPlanDeltas(db, ids, usage, now.Add(2*time.Minute), time.Now().Add(time.Millisecond))
+	if entry := loadPlanDelta(ids[0]); entry.changed || !entry.computedAt.Equal(now.Add(2*time.Minute)) {
+		t.Fatalf("the changed workspace was not counted again: %+v", entry)
+	}
+
+	failed := planDeltaEntry{snapshot: snapshot, signature: snapshot.InputSignature, activeRoutes: 10, delta: 1, computedAt: now, known: true, failed: true}
+	planDeltas.Store(ids[0], failed)
+	invalidatePlanDeltas(ids[0])
+	if loadPlanDelta(ids[0]).due(snapshot, 11, now.Add(time.Minute)) {
+		t.Fatal("a lifecycle write repeats a failed count before its ten minutes are over")
+	}
+	if !loadPlanDelta(ids[0]).due(snapshot, 11, now.Add(planDeltaTTL)) {
+		t.Fatal("a failed count is not repeated after its ten minutes")
+	}
+}
+
+// Without a count, rules that remove protocols must not lower the planned
+// checks: the tagged routes may all be paused. Planning too few checks per
+// cycle makes an automatic cadence too fast, down to the minimum interval.
+func TestUncountedTagRulesNeverPlanFewerChecksThanTheDefaults(t *testing.T) {
+	const workspaceID, tagID = 99103, 41
+	value := domain.Workspace{ID: workspaceID, CheckerConfig: &dto.CheckerSettings{
+		Defaults: dto.CheckerProfileSettings{Protocols: []string{"http"}, Transport: "tcp", Timeout: 1000},
+		Rules:    []dto.TagCheckerRule{{TagID: tagID, Mode: "remove", Protocols: []string{"http"}}},
+	}}
+	// A hundred tagged routes, which may be paused, beside a hundred active
+	// routes without a tag.
+	assignments := make([]domain.ProxyTagAssignment, 100)
+	for index := range assignments {
+		assignments[index] = domain.ProxyTagAssignment{WorkspaceID: workspaceID, ProxyID: uint64(1000 + index), ProxyTagID: tagID}
+	}
+	useCheckerSnapshot(t, workspaceID, checkerconfig.Build(value, assignments, nil, nil))
+	planDeltas.Delete(uint(workspaceID))
+	t.Cleanup(func() { planDeltas.Delete(uint(workspaceID)) })
+	if got := protocolChecksPerCycle(workspaceID, 100); got != 100 {
+		t.Fatalf("checks per cycle without a count = %d, want the 100 of the defaults", got)
+	}
+}
+
+// A count says how many tagged routes were active under the rules and
+// defaults it was made for. After they change it must not be reused, also when
+// the new count cannot run or fails.
+func TestTagRuleCountMadeUnderOtherRulesIsNotReused(t *testing.T) {
+	db := setupRotatingProxyTestDB(t)
+	const workspaceID, routes = 998877, 10_000
+	snapshot := taggedSnapshot(workspaceID, routes)
+	// The previous default checked four protocols and its rule left one.
+	planDeltas.Store(uint(workspaceID), planDeltaEntry{
+		signature: "previous-defaults-and-rules", activeRoutes: routes, delta: -30_000,
+		computedAt: time.Now(), known: true, throttled: true,
+	})
+	t.Cleanup(func() { planDeltas.Delete(uint(workspaceID)) })
+	useCheckerSnapshot(t, workspaceID, snapshot)
+	usage := map[uint]workspaceAllowanceUsage{workspaceID: {activeRoutes: routes}}
+
+	// No budget for the count: HTTP on every route, SOCKS5 on the tagged ones.
+	refreshPlanDeltas(db, []uint{workspaceID}, usage, time.Now(), time.Now().Add(-time.Second))
+	if got := protocolChecksPerCycle(workspaceID, routes); got != 2*routes {
+		t.Fatalf("checks per cycle = %d under the new rules without a count, want %d", got, 2*routes)
+	}
+	// A count that fails keeps that estimate, and stores it for these rules.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	refreshPlanDeltas(db.WithContext(cancelled), []uint{workspaceID}, usage, time.Now(), time.Now().Add(time.Minute))
+	entry := loadPlanDelta(workspaceID)
+	if !entry.failed || entry.signature != snapshot.InputSignature || entry.delta != routes {
+		t.Fatalf("after a failed count the entry is %+v, want the estimate %d for the current rules", entry, routes)
+	}
+	if got := protocolChecksPerCycle(workspaceID, routes); got != 2*routes {
+		t.Fatalf("checks per cycle = %d after a failed count, want %d", got, 2*routes)
+	}
+}
+
 var testUsageSequence uint64
 
 // testUsageBatch numbers a flush batch the way one checker process would.
@@ -348,10 +655,16 @@ func testPrunedReplayMark(t *testing.T, db *gorm.DB, instance string) {
 // test ends.
 func useCheckerSnapshot(t *testing.T, workspaceID uint, snapshot *checkerconfig.Workspace) {
 	t.Helper()
+	useCheckerSnapshotFor(t, snapshot, workspaceID)
+}
+
+// useCheckerSnapshotFor gives every listed workspace the same checker snapshot.
+func useCheckerSnapshotFor(t *testing.T, snapshot *checkerconfig.Workspace, workspaceIDs ...uint) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := checkerconfig.Initialize(ctx, nil,
 		func(context.Context, uint) (*checkerconfig.Workspace, error) { return snapshot, nil },
-		func(context.Context) ([]uint, error) { return []uint{workspaceID}, nil }); err != nil {
+		func(context.Context) ([]uint, error) { return workspaceIDs, nil }); err != nil {
 		cancel()
 		t.Fatal(err)
 	}

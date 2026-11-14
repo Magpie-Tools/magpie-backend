@@ -51,7 +51,7 @@ func TestOwnersWithSameJudgeSetShareOneRequestPerProtocol(t *testing.T) {
 	seen := map[uint]bool{}
 	for cycle := 0; cycle < judgeCount*2; cycle++ {
 		proxy := domain.Proxy{ID: 7, Workspaces: append([]domain.Workspace(nil), owners...)}
-		assignments, _, checks, _, _ := buildRequestAssignments(proxy)
+		assignments, _, checks, _, _ := buildRequestAssignments(proxy, nil)
 		var sharedAssignment *requestAssignment
 		otherChecks := 0
 		for _, assignment := range assignments {
@@ -100,7 +100,7 @@ func TestSingleOwnerJudgeRotationIsUnchanged(t *testing.T) {
 	snapshot := checkerconfig.Build(domain.Workspace{ID: 1, HTTPProtocol: true, Timeout: 1000}, nil, list, nil)
 	lookupCheckerWorkspace = func(uint) (*checkerconfig.Workspace, bool) { return snapshot, true }
 	for cycle := 0; cycle < 6; cycle++ {
-		assignments, _, _, _, _ := buildRequestAssignments(domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}})
+		assignments, _, _, _, _ := buildRequestAssignments(domain.Proxy{ID: 1, Workspaces: []domain.Workspace{{ID: 1}}}, nil)
 		for _, assignment := range assignments {
 			if want := uint(cycle%3 + 1); assignment.judge.ID != want {
 				t.Fatalf("cycle %d judge %d, want %d", cycle, assignment.judge.ID, want)
@@ -138,7 +138,7 @@ func BenchmarkBuildRequestAssignmentsSharedRoute(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		copy(proxy.Workspaces, workspaces)
-		assignments, _, _, _, _ := buildRequestAssignments(proxy)
+		assignments, _, _, _, _ := buildRequestAssignments(proxy, nil)
 		requests += len(assignments)
 	}
 	b.ReportMetric(float64(requests)/float64(b.N), "requests/check")
@@ -159,7 +159,7 @@ func TestRepeatedOwnerIsServedOncePerAssignment(t *testing.T) {
 	lookupCheckerWorkspace = func(id uint) (*checkerconfig.Workspace, bool) { return snapshots[id], true }
 
 	proxy := domain.Proxy{ID: 7, Workspaces: []domain.Workspace{{ID: 1}, {ID: 2}, {ID: 1}}}
-	assignments, _, hasChecks, _, _ := buildRequestAssignments(proxy)
+	assignments, _, hasChecks, _, _ := buildRequestAssignments(proxy, nil)
 	if len(assignments) == 0 || !hasChecks[1] || !hasChecks[2] {
 		t.Fatalf("built %d assignments with eligibility %v", len(assignments), hasChecks)
 	}

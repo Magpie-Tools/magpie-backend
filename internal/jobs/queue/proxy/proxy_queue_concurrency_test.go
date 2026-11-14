@@ -75,7 +75,7 @@ func TestQueueHeadRepairPreservesConcurrentEnqueue(t *testing.T) {
 	t.Cleanup(func() { _ = writer.Close() })
 	writerQueue := NewRedisProxyQueue(writer, nil)
 	client.AddHook(&beforeHeadRepairHook{enqueue: func() {
-		if err := writerQueue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+		if err := writerQueue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 			t.Fatal(err)
 		}
 	}})
@@ -93,8 +93,7 @@ func TestQueueHeadRepairPreservesConcurrentEnqueue(t *testing.T) {
 func TestOwnershipChangingCompletionPreservesNewWorkspace(t *testing.T) {
 	queue, _, proxy := queueConcurrencyFixture(t)
 	ctx := context.Background()
-	useUniformPace(t, queue, time.Millisecond)
-	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+	if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
 	worker, scheduled, err := queue.GetNextProxyContext(ctx)
@@ -158,7 +157,7 @@ func TestCurrentPayloadInLegacyShardCompletesWithItsOwnLease(t *testing.T) {
 func TestProxyLeaseRenewalAndStaleCompletionFencing(t *testing.T) {
 	queue, client, proxy := queueConcurrencyFixture(t)
 	ctx := context.Background()
-	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+	if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
 	worker, scheduled, err := queue.GetNextProxyContext(ctx)
@@ -239,7 +238,7 @@ func TestPlaintextProxyCycleCommandBudgetAndPayload(t *testing.T) {
 	security.ResetProxyCipherForTests()
 	t.Cleanup(security.ResetProxyCipherForTests)
 	ctx := context.Background()
-	if err := queue.AddToQueue([]domain.Proxy{proxy}); err != nil {
+	if err := queue.AddToQueueNow([]domain.Proxy{proxy}); err != nil {
 		t.Fatal(err)
 	}
 	if err := queue.popScript.Load(ctx, client).Err(); err != nil {
@@ -264,8 +263,8 @@ func TestPlaintextProxyCycleCommandBudgetAndPayload(t *testing.T) {
 	if err := queue.RequeueProxy(worker, scheduled); err != nil {
 		t.Fatal(err)
 	}
-	// One claim and one completion. The cadence comes from the in-memory
-	// allowance snapshot, so requeueing reads no interval key.
+	// One claim and one completion. The next due time comes from the
+	// checker's in-memory cadence decision, so requeueing reads no key.
 	if !reflect.DeepEqual(hook.commands, []string{"evalsha", "evalsha"}) {
 		t.Fatalf("hot cycle commands = %v", hook.commands)
 	}
