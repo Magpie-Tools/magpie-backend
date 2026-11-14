@@ -282,9 +282,16 @@ func newDashboardTypes() dashboardTypes {
 	dashboardType := gql.NewObject(gql.ObjectConfig{
 		Name: "DashboardInfo",
 		Fields: gql.Fields{
-			"totalChecks":      &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"totalScraped":     &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"totalChecksWeek":  &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"totalChecks": &gql.Field{
+				Type:        gql.NewNonNull(gql.Int),
+				Description: "Check requests charged to this workspace since it was created, from the usage meter.",
+			},
+			"totalScraped": &gql.Field{Type: gql.NewNonNull(gql.Int)},
+			"totalChecksWeek": &gql.Field{
+				Type:              gql.NewNonNull(gql.Int),
+				Description:       "Check requests charged in the current monthly allowance period.",
+				DeprecationReason: "Carries the current month's checks. Use viewer.dashboardView.info.checksThisMonth.",
+			},
 			"totalScrapedWeek": &gql.Field{Type: gql.NewNonNull(gql.Int)},
 			"reputationBreakdown": &gql.Field{
 				Type: gql.NewNonNull(dashboardReputationBreakdownType),

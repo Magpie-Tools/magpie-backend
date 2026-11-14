@@ -381,10 +381,6 @@ func (l *checkerCacheRaceLogger) Trace(ctx context.Context, begin time.Time, fc 
 func TestDashboardRefreshRejectsInFlightOldGenerationPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	a, _, proxy, judge := seedCheckerEvidenceTest(t, db)
-	// Keep the unrelated deferred daily backfill out of this health-cache race
-	// fixture by marking it already in flight for the fixture's workspace.
-	proxyDailyBackfillInFlight.Store(a.ID, struct{}{})
-	t.Cleanup(func() { proxyDailyBackfillInFlight.Delete(a.ID) })
 	if err := db.Create(&domain.AnonymityLevel{ID: 1, Name: "elite"}).Error; err != nil {
 		t.Fatal(err)
 	}

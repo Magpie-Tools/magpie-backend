@@ -375,28 +375,7 @@ func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, err
 	if err != nil {
 		return dto.DashboardInfo{}, err
 	}
-	// Own the delayed legacy backfill as well as the six loader queries. On
-	// success keep the context live until the backfill finishes; on failure
-	// cancel it and join before returning. Fast cold reads can take two seconds.
-	var info dto.DashboardInfo
-	if owner, _ := db.Statement.Context.Value(dashboardBackfillContextKey{}).(*dashboardBackfillWork); owner != nil {
-		// Explicit all-workspace prewarm joins these children as one outer
-		// group, so their existing two-second delays do not become serial.
-		info, err = loadDashboardInfo(db, userid)
-	} else {
-		loadCtx, cancel := context.WithCancel(dashboardDBContext(db.Statement.Context))
-		backfills := &dashboardBackfillWork{ctx: loadCtx}
-		loadCtx = context.WithValue(loadCtx, dashboardBackfillContextKey{}, backfills)
-		info, err = loadDashboardInfo(db.WithContext(loadCtx), userid)
-		if err != nil {
-			cancel()
-		}
-		backfills.Wait()
-		if err == nil {
-			err = loadCtx.Err()
-		}
-		cancel()
-	}
+	info, err := loadDashboardInfo(db, userid)
 	if err != nil {
 		return dto.DashboardInfo{}, err
 	}
@@ -414,26 +393,13 @@ func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, err
 	return info, nil
 }
 
-func RefreshDashboardCaches(ctx context.Context) (returnErr error) {
+func RefreshDashboardCaches(ctx context.Context) error {
 	if pg.DB == nil {
 		return fmt.Errorf("dashboard cache: database connection was not initialised")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	groupCtx, cancel := context.WithCancel(ctx)
-	backfills := &dashboardBackfillWork{ctx: groupCtx}
-	ctx = context.WithValue(groupCtx, dashboardBackfillContextKey{}, backfills)
-	defer func() {
-		if returnErr != nil {
-			cancel()
-		}
-		backfills.Wait()
-		if returnErr == nil {
-			returnErr = groupCtx.Err()
-		}
-		cancel()
-	}()
 
 	var workspaceIDs []uint
 	db := pg.DB.WithContext(ctx)
@@ -470,7 +436,7 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 		TransparentProxies uint   `json:"transparent_proxies"`
 	}
 	var (
-		checks          dashboardCheckCounts
+		checks          dashboardUsageCounts
 		scrapedSnapshot proxySnapshotCountSummary
 		inventory       dashboardInventorySummary
 		judges          []jvp
@@ -487,20 +453,7 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 	go func() {
 		defer wg.Done()
 		var err error
-		checks, err = loadDashboardCheckCountsWithDB(db, userid, weekAgo)
-		if err == nil {
-			return
-		}
-
-		log.Error("dashboard: failed to load pre-aggregated check counts", "user_id", userid, "error", err)
-		if db.Statement.Context.Err() != nil {
-			recordError("check counts", db.Statement.Context.Err())
-			return
-		}
-		checks, err = loadDashboardCheckCountsDirectWithDB(db, userid, weekAgo)
-		if err != nil {
-			log.Error("dashboard: failed to load fallback check counts", "user_id", userid, "error", err)
-		}
+		checks, err = loadDashboardUsageCounts(db, userid, time.Now())
 		recordError("check counts", err)
 	}()
 
@@ -548,7 +501,9 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 
 	var info dto.DashboardInfo
 	info.TotalChecks = checks.TotalChecks
-	info.TotalChecksWeek = checks.TotalChecksWeek
+	// Deprecated field kept until the frontend moves to dashboardView: it now
+	// carries the current allowance period's checks.
+	info.TotalChecksWeek = checks.ChecksThisMonth
 
 	if scrapedSnapshot.Found {
 		info.TotalScraped = scrapedSnapshot.Current

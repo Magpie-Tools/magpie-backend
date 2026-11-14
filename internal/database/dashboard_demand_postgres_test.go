@@ -2,15 +2,12 @@ package database
 
 import (
 	"context"
-	"errors"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 	"magpie/internal/domain"
@@ -96,107 +93,6 @@ func TestDashboardDemandRequestedComponentsPostgres(t *testing.T) {
 	}
 }
 
-func TestDashboardDemandBackfillCancellationJoinsPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	workspaces := seedCurrentLatestReadTest(t, db)
-	demandTestState(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { _, err := GetDashboardInfoContext(ctx, workspaces[0].ID); done <- err }()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if _, ok := proxyDailyBackfillInFlight.Load(workspaces[0].ID); ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("read never registered delayed backfill")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("canceled read did not join its children")
-	}
-	if _, ok := proxyDailyBackfillInFlight.Load(workspaces[0].ID); ok {
-		t.Fatal("delayed backfill remained after read returned")
-	}
-	if _, ok := dashboardInfoCache.Load(workspaces[0].ID); ok {
-		t.Fatal("canceled cold read published cache")
-	}
-	var count int64
-	if err := db.Model(&domain.ProxyDailyCheckProxyBackfill{}).Count(&count).Error; err != nil || count != 0 {
-		t.Fatal("canceled delay wrote backfill markers", count, err)
-	}
-}
-
-func TestDashboardDemandBackfillReadonlyAndRetainedHistoryPostgres(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	workspaces := seedCurrentLatestReadTest(t, db)
-	clock := demandTestState(t)
-	for i := 0; i < 2; i++ {
-		stat := domain.ProxyStatistic{ProxyID: 1, ProtocolID: 1, JudgeID: 1, Alive: true, Attempt: 1, CreatedAt: time.Now().UTC().Add(-24 * time.Hour)}
-		if err := db.Create(&stat).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	var schema string
-	if err := db.Raw("SELECT current_schema()").Scan(&schema).Error; err != nil {
-		t.Fatal(err)
-	}
-	ro, err := gorm.Open(postgres.Open(os.Getenv("MAGPIE_TEST_POSTGRES_DSN")+" search_path="+schema+" default_transaction_read_only=on"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	roSQL, err := ro.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer roSQL.Close()
-	pg.DB = ro
-	if _, err := GetDashboardInfoContext(context.Background(), workspaces[0].ID); err != nil {
-		t.Fatal("optional backfill failure changed read-only loader semantics", err)
-	}
-	var markers int64
-	if err := db.Model(&domain.ProxyDailyCheckProxyBackfill{}).Count(&markers).Error; err != nil || markers != 0 {
-		t.Fatal("read-only load wrote markers", markers, err)
-	}
-	pg.DB = db
-	clock.Add(int64(dashboardCacheFreshness))
-	started := time.Now()
-	if _, err := GetDashboardInfoContext(context.Background(), workspaces[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	if time.Since(started) < proxyDailyBackfillStartDelay {
-		t.Fatal("successful cold read canceled its delayed maintenance")
-	}
-	if _, ok := proxyDailyBackfillInFlight.Load(workspaces[0].ID); ok {
-		t.Fatal("successful read returned before backfill joined")
-	}
-	counts, err := queryDashboardCheckCountsFromDailyWithDB(db, workspaces[0].ID, time.Now().AddDate(0, 0, -7))
-	if err != nil || counts.TotalChecks != 2 || counts.TotalChecksWeek != 2 {
-		t.Fatal("retained historical counts were lost", counts, err)
-	}
-	var history int64
-	if err := db.Model(&domain.ProxyStatistic{}).Count(&history).Error; err != nil || history != 2 {
-		t.Fatal("dashboard maintenance altered retained history", history, err)
-	}
-	// The checker generation did not change. A fresh hit can retain the
-	// preceding snapshot, but it cannot survive the completion-age boundary.
-	if cached, err := GetDashboardInfoContext(context.Background(), workspaces[0].ID); err != nil || cached.TotalChecks != 0 {
-		t.Fatal("fresh snapshot unexpectedly reloaded", cached, err)
-	}
-	clock.Add(int64(dashboardCacheFreshness))
-	if current, err := GetDashboardInfoContext(context.Background(), workspaces[0].ID); err != nil || current.TotalChecks != 2 {
-		t.Fatal("same generation served expired historical counts", current, err)
-	}
-}
-
 func TestDashboardDemandStrictAllWorkspacePrewarmPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	workspaces := seedCurrentLatestReadTest(t, db)
@@ -214,9 +110,6 @@ func TestDashboardDemandStrictAllWorkspacePrewarmPostgres(t *testing.T) {
 	for _, workspace := range workspaces {
 		if _, ok := dashboardInfoCache.Load(workspace.ID); !ok && !workspace.CheckerDirty {
 			t.Fatal("explicit prewarm skipped workspace", workspace.ID)
-		}
-		if _, ok := proxyDailyBackfillInFlight.Load(workspace.ID); ok {
-			t.Fatal("prewarm returned before maintenance joined", workspace.ID)
 		}
 	}
 	if len(dashboardCaches.requestedKeys()) != 0 {
