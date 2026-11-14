@@ -370,8 +370,7 @@ func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, err
 		return dto.DashboardInfo{}, fmt.Errorf("dashboard info: database connection was not initialised")
 	}
 	key := dashboardCacheKey{workspaceID: userid, component: dashboardInfoComponent}
-	revision := dashboardCaches.revision(key)
-	version, err := currentCheckerHealthVersionWithDB(db, userid)
+	version, err := dashboardWorkspaceVersion(db, userid)
 	if err != nil {
 		return dto.DashboardInfo{}, err
 	}
@@ -379,7 +378,7 @@ func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, err
 	if err != nil {
 		return dto.DashboardInfo{}, err
 	}
-	currentVersion, err := currentCheckerHealthVersionWithDB(db, userid)
+	currentVersion, err := dashboardWorkspaceVersion(db, userid)
 	if err != nil {
 		return dto.DashboardInfo{}, err
 	}
@@ -387,7 +386,7 @@ func refreshDashboardInfoCache(db *gorm.DB, userid uint) (dto.DashboardInfo, err
 		info.JudgeValidProxies = nil
 		return info, nil
 	}
-	dashboardCaches.publish(key, revision, func() {
+	dashboardCaches.publish(key, func() {
 		dashboardInfoCache.Store(userid, dashboardInfoCacheEntry{version: version, info: info, completedAt: dashboardCaches.now()})
 	})
 	return info, nil

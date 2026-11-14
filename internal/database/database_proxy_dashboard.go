@@ -65,7 +65,7 @@ func refreshRecentProxyChecksCache(db *gorm.DB, workspaceID uint, limit int) ([]
 	if db == nil {
 		return nil, fmt.Errorf("dashboard recent checks: database connection was not initialised")
 	}
-	version, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	version, err := dashboardWorkspaceVersion(db, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,6 @@ func refreshRecentProxyChecksCache(db *gorm.DB, workspaceID uint, limit int) ([]
 		limit = maxRecentProxyChecksLimit
 	}
 	key := dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: limit}
-	revision := dashboardCaches.revision(key)
 
 	type recentProxyCheckRow struct {
 		ID           uint64       `gorm:"column:id"`
@@ -144,14 +143,14 @@ ORDER BY alive DESC, latest_check DESC NULLS LAST, c.id ASC
 		})
 	}
 
-	currentVersion, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	currentVersion, err := dashboardWorkspaceVersion(db, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	if currentVersion != version {
 		return []dto.ProxyRecentCheck{}, nil
 	}
-	dashboardCaches.publish(key, revision, func() {
+	dashboardCaches.publish(key, func() {
 		dashboardRecentChecksCache.Store(
 			dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
 			dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{version: version, value: result, completedAt: dashboardCaches.now()},
@@ -188,7 +187,7 @@ func refreshFastestAliveProxiesCache(db *gorm.DB, workspaceID uint, limit int) (
 	if db == nil {
 		return nil, fmt.Errorf("dashboard fastest proxies: database connection was not initialised")
 	}
-	version, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	version, err := dashboardWorkspaceVersion(db, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +198,6 @@ func refreshFastestAliveProxiesCache(db *gorm.DB, workspaceID uint, limit int) (
 		return []dto.ProxyFastestAlive{}, nil
 	}
 	key := dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit}
-	revision := dashboardCaches.revision(key)
 
 	latestAliveStats := evidence.DashboardLatestStatistics(db, workspaceID).
 		Select("DISTINCT ON (pls.proxy_id) pls.proxy_id, pls.response_time, pls.checked_at").
@@ -257,14 +255,14 @@ ORDER BY latest.response_time ASC, latest.checked_at DESC, proxies.id ASC`, fast
 		})
 	}
 
-	currentVersion, err := currentCheckerHealthVersionWithDB(db, workspaceID)
+	currentVersion, err := dashboardWorkspaceVersion(db, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	if currentVersion != version {
 		return []dto.ProxyFastestAlive{}, nil
 	}
-	dashboardCaches.publish(key, revision, func() {
+	dashboardCaches.publish(key, func() {
 		dashboardFastestAliveCache.Store(
 			dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
 			dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{version: version, value: result, completedAt: dashboardCaches.now()},

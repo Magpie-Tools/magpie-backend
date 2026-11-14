@@ -27,7 +27,6 @@ func ListCheckerWorkspaces(ctx context.Context) ([]uint, error) {
 // here would decrypt credentials and is deliberately unnecessary.
 func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig.Workspace, error) {
 	var snapshot *checkerconfig.Workspace
-	projectionChanged := false
 	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&workspace, workspaceID).Error; err != nil {
@@ -111,7 +110,6 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		if !defaultChanged && len(changedIDs) == 0 && !workspace.CheckerDirty {
 			return nil
 		}
-		projectionChanged = true
 		sort.Slice(changedIDs, func(i, j int) bool { return changedIDs[i] < changedIDs[j] })
 		workspace.CheckerGeneration++
 		snapshot.Generation = workspace.CheckerGeneration
@@ -164,9 +162,6 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		}
 		return nil
 	})
-	if err == nil && (projectionChanged || snapshot == nil) {
-		invalidateDashboardWorkspace(workspaceID)
-	}
 	return snapshot, err
 }
 

@@ -33,8 +33,10 @@ func TestDashboardDemandClockAndSelection(t *testing.T) {
 	if keys := c.requestedKeys(); len(keys) != 1 || keys[0] != a {
 		t.Fatal(keys)
 	}
-	// An explicit refresh/revision creates storage without creating demand.
-	c.revision(b)
+	// An explicit refresh creates storage without creating demand.
+	if _, err := c.run(context.Background(), b, func(context.Context) (any, error) { return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
 	if c.requested(b) {
 		t.Fatal("internal work created demand")
 	}
@@ -145,7 +147,7 @@ func TestDashboardDemandCanceledLeaderCanBeRetriedByLiveCaller(t *testing.T) {
 	}
 }
 
-func TestDashboardDemandTouchSweepAndInvalidationPublication(t *testing.T) {
+func TestDashboardDemandTouchSweepAndTrackedPublication(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
 	c := newDashboardCacheCoordinator(func() time.Time { return time.Unix(0, clock.Load()) }, func(dashboardCacheKey) {})
@@ -165,18 +167,18 @@ func TestDashboardDemandTouchSweepAndInvalidationPublication(t *testing.T) {
 	if !c.requested(key) {
 		t.Fatal("sweep lost renewed demand")
 	}
-	revision := c.revision(key)
-	c.mu.Lock()
-	c.entries[key].revision++
-	c.mu.Unlock()
 	published := false
-	c.publish(key, revision, func() { published = true })
-	if published {
-		t.Fatal("invalidated leader published old value")
-	}
-	c.publish(key, revision+1, func() { published = true })
+	c.publish(key, func() { published = true })
 	if !published {
-		t.Fatal("current revision did not publish")
+		t.Fatal("tracked key did not publish")
+	}
+	c.mu.Lock()
+	delete(c.entries, key)
+	c.mu.Unlock()
+	published = false
+	c.publish(key, func() { published = true })
+	if published {
+		t.Fatal("evicted key published a value")
 	}
 }
 

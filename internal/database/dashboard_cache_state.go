@@ -3,11 +3,15 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+
+	"gorm.io/gorm"
 )
 
 const (
@@ -40,7 +44,6 @@ type dashboardCacheInterest struct {
 	requestedAt time.Time
 	usedAt      time.Time
 	flight      *dashboardCacheFlight
-	revision    uint64
 }
 
 type dashboardCacheCoordinator struct {
@@ -49,6 +52,8 @@ type dashboardCacheCoordinator struct {
 	now     func() time.Time
 	evict   func(dashboardCacheKey)
 }
+
+var errDashboardWorkspaceNotFound = errors.New("dashboard: workspace not found")
 
 func newDashboardCacheCoordinator(now func() time.Time, evict func(dashboardCacheKey)) *dashboardCacheCoordinator {
 	return &dashboardCacheCoordinator{entries: make(map[dashboardCacheKey]*dashboardCacheInterest), now: now, evict: evict}
@@ -87,57 +92,15 @@ func (c *dashboardCacheCoordinator) fresh(completedAt time.Time) bool {
 	return dashboardTimeWithin(c.now(), completedAt, dashboardCacheFreshness)
 }
 
-func (c *dashboardCacheCoordinator) revision(key dashboardCacheKey) uint64 {
+// publish stores a loaded value only while its key is tracked, so a load that
+// finishes after its key was evicted leaves no untracked value behind. Values
+// carry the checker generation they were computed under; readers compare it
+// with the committed generation, so no invalidation is needed.
+func (c *dashboardCacheCoordinator) publish(key dashboardCacheKey, store func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry := c.entries[key]
-	if entry == nil {
-		entry = &dashboardCacheInterest{usedAt: c.now()}
-		c.entries[key] = entry
-	}
-	return entry.revision
-}
-
-func (c *dashboardCacheCoordinator) publish(key dashboardCacheKey, revision uint64, store func()) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[key]; entry != nil && entry.revision == revision {
+	if c.entries[key] != nil {
 		store()
-	}
-}
-
-func invalidateDashboardWorkspace(workspaceID uint) {
-	dashboardCaches.mu.Lock()
-	defer dashboardCaches.mu.Unlock()
-	for key, entry := range dashboardCaches.entries {
-		if key.workspaceID == workspaceID {
-			entry.revision++
-			dashboardCaches.evict(key)
-		}
-	}
-	// Tests and integrations can seed a value without creating demand.
-	dashboardInfoCache.Delete(workspaceID)
-	for _, cache := range []*sync.Map{&dashboardRecentChecksCache, &dashboardFastestAliveCache} {
-		cache.Range(func(key, _ any) bool {
-			if key.(dashboardProxyListCacheKey).WorkspaceID == workspaceID {
-				cache.Delete(key)
-			}
-			return true
-		})
-	}
-}
-
-func forgetDashboardWorkspace(workspaceID uint) {
-	invalidateDashboardWorkspace(workspaceID)
-	dashboardCaches.mu.Lock()
-	defer dashboardCaches.mu.Unlock()
-	for key, entry := range dashboardCaches.entries {
-		if key.workspaceID == workspaceID {
-			entry.requestedAt, entry.usedAt = time.Time{}, time.Time{}
-			if entry.flight == nil {
-				delete(dashboardCaches.entries, key)
-			}
-		}
 	}
 }
 
@@ -292,7 +255,21 @@ func dashboardHealthVersionContext(ctx context.Context, workspaceID uint) (check
 	if pg.DB == nil {
 		return checkerHealthVersion{}, nil
 	}
-	return currentCheckerHealthVersionWithDB(pg.DB.WithContext(ctx), workspaceID)
+	return dashboardWorkspaceVersion(pg.DB.WithContext(ctx), workspaceID)
+}
+
+// dashboardWorkspaceVersion reads the committed checker generation and dirty
+// flag. A deleted workspace is an error, so no cached value of it is served.
+func dashboardWorkspaceVersion(db *gorm.DB, workspaceID uint) (checkerHealthVersion, error) {
+	var version checkerHealthVersion
+	result := db.Model(&domain.Workspace{}).Select("checker_generation, checker_dirty").Where("id = ?", workspaceID).Limit(1).Scan(&version)
+	if result.Error != nil {
+		return version, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return version, fmt.Errorf("%w: %d", errDashboardWorkspaceNotFound, workspaceID)
+	}
+	return version, nil
 }
 
 func maskDashboardComponent(key dashboardCacheKey, value any) any {

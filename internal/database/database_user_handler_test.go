@@ -1,12 +1,15 @@
 package database
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"magpie/internal/api/dto"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	testdb "magpie/internal/testkit/db"
 )
 
 func TestLegacyDefaultChangeAdvancesFullRefreshRevision(t *testing.T) {
@@ -109,5 +112,43 @@ func TestNormalizeDashboardCountry(t *testing.T) {
 				t.Fatalf("normalizeDashboardCountry(%q) = %q, want %q", tt.country, got, tt.want)
 			}
 		})
+	}
+}
+
+// Without invalidation hooks, the committed workspace row is the only guard:
+// a deleted workspace is an error, even while fresh values are cached for it.
+func TestDashboardReadsOfDeletedWorkspaceFail(t *testing.T) {
+	db := testdb.OpenSQLite(t)
+	workspace := domain.Workspace{Name: "Deleted dashboard"}
+	if err := db.Create(&workspace).Error; err != nil {
+		t.Fatal(err)
+	}
+	version := checkerHealthVersion{Generation: workspace.CheckerGeneration, Dirty: workspace.CheckerDirty}
+	listKey := dashboardProxyListCacheKey{WorkspaceID: workspace.ID, Limit: 1}
+	dashboardInfoCache.Store(workspace.ID, dashboardInfoCacheEntry{version: version, info: dto.DashboardInfo{TotalChecks: 5}, completedAt: time.Now()})
+	dashboardRecentChecksCache.Store(listKey, dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{version: version, value: []dto.ProxyRecentCheck{{ID: 1}}, completedAt: time.Now()})
+	dashboardFastestAliveCache.Store(listKey, dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{version: version, value: []dto.ProxyFastestAlive{{ID: 1}}, completedAt: time.Now()})
+	t.Cleanup(func() {
+		dashboardInfoCache.Delete(workspace.ID)
+		dashboardRecentChecksCache.Delete(listKey)
+		dashboardFastestAliveCache.Delete(listKey)
+	})
+	previousDB := pg.DB
+	pg.DB = db
+	t.Cleanup(func() { pg.DB = previousDB })
+	if info, err := GetDashboardInfoContext(context.Background(), workspace.ID); err != nil || info.TotalChecks != 5 {
+		t.Fatalf("live workspace: %+v %v", info, err)
+	}
+	if err := db.Delete(&domain.Workspace{}, workspace.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := GetDashboardInfoContext(context.Background(), workspace.ID); !errors.Is(err, errDashboardWorkspaceNotFound) {
+		t.Fatalf("info of a deleted workspace: %v", err)
+	}
+	if _, err := GetRecentProxyChecksContext(context.Background(), workspace.ID, 1); !errors.Is(err, errDashboardWorkspaceNotFound) {
+		t.Fatalf("recent checks of a deleted workspace: %v", err)
+	}
+	if _, err := GetFastestAliveProxiesContext(context.Background(), workspace.ID, 1); !errors.Is(err, errDashboardWorkspaceNotFound) {
+		t.Fatalf("fastest proxies of a deleted workspace: %v", err)
 	}
 }
