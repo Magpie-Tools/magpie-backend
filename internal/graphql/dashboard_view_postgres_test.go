@@ -74,22 +74,28 @@ func TestDashboardViewResolvesOncePerRequestPostgres(t *testing.T) {
 		}
 		return result
 	}
-	// Publish a fresh snapshot, then read it through three aliases.
+	// Publish a fresh snapshot, then read it through four aliases.
 	run(`{ viewer { dashboardView { status } } }`)
 	reads.take()
 	result := run(`{ viewer {
 		a: dashboardView { status info { totalChecks checksThisMonth totalScraped } }
 		b: dashboardView { status proxyCount }
 		c: dashboardView { recentProxyChecks(limit: 3) { id } fastestAliveProxies(limit: 3) { id } }
+		d: dashboardView { checkerSettingsPending healthOutdated healthCollectedAt collectedAt }
 	} }`)
 	if got := reads.take(); got != 1 {
-		t.Fatalf("three aliases ran %d snapshot reads, want 1", got)
+		t.Fatalf("four aliases ran %d snapshot reads, want 1", got)
 	}
 	viewer := result.Data.(map[string]interface{})["viewer"].(map[string]interface{})
 	a := viewer["a"].(map[string]interface{})
 	info := a["info"].(map[string]interface{})
 	if a["status"] != "FRESH" || viewer["b"].(map[string]interface{})["status"] != "FRESH" || info["totalChecks"] != float64(0) || info["checksThisMonth"] != float64(0) {
 		t.Fatalf("aliased views: %+v", viewer)
+	}
+	// A first build's health is current and was collected with the snapshot.
+	d := viewer["d"].(map[string]interface{})
+	if d["checkerSettingsPending"] != false || d["healthOutdated"] != false || d["healthCollectedAt"] == nil || d["healthCollectedAt"] != d["collectedAt"] {
+		t.Fatalf("health flags: %+v", d)
 	}
 	// A workspace without routes has an empty, valid health part.
 	for _, list := range []string{"recentProxyChecks", "fastestAliveProxies"} {

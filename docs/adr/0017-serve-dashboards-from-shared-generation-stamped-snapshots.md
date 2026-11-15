@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended by ADR 0018
 ---
 
 # Serve dashboards from shared, generation-stamped snapshots
@@ -36,7 +36,9 @@ backfill are deleted.
 - The payload has inventory parts, valid at any checker generation, and health
   parts, valid only for the generation that built them. A health part is never
   served after a newer committed generation, and while `checker_dirty` is true
-  health is masked exactly as before.
+  health is masked exactly as before. ([ADR 0018](0018-serve-the-previous-dashboard-health-while-checker-settings-apply.md)
+  replaces hiding and masking: health that is not current is served as the
+  previous result, marked outdated.)
 - Every response has an explicit status, decided in this order:
   - `FRESH`: a payload younger than 30 s whose health is current or masked by
     a dirty workspace, including one a build published during the request.

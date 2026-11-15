@@ -13,7 +13,7 @@ func ptr[T any](value T) *T { return &value }
 
 func TestStatusFollowsTheReadTable(t *testing.T) {
 	current := func(age float64) snapshotState {
-		return snapshotState{WorkspaceGeneration: 3, CheckerGeneration: ptr(uint64(3)), HealthValid: ptr(true), Payload: []byte(`{}`), AgeSeconds: ptr(age)}
+		return snapshotState{WorkspaceGeneration: 3, CheckerGeneration: ptr(uint64(3)), HasHealth: true, Payload: []byte(`{}`), AgeSeconds: ptr(age)}
 	}
 	oldGeneration := func(age float64) snapshotState {
 		state := current(age)
@@ -32,8 +32,8 @@ func TestStatusFollowsTheReadTable(t *testing.T) {
 		{"current, nine minutes old", current(9 * 60), StatusStale},
 		{"current, older than ten minutes", current(11 * 60), StatusPending},
 		{"health from an older generation", oldGeneration(5), StatusPending},
-		{"health invalid at build time", func() snapshotState { s := current(5); s.HealthValid = ptr(false); return s }(), StatusPending},
-		// Dirtiness masks health but never makes a view pending by itself.
+		{"no health built yet", func() snapshotState { s := current(5); s.HasHealth = false; return s }(), StatusPending},
+		// Dirtiness outdates health but never makes a view pending by itself.
 		{"dirty and young", dirty(oldGeneration(5)), StatusFresh},
 		{"dirty and old", dirty(oldGeneration(60)), StatusStale},
 		{"no row", snapshotState{WorkspaceGeneration: 1}, StatusPending},
@@ -49,16 +49,17 @@ func TestStatusFollowsTheReadTable(t *testing.T) {
 	}
 }
 
-func TestAssembleHidesOnlyWhatGenerationAndDirtyHide(t *testing.T) {
-	encoded, err := encodePayload(payload{
-		Inventory: inventoryPart{TotalScraped: 7, ProxyCount: 9, CountryBreakdown: []countryCount{{Country: "DE", Count: 9}}},
-		Health:    &healthPart{AliveCount: 4, JudgeValidProxies: []judgeCount{{JudgeURL: "j", EliteProxies: 1}}, Fastest: []dto.ProxyFastestAlive{{ID: 1}}},
-	})
+func TestAssembleServesHealthThatIsNotCurrentAsOutdated(t *testing.T) {
+	encoded, encodedHealth, err := encodeSnapshot(
+		payload{Inventory: inventoryPart{TotalScraped: 7, ProxyCount: 9, CountryBreakdown: []countryCount{{Country: "DE", Count: 9}}}},
+		&healthPart{AliveCount: 4, JudgeValidProxies: []judgeCount{{JudgeURL: "j", EliteProxies: 1}}, Fastest: []dto.ProxyFastestAlive{{ID: 1}}},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := snapshotState{WorkspaceGeneration: 3, CheckerGeneration: ptr(uint64(3)), HealthValid: ptr(true), Payload: encoded,
-		AgeSeconds: ptr(float64(20 * 60)), TotalChecks: ptr(int64(50)), ChecksThisMonth: ptr(int64(5))}
+	healthAt := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	base := snapshotState{WorkspaceGeneration: 3, CheckerGeneration: ptr(uint64(3)), HasHealth: true, Payload: encoded, Health: encodedHealth,
+		HealthCollectedAt: &healthAt, AgeSeconds: ptr(float64(20 * 60)), TotalChecks: ptr(int64(50)), ChecksThisMonth: ptr(int64(5))}
 
 	view, err := assemble(base)
 	if err != nil {
@@ -68,19 +69,32 @@ func TestAssembleHidesOnlyWhatGenerationAndDirtyHide(t *testing.T) {
 	if view.Status != StatusPending || *view.TotalScraped() != 7 || *view.ProxyCount() != 9 || *view.AliveCount() != 4 || len(view.FastestAliveProxies(10)) != 1 || view.TotalChecks != 50 || view.ChecksThisMonth != 5 {
 		t.Fatalf("old current snapshot: %+v", view)
 	}
+	if view.HealthOutdated || view.CheckerSettingsPending || view.HealthCollectedAt == nil || !view.HealthCollectedAt.Equal(healthAt) {
+		t.Fatalf("current health flags: %+v", view)
+	}
 
+	// A newer generation keeps serving the previous health, marked outdated.
 	newer := base
 	newer.WorkspaceGeneration = 4
 	view, _ = assemble(newer)
-	if view.TotalScraped() == nil || view.AliveCount() != nil || view.JudgeValidProxies() != nil || view.FastestAliveProxies(10) != nil || view.HealthMasked {
-		t.Fatalf("health of an older generation was served: %+v", view)
+	if !view.HealthOutdated || view.CheckerSettingsPending || view.AliveCount() == nil || *view.AliveCount() != 4 || len(view.JudgeValidProxies()) != 1 || len(view.FastestAliveProxies(10)) != 1 || !view.HealthCollectedAt.Equal(healthAt) {
+		t.Fatalf("health of an older generation: %+v", view)
 	}
 
-	masked := newer
-	masked.WorkspaceDirty = true
-	view, _ = assemble(masked)
-	if !view.HealthMasked || view.AliveCount() != nil || view.JudgeValidProxies() == nil || len(view.JudgeValidProxies()) != 0 || len(view.RecentProxyChecks(8)) != 0 || view.RecentProxyChecks(8) == nil {
-		t.Fatalf("masked health: %+v", view)
+	// So does a dirty workspace, even at the health's own generation.
+	dirty := base
+	dirty.WorkspaceDirty = true
+	view, _ = assemble(dirty)
+	if !view.HealthOutdated || !view.CheckerSettingsPending || view.AliveCount() == nil || *view.AliveCount() != 4 || len(view.JudgeValidProxies()) != 1 {
+		t.Fatalf("health while settings apply: %+v", view)
+	}
+
+	// Without any health built, health parts are absent, not outdated.
+	none := dirty
+	none.HasHealth, none.Health, none.HealthCollectedAt = false, nil, nil
+	view, _ = assemble(none)
+	if view.HealthOutdated || view.AliveCount() != nil || view.JudgeValidProxies() != nil || view.RecentProxyChecks(8) != nil || view.FastestAliveProxies(10) != nil || view.HealthCollectedAt != nil {
+		t.Fatalf("view without health: %+v", view)
 	}
 
 	// Live check figures appear in every status, including without a payload.
@@ -139,8 +153,17 @@ func equalIDs(a, b []uint64) bool {
 
 func TestPayloadOverTheCapFails(t *testing.T) {
 	large := payload{Inventory: inventoryPart{CountryBreakdown: []countryCount{{Country: strings.Repeat("x", maxPayloadBytes)}}}}
-	if _, err := encodePayload(large); err == nil || !strings.Contains(err.Error(), "exceeds") {
+	if _, _, err := encodeSnapshot(large, nil); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized payload: %v", err)
+	}
+	// The cap covers the payload and the health parts together.
+	half := strings.Repeat("x", maxPayloadBytes/2)
+	if _, _, err := encodeSnapshot(payload{Inventory: inventoryPart{CountryBreakdown: []countryCount{{Country: half}}}},
+		&healthPart{JudgeValidProxies: []judgeCount{{JudgeURL: half}}}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized payload with health: %v", err)
+	}
+	if _, encodedHealth, err := encodeSnapshot(payload{}, nil); err != nil || encodedHealth != nil {
+		t.Fatalf("build without health: %v %v", encodedHealth, err)
 	}
 	if decoded, err := decodePayload(nil); err != nil || decoded != nil {
 		t.Fatalf("empty payload: %v %v", decoded, err)

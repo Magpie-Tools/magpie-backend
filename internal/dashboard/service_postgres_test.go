@@ -202,39 +202,123 @@ func TestStaleViewServesOldPartsWhileCooldownRefusesClaimsPostgres(t *testing.T)
 	}
 }
 
-func TestGenerationChangeHidesHealthAndDirtyMasksItPostgres(t *testing.T) {
+func TestGenerationChangeServesThePreviousHealthAsOutdatedPostgres(t *testing.T) {
 	db, workspaces := snapshotFixture(t)
 	owner := workspaces[0]
 	service := newTestService(db, Config{})
 	defer service.Stop()
-	if _, err := service.View(context.Background(), owner.ID); err != nil {
+	built, err := service.View(context.Background(), owner.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Another instance commits a projection change.
 	if err := db.Model(&domain.Workspace{}).Where("id = ?", owner.ID).Update("checker_generation", gorm.Expr("checker_generation + 1")).Error; err != nil {
 		t.Fatal(err)
 	}
-	// The cooldown keeps the row from being rebuilt, so the view shows what a
-	// new generation leaves valid: inventory only, status pending.
+	// The cooldown keeps the row from being rebuilt, so the view is pending
+	// and serves the previous health, marked outdated.
 	view, err := service.View(context.Background(), owner.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Status != StatusPending || view.TotalScraped() == nil || view.AliveCount() != nil || view.FastestAliveProxies(5) != nil || view.RecentProxyChecks(5) != nil || view.HealthMasked {
+	if view.Status != StatusPending || !view.HealthOutdated || view.CheckerSettingsPending || view.TotalScraped() == nil ||
+		view.AliveCount() == nil || *view.AliveCount() != *built.AliveCount() || len(view.FastestAliveProxies(5)) != len(built.FastestAliveProxies(5)) ||
+		view.HealthCollectedAt == nil || !view.HealthCollectedAt.Equal(*built.HealthCollectedAt) {
 		t.Fatalf("view after a generation change: %+v", view)
 	}
 
+	// A workspace dirty before its first build has no health to show.
 	dirty := workspaces[3]
 	view, err = service.View(context.Background(), dirty.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Status != StatusFresh || !view.HealthMasked || view.FastestAliveProxies(5) == nil || len(view.FastestAliveProxies(5)) != 0 || view.AliveCount() != nil {
+	if view.Status != StatusFresh || !view.CheckerSettingsPending || view.HealthOutdated || view.FastestAliveProxies(5) != nil || view.AliveCount() != nil {
 		t.Fatalf("dirty workspace view: %+v", view)
 	}
-	var stored struct{ HealthValid bool }
-	if err := db.Raw("SELECT health_valid FROM dashboard_snapshots WHERE workspace_id = ?", dirty.ID).Scan(&stored).Error; err != nil || stored.HealthValid {
-		t.Fatalf("a dirty build stored valid health: %+v %v", stored, err)
+	var stored struct{ HasHealth bool }
+	if err := db.Raw("SELECT health IS NOT NULL AS has_health FROM dashboard_snapshots WHERE workspace_id = ?", dirty.ID).Scan(&stored).Error; err != nil || stored.HasHealth {
+		t.Fatalf("a dirty build stored health: %+v %v", stored, err)
+	}
+}
+
+// While checker settings apply, a rebuild refreshes the inventory and keeps
+// the previous health; once they are applied, the next build replaces it.
+func TestBuildWhileSettingsApplyKeepsThePreviousHealthPostgres(t *testing.T) {
+	db, workspaces := snapshotFixture(t)
+	owner := workspaces[0]
+	service := newTestService(db, Config{})
+	defer service.Stop()
+	built, err := service.View(context.Background(), owner.ID)
+	if err != nil || built.HealthOutdated || built.AliveCount() == nil {
+		t.Fatalf("first build: %+v %v", built, err)
+	}
+	type row struct {
+		Health            []byte
+		CheckerGeneration uint64
+		HealthCollectedAt time.Time
+		CollectedAt       time.Time
+	}
+	readRow := func() row {
+		t.Helper()
+		var stored row
+		if err := db.Raw("SELECT health, checker_generation, health_collected_at, collected_at FROM dashboard_snapshots WHERE workspace_id = ?", owner.ID).Scan(&stored).Error; err != nil {
+			t.Fatal(err)
+		}
+		return stored
+	}
+	before := readRow()
+	if len(before.Health) == 0 || !before.HealthCollectedAt.Equal(before.CollectedAt) {
+		t.Fatalf("first build row: %+v", before)
+	}
+
+	makeEligible := func() {
+		t.Helper()
+		if err := db.Exec(`UPDATE dashboard_snapshots SET computed_at = computed_at - interval '1 minute', claimed_at = claimed_at - interval '1 minute',
+	collected_at = collected_at - interval '1 minute', health_collected_at = health_collected_at - interval '1 minute', next_eligible_at = NULL
+	WHERE workspace_id = ?`, owner.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// New settings are saved: the workspace is dirty until they apply.
+	if err := db.Model(&domain.Workspace{}).Where("id = ?", owner.ID).Update("checker_dirty", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	makeEligible()
+	before = readRow()
+	view, err := service.View(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := readRow()
+	if view.Status != StatusFresh || !view.CheckerSettingsPending || !view.HealthOutdated || view.AliveCount() == nil || *view.AliveCount() != *built.AliveCount() {
+		t.Fatalf("view while settings apply: %+v", view)
+	}
+	if !after.CollectedAt.After(before.CollectedAt) || string(after.Health) != string(before.Health) ||
+		after.CheckerGeneration != before.CheckerGeneration || !after.HealthCollectedAt.Equal(before.HealthCollectedAt) {
+		t.Fatalf("a build while settings apply replaced the previous health: before %+v after %+v", before, after)
+	}
+	if !view.HealthCollectedAt.Equal(before.HealthCollectedAt) || !view.CollectedAt.After(*view.HealthCollectedAt) {
+		t.Fatalf("collection times while settings apply: %+v", view)
+	}
+
+	// The settings are applied under a new generation; the next view builds
+	// current health at once instead of waiting out the cooldown.
+	if err := db.Model(&domain.Workspace{}).Where("id = ?", owner.ID).
+		Updates(map[string]any{"checker_dirty": false, "checker_generation": gorm.Expr("checker_generation + 1")}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`UPDATE dashboard_snapshots SET next_eligible_at = NULL WHERE workspace_id = ?`, owner.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	view, err = service.View(context.Background(), owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := readRow()
+	if view.Status != StatusFresh || view.HealthOutdated || view.CheckerSettingsPending || view.AliveCount() == nil ||
+		current.CheckerGeneration != before.CheckerGeneration+1 || !current.HealthCollectedAt.Equal(current.CollectedAt) {
+		t.Fatalf("view after the settings applied: %+v row %+v", view, current)
 	}
 }
 
@@ -254,14 +338,14 @@ func TestBuildDuringGenerationChangeStoresNoHealthPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !changed || view.AliveCount() != nil || view.TotalScraped() == nil || view.Status != StatusPending {
+	if !changed || view.AliveCount() != nil || view.HealthOutdated || view.TotalScraped() == nil || view.Status != StatusPending {
 		t.Fatalf("health computed across a generation change was served: changed=%v view=%+v", changed, view)
 	}
 	var stored struct {
-		HealthValid       bool
-		CheckerGeneration uint64
+		HasHealth         bool
+		CheckerGeneration *uint64
 	}
-	if err := db.Raw("SELECT health_valid, checker_generation FROM dashboard_snapshots WHERE workspace_id = ?", owner.ID).Scan(&stored).Error; err != nil || stored.HealthValid || stored.CheckerGeneration != owner.CheckerGeneration {
+	if err := db.Raw("SELECT health IS NOT NULL AS has_health, checker_generation FROM dashboard_snapshots WHERE workspace_id = ?", owner.ID).Scan(&stored).Error; err != nil || stored.HasHealth || stored.CheckerGeneration != nil {
 		t.Fatalf("stored build: %+v %v", stored, err)
 	}
 }
@@ -324,7 +408,7 @@ func TestClaimRulesPostgres(t *testing.T) {
 		t.Fatal("the cluster cap admitted a claim", admitted, err)
 	}
 	// A publish with another epoch changes nothing.
-	if published, err := store.publish(ctx, a, first.Epoch+1000, []byte(`{"inventory":{}}`), 1, true); err != nil || published {
+	if published, err := store.publish(ctx, a, first.Epoch+1000, []byte(`{"inventory":{}}`), []byte(`{}`), 1); err != nil || published {
 		t.Fatal("a foreign epoch published", published, err)
 	}
 	if err := store.fail(ctx, a, first.Epoch); err != nil {
@@ -449,9 +533,9 @@ func TestLeaseHolderElsewhereIsPolledThenServedPostgres(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 		result, err := store.build(context.Background(), owner, 2)
 		if err == nil {
-			var encoded []byte
-			if encoded, err = encodePayload(result.payload); err == nil {
-				_, err = store.publish(context.Background(), owner, granted.Epoch, encoded, result.generation, result.healthValid)
+			var encoded, encodedHealth []byte
+			if encoded, encodedHealth, err = encodeSnapshot(result.payload, result.health); err == nil {
+				_, err = store.publish(context.Background(), owner, granted.Epoch, encoded, encodedHealth, result.generation)
 			}
 		}
 		if err != nil {

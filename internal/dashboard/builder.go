@@ -14,12 +14,13 @@ import (
 
 var errBuildExpired = errors.New("dashboard: build deadline expired")
 
-// built is the outcome of one build: the payload, the checker generation
-// read after the claim, and whether the health parts belong to it.
+// built is the outcome of one build: the inventory payload, the checker
+// generation read after the claim, and the health parts computed under it,
+// or nil when the build could not compute current health.
 type built struct {
-	payload     payload
-	generation  uint64
-	healthValid bool
+	payload    payload
+	generation uint64
+	health     *healthPart
 }
 
 // build runs the existing dashboard SQL for one workspace on ctx, which
@@ -77,7 +78,8 @@ func (st *Store) build(ctx context.Context, workspaceID uint, statementConcurren
 			return nil
 		},
 	}
-	// A dirty workspace masks health, so its health statements are skipped.
+	// A dirty workspace has no current health, so its health statements are
+	// skipped; publish keeps the previous health parts.
 	if !dirty {
 		statements = append(statements,
 			func(tx *gorm.DB) error {
@@ -155,9 +157,9 @@ func (st *Store) build(ctx context.Context, workspaceID uint, statementConcurren
 	if err != nil {
 		return built{}, err
 	}
-	result := built{payload: payload{Inventory: inventory}, generation: generation, healthValid: !dirty && !dirtyAfter && after == generation}
-	if result.healthValid {
-		result.payload.Health = &health
+	result := built{payload: payload{Inventory: inventory}, generation: generation}
+	if !dirty && !dirtyAfter && after == generation {
+		result.health = &health
 	}
 	return result, nil
 }

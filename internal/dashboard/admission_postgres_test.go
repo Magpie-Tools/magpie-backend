@@ -20,7 +20,7 @@ type afterFirstFullRead struct {
 }
 
 func (l *afterFirstFullRead) Trace(_ context.Context, _ time.Time, fc func() (string, int64), _ error) {
-	if sql, _ := fc(); strings.Contains(sql, "s.payload AS payload") {
+	if sql, _ := fc(); strings.Contains(sql, "s.payload, s.health") {
 		l.once.Do(l.change)
 	}
 }
@@ -48,9 +48,9 @@ func TestRefusedAdmissionServesAPublishFromElsewherePostgres(t *testing.T) {
 	}
 }
 
-// A generation change committed while a refused admission runs hides the
-// health read before it.
-func TestGenerationChangeDuringRefusedAdmissionHidesHealthPostgres(t *testing.T) {
+// A generation change committed while a refused admission runs marks the
+// health read before it outdated.
+func TestGenerationChangeDuringRefusedAdmissionOutdatesHealthPostgres(t *testing.T) {
 	db, workspaces := snapshotFixture(t)
 	owner := workspaces[0].ID
 	if _, err := newTestService(db, Config{}).View(context.Background(), owner); err != nil {
@@ -76,7 +76,7 @@ func TestGenerationChangeDuringRefusedAdmissionHidesHealthPostgres(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.AliveCount() != nil || view.FastestAliveProxies(5) != nil || view.Status != StatusPending || view.TotalScraped() == nil {
-		t.Fatalf("health validated before the admission wait was served: %+v", view)
+	if !view.HealthOutdated || view.AliveCount() == nil || view.Status != StatusPending || view.TotalScraped() == nil {
+		t.Fatalf("health validated before the admission wait was served as current: %+v", view)
 	}
 }

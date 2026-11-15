@@ -96,16 +96,25 @@ const (
 )
 
 // View is one dashboard response. The check figures are live; every other
-// part comes from the snapshot and is nil when the snapshot has no valid
-// value for it. Absent parts are never reported as zero.
+// part comes from the snapshot and is nil when the snapshot has no value for
+// it. Absent parts are never reported as zero.
 type View struct {
-	Status       Status
-	Rebuilding   bool
-	HealthMasked bool
-	// CollectedAt is the published build's claim time: the snapshot's data
-	// is at least that old. It does not describe the live check figures.
-	CollectedAt *time.Time
-	ComputedAt  *time.Time
+	Status     Status
+	Rebuilding bool
+	// CheckerSettingsPending: the workspace's checker settings changed and
+	// are still being applied.
+	CheckerSettingsPending bool
+	// HealthOutdated: the health parts are the previous result, computed
+	// under earlier checker settings, because current ones are not built
+	// yet. Health parts are absent, not outdated, when none were ever built.
+	HealthOutdated bool
+	// CollectedAt is the published build's claim time: the snapshot's
+	// inventory is at least that old. It does not describe the live check
+	// figures. HealthCollectedAt is the same for the health parts, which an
+	// outdated result keeps from an earlier build.
+	CollectedAt       *time.Time
+	ComputedAt        *time.Time
+	HealthCollectedAt *time.Time
 
 	TotalChecks     int64
 	ChecksThisMonth int64
@@ -160,8 +169,9 @@ func (v View) TopReputationProxy() *dto.DashboardTopReputationProxy {
 	return &dto.DashboardTopReputationProxy{ProxyID: top.ProxyID, IP: top.IP, Port: top.Port, Score: top.Score, Label: top.Label}
 }
 
-// AliveCount is the workspace's alive route count under its current
-// settings; nil while health is masked or not yet built.
+// AliveCount is the workspace's alive route count: under its current
+// settings, or under earlier ones while HealthOutdated; nil before any
+// health is built.
 func (v View) AliveCount() *int64 {
 	if v.health == nil {
 		return nil
@@ -169,12 +179,9 @@ func (v View) AliveCount() *int64 {
 	return &v.health.AliveCount
 }
 
-// JudgeValidProxies counts alive routes per judge and anonymity level: empty
-// while health is masked, nil while it is not yet built.
+// JudgeValidProxies counts alive routes per judge and anonymity level; nil
+// before any health is built.
 func (v View) JudgeValidProxies() []dto.DashboardJudgeCount {
-	if v.HealthMasked {
-		return []dto.DashboardJudgeCount{}
-	}
 	if v.health == nil {
 		return nil
 	}
@@ -185,24 +192,18 @@ func (v View) JudgeValidProxies() []dto.DashboardJudgeCount {
 	return judges
 }
 
-// RecentProxyChecks returns what the recent-checks query returns for limit
-// (1 to 50): empty while health is masked, nil while it is not yet built.
+// RecentProxyChecks returns what the recent-checks query returned for limit
+// (1 to 50) when the health parts were built; nil before any health is built.
 func (v View) RecentProxyChecks(limit int) []dto.ProxyRecentCheck {
-	if v.HealthMasked {
-		return []dto.ProxyRecentCheck{}
-	}
 	if v.health == nil {
 		return nil
 	}
 	return v.health.recentChecks(min(max(limit, 1), recentCandidateLimit))
 }
 
-// FastestAliveProxies returns the first limit (1 to 100) fastest alive routes:
-// empty while health is masked, nil while it is not yet built.
+// FastestAliveProxies returns the first limit (1 to 100) fastest alive
+// routes; nil before any health is built.
 func (v View) FastestAliveProxies(limit int) []dto.ProxyFastestAlive {
-	if v.HealthMasked {
-		return []dto.ProxyFastestAlive{}
-	}
 	if v.health == nil {
 		return nil
 	}
@@ -347,13 +348,13 @@ func (s *Service) runBuild(workspaceID uint, granted lease) {
 		}
 		return
 	}
-	var encoded []byte
+	var encoded, encodedHealth []byte
 	if err == nil {
-		encoded, err = encodePayload(result.payload)
+		encoded, encodedHealth, err = encodeSnapshot(result.payload, result.health)
 	}
 	if err == nil {
 		var published bool
-		if published, err = s.store.publish(outcome, workspaceID, granted.Epoch, encoded, result.generation, result.healthValid); err == nil && published {
+		if published, err = s.store.publish(outcome, workspaceID, granted.Epoch, encoded, encodedHealth, result.generation); err == nil && published {
 			return
 		} else if err == nil {
 			err = errLeaseLost
@@ -408,7 +409,7 @@ func sameTime(a, b *time.Time) bool {
 }
 
 // fresh is row 1 of the read table: a payload younger than 30 s whose health
-// parts are current, or masked by a dirty workspace.
+// parts are current, or cannot be because the workspace is dirty.
 func fresh(state snapshotState) bool {
 	age, published := state.age()
 	return state.hasPayload() && published && age < freshFor && !state.healthMissing()
@@ -431,15 +432,15 @@ func statusOf(state snapshotState) Status {
 	return StatusPending
 }
 
-// assemble builds the response from one read. Age never hides a part; only
-// the generation and the dirty flag hide health.
+// assemble builds the response from one read. Nothing hides a part: health
+// parts that are not current are served as outdated (ADR 0018).
 func assemble(state snapshotState) (View, error) {
 	view := View{
-		Status:       statusOf(state),
-		Rebuilding:   state.Rebuilding,
-		HealthMasked: state.WorkspaceDirty,
-		CollectedAt:  state.CollectedAt,
-		ComputedAt:   state.ComputedAt,
+		Status:                 statusOf(state),
+		Rebuilding:             state.Rebuilding,
+		CheckerSettingsPending: state.WorkspaceDirty,
+		CollectedAt:            state.CollectedAt,
+		ComputedAt:             state.ComputedAt,
 	}
 	if state.TotalChecks != nil {
 		view.TotalChecks = *state.TotalChecks
@@ -453,9 +454,15 @@ func assemble(state snapshotState) (View, error) {
 	}
 	if stored != nil {
 		view.inventory = &stored.Inventory
-		if state.healthCurrent() && stored.Health != nil {
-			view.health = stored.Health
-		}
+	}
+	health, err := decodeHealth(state.Health)
+	if err != nil {
+		return View{}, err
+	}
+	if health != nil {
+		view.health = health
+		view.HealthOutdated = state.healthOutdated()
+		view.HealthCollectedAt = state.HealthCollectedAt
 	}
 	return view, nil
 }

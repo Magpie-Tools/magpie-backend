@@ -41,11 +41,13 @@ type snapshotState struct {
 	RowExists           bool   `gorm:"column:row_exists"`
 
 	CheckerGeneration *uint64    `gorm:"column:checker_generation"`
-	HealthValid       *bool      `gorm:"column:health_valid"`
+	HasHealth         bool       `gorm:"column:has_health"`
+	HealthCollectedAt *time.Time `gorm:"column:health_collected_at"`
 	CollectedAt       *time.Time `gorm:"column:collected_at"`
 	ComputedAt        *time.Time `gorm:"column:computed_at"`
 	FailedAt          *time.Time `gorm:"column:failed_at"`
 	Payload           []byte     `gorm:"column:payload"`
+	Health            []byte     `gorm:"column:health"`
 
 	// AgeSeconds is now() - computed_at; nil before the first publish.
 	AgeSeconds *float64 `gorm:"column:age_seconds"`
@@ -65,18 +67,24 @@ func (s snapshotState) age() (time.Duration, bool) {
 
 func (s snapshotState) hasPayload() bool { return len(s.Payload) > 0 }
 
-// healthCurrent: the stored health parts belong to the committed generation.
+// healthCurrent: the stored health parts belong to the committed generation
+// and the workspace is not dirty.
 func (s snapshotState) healthCurrent() bool {
-	return s.HealthValid != nil && *s.HealthValid && s.CheckerGeneration != nil &&
+	return s.HasHealth && s.CheckerGeneration != nil &&
 		*s.CheckerGeneration == s.WorkspaceGeneration && !s.WorkspaceDirty
 }
 
-// healthMissing: health could be shown, but the stored parts are not current.
-// A dirty workspace masks health instead, so it never counts as missing.
+// healthOutdated: stored health parts exist but are not current. They are
+// served as the previous result while new checker settings apply.
+func (s snapshotState) healthOutdated() bool { return s.HasHealth && !s.healthCurrent() }
+
+// healthMissing: current health could be built, but the stored parts are not
+// current. A dirty workspace cannot have current health, so it never counts
+// as missing; its previous health is served as outdated meanwhile.
 func (s snapshotState) healthMissing() bool { return !s.WorkspaceDirty && !s.healthCurrent() }
 
-// read runs the read statement. full adds the payload and the two usage
-// figures; a re-read during a wait omits them.
+// read runs the read statement. full adds the payload, the health parts and
+// the two usage figures; a re-read during a wait omits them.
 func (st *Store) read(ctx context.Context, workspaceID uint, full bool, now time.Time) (snapshotState, error) {
 	query, args := st.readStatement(workspaceID, full, now)
 	var states []snapshotState
@@ -91,11 +99,11 @@ func (st *Store) read(ctx context.Context, workspaceID uint, full bool, now time
 
 // readStatement is the read statement and its arguments.
 func (st *Store) readStatement(workspaceID uint, full bool, now time.Time) (string, []any) {
-	payloadColumn, usageColumns := "NULL::bytea", "NULL::bigint AS total_checks, NULL::bigint AS checks_this_month"
+	payloadColumns, usageColumns := "NULL::bytea AS payload, NULL::bytea AS health", "NULL::bigint AS total_checks, NULL::bigint AS checks_this_month"
 	args := []any{}
 	if full {
 		periodStart, _ := checkpace.UsagePeriod(now)
-		payloadColumn = "s.payload"
+		payloadColumns = "s.payload, s.health"
 		// COALESCE wraps the scalar subquery: one that finds no row yields
 		// NULL, which a COALESCE inside it would never see.
 		usageColumns = `(SELECT COALESCE(SUM(GREATEST(u.checks, u.check_attempts)), 0)
@@ -107,8 +115,9 @@ func (st *Store) readStatement(workspaceID uint, full bool, now time.Time) (stri
 	args = append(args, st.version, workspaceID)
 	return `SELECT w.checker_generation AS workspace_generation, w.checker_dirty AS workspace_dirty,
 	s.workspace_id IS NOT NULL AS row_exists,
-	s.checker_generation, s.health_valid, s.collected_at, s.computed_at, s.failed_at,
-	` + payloadColumn + ` AS payload,
+	s.checker_generation, COALESCE(s.health IS NOT NULL, false) AS has_health, s.health_collected_at,
+	s.collected_at, s.computed_at, s.failed_at,
+	` + payloadColumns + `,
 	EXTRACT(EPOCH FROM now() - s.computed_at)::float8 AS age_seconds,
 	COALESCE(s.lease_until > now(), false) AS rebuilding,
 	COALESCE(s.next_eligible_at <= now(), true) AS eligible,
@@ -144,7 +153,7 @@ type lease struct {
 // claim admits one build of the workspace's snapshot if every rule still holds
 // under the admission lock: the row exists, no lease is active, the cooldown
 // has passed, the snapshot needs a build (none yet, older than the fresh
-// window, or health not current on a clean workspace) and fewer than
+// window, or no current health on a clean workspace) and fewer than
 // clusterLimit leases are active. now() is the transaction start, so every
 // comparison leans towards refusing. A lock timeout means not admitted.
 func (st *Store) claim(ctx context.Context, workspaceID uint, clusterLimit int, leaseFor time.Duration) (lease, bool, error) {
@@ -168,7 +177,7 @@ func (st *Store) claim(ctx context.Context, workspaceID uint, clusterLimit int, 
    AND (s.computed_at IS NULL
         OR s.computed_at <= now() - make_interval(secs => ?)
         OR (NOT w.checker_dirty
-            AND NOT (COALESCE(s.health_valid, false) AND s.checker_generation IS NOT DISTINCT FROM w.checker_generation)))
+            AND NOT (s.health IS NOT NULL AND s.checker_generation IS NOT DISTINCT FROM w.checker_generation)))
    AND (SELECT count(*) FROM dashboard_snapshots active WHERE active.lease_until > now()) < ?
 RETURNING s.lease_epoch, s.claimed_at`,
 			leaseFor.Seconds(), claimCooldown.Seconds(), workspaceID, st.version, freshFor.Seconds(), clusterLimit).Scan(&claimed).Error
@@ -218,13 +227,19 @@ func (st *Store) readOnly(ctx context.Context, run func(*gorm.DB) error) error {
 }
 
 // publish stores a build if its lease is still the row's and still active.
-func (st *Store) publish(ctx context.Context, workspaceID uint, epoch int64, encoded []byte, generation uint64, healthValid bool) (bool, error) {
+// A build without health parts (nil encodedHealth) keeps the row's previous
+// health parts, their generation and their collection time.
+func (st *Store) publish(ctx context.Context, workspaceID uint, epoch int64, encoded, encodedHealth []byte, generation uint64) (bool, error) {
+	withHealth := encodedHealth != nil
 	result := st.db.WithContext(ctx).Exec(`UPDATE dashboard_snapshots
-   SET payload = ?, checker_generation = ?, health_valid = ?,
+   SET payload = ?,
+       health = CASE WHEN ? THEN ?::bytea ELSE health END,
+       checker_generation = CASE WHEN ? THEN ?::bigint ELSE checker_generation END,
+       health_collected_at = CASE WHEN ? THEN claimed_at ELSE health_collected_at END,
        collected_at = claimed_at, computed_at = now(),
        lease_until = NULL, failed_at = NULL, failure_count = 0
  WHERE workspace_id = ? AND payload_version = ? AND lease_epoch = ? AND lease_until > now()`,
-		encoded, generation, healthValid, workspaceID, st.version, epoch)
+		encoded, withHealth, encodedHealth, withHealth, generation, withHealth, workspaceID, st.version, epoch)
 	return result.RowsAffected == 1, result.Error
 }
 
