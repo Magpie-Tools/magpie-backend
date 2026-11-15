@@ -43,8 +43,8 @@ asking for updates once its 60 s window ran out.
 - **Frontend:**
   - It shows the previous results immediately, labelled "Previous results"
     with their age and the reason.
-  - "Wait for new results" hides them until results under the new settings
-    arrive. The choice is remembered per browser.
+  - Previous results stay visible until results under the new settings arrive.
+    There is no option to hide them or a saved browser preference.
   - While the results are outdated, the page keeps asking for updates: every
     2–4 s for the first minute, then every 10–15 s, for at most 30 minutes.
 - **Alive history:** the series in `viewer.proxySnapshots` gets the
@@ -55,7 +55,7 @@ asking for updates once its 60 s window ran out.
 
 - During a settings change the dashboard shows figures counted under the
   earlier settings. They are always marked outdated, never presented as
-  current. A viewer who prefers blanks chooses to wait.
+  current.
 - Each row stores at most one previous health result. The 256 KiB cap covers
   the payload and the health together.
 - Retained health can be older than the row's last build. `healthCollectedAt`
