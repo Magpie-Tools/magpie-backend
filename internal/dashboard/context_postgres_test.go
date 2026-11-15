@@ -1,8 +1,9 @@
-package database
+package dashboard
 
 import (
 	"context"
 	"fmt"
+	"magpie/internal/database"
 	"os"
 	"reflect"
 	"strings"
@@ -26,7 +27,7 @@ func TestDashboardRefreshCancelsBlockedQueriesPostgres(t *testing.T) {
 			db := setupProxyIngestionPostgresTest(t)
 			workspaces := seedCurrentLatestReadTest(t, db)
 			workspaceID := workspaces[0].ID
-			version := checkerHealthVersion{Generation: 1}
+			version := database.CheckerHealthVersion{Generation: 1}
 			info := dashboardInfoCacheEntry{version: version, info: dto.DashboardInfo{TotalChecks: 987}}
 			recentKey := dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: defaultRecentProxyChecksLimit}
 			fastestKey := dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: dashboardFastestAliveLimit}
@@ -144,7 +145,7 @@ func TestDashboardInfoQueryFailureKeepsPreviousSnapshotPostgres(t *testing.T) {
 	if err := db.Create(&workspace).Error; err != nil {
 		t.Fatal(err)
 	}
-	previous := dashboardInfoCacheEntry{version: checkerHealthVersion{Generation: 1}, info: dto.DashboardInfo{TotalChecks: 777}}
+	previous := dashboardInfoCacheEntry{version: database.CheckerHealthVersion{Generation: 1}, info: dto.DashboardInfo{TotalChecks: 777}}
 	dashboardInfoCache.Store(workspace.ID, previous)
 	t.Cleanup(func() { dashboardInfoCache.Delete(workspace.ID) })
 	if err := db.Migrator().DropTable(&domain.WorkspaceProxyFilterIndex{}); err != nil {

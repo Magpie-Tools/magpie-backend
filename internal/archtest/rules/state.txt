@@ -18,7 +18,8 @@ auth: 6
 blacklist: 6
 checkerconfig: 4
 config: 18
-database: 8
+dashboard: 4
+database: 4
 domain: 9
 evidence: 2
 geolite: 18

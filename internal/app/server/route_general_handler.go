@@ -2,7 +2,7 @@ package server
 
 import (
 	"magpie/internal/config"
-	"magpie/internal/database"
+	"magpie/internal/dashboard"
 	"net/http"
 )
 
@@ -17,7 +17,7 @@ func getDashboardInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dashInfo, err := database.GetDashboardInfoContext(r.Context(), userID)
+	dashInfo, err := dashboard.GetDashboardInfoContext(r.Context(), userID)
 	if err != nil {
 		writeError(w, "Failed to load dashboard", http.StatusInternalServerError)
 		return

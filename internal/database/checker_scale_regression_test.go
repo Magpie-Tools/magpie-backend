@@ -2,7 +2,6 @@ package database
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"runtime"
 	"strconv"
@@ -20,7 +19,7 @@ import (
 	testdb "magpie/internal/testkit/db"
 )
 
-func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
+func TestCheckerRefreshScalePostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	routes := 20000
 	if value := os.Getenv("MAGPIE_TEST_CHECKER_SCALE_ROUTES"); value != "" {
@@ -158,53 +157,6 @@ func TestCheckerRefreshAndRecentChecksScalePostgres(t *testing.T) {
 	removed, _ := checkerconfig.Lookup(a.ID)
 	if removed.Proxies.Len() != routes-1 || removed.Plan(proxy.ID) != removed.Default || current.Plan(proxy.ID).Settings[0].Timeout != 3500 {
 		t.Fatal("membership removal failed or changed a preceding snapshot")
-	}
-	// Run the actual dashboard query and assert every evidence lookup executes
-	// only for the limited candidates, rather than every workspace proxy.
-	queries.Queries = nil
-	start := time.Now()
-	recent := RefreshRecentProxyChecksCache(a.ID, 10)
-	elapsed := time.Since(start)
-	if len(recent) != 10 {
-		t.Fatal("recent-check query failed", len(recent))
-	}
-	var recentSQL string
-	for _, sql := range queries.Queries {
-		if strings.Contains(sql, "WITH candidates AS MATERIALIZED") {
-			recentSQL = sql
-		}
-	}
-	if recentSQL == "" {
-		t.Fatal("dashboard did not use indexed candidates")
-	}
-	var encoded string
-	if err := db.Raw("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) " + recentSQL).Row().Scan(&encoded); err != nil {
-		t.Fatal(err)
-	}
-	var explain []struct {
-		Plan          map[string]any
-		ExecutionTime float64 `json:"Execution Time"`
-	}
-	if err := json.Unmarshal([]byte(encoded), &explain); err != nil {
-		t.Fatal(err)
-	}
-	var visit func(map[string]any)
-	visit = func(node map[string]any) {
-		if node["Relation Name"] == "proxy_latest_statistics" {
-			if loops, _ := node["Actual Loops"].(float64); loops > 10 {
-				t.Fatalf("dashboard evidence loops=%v before limit", loops)
-			}
-		}
-		if plans, ok := node["Plans"].([]any); ok {
-			for _, child := range plans {
-				visit(child.(map[string]any))
-			}
-		}
-	}
-	visit(explain[0].Plan)
-	t.Logf("recent checks routes=%d endpoint=%s SQL_execution_ms=%.3f", routes, elapsed, explain[0].ExecutionTime)
-	if elapsed > 5*time.Second {
-		t.Fatal("recent dashboard scanned workspace", elapsed)
 	}
 	pg.DB = db
 }

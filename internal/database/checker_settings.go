@@ -423,14 +423,14 @@ SELECT COUNT(*) FROM removed`, before, limit, before).Row().Scan(&count)
 // Health caches must not expose the preceding configuration while a committed
 // settings or membership change is waiting for projection. This is an API read,
 // never a checker-worker lookup. Database failures also suppress cached health.
-type checkerHealthVersion struct {
+type CheckerHealthVersion struct {
 	Generation uint64 `gorm:"column:checker_generation"`
 	Dirty      bool   `gorm:"column:checker_dirty"`
 }
 
 // Read the committed generation on API cache reads, including across instances.
 // A refresh records it before querying and rechecks it before publishing.
-func currentCheckerHealthVersion(workspaceID uint) checkerHealthVersion {
+func CurrentCheckerHealthVersion(workspaceID uint) CheckerHealthVersion {
 	version, err := currentCheckerHealthVersionWithDB(pg.DB, workspaceID)
 	if err != nil {
 		version.Dirty = true
@@ -438,8 +438,8 @@ func currentCheckerHealthVersion(workspaceID uint) checkerHealthVersion {
 	return version
 }
 
-func currentCheckerHealthVersionWithDB(db *gorm.DB, workspaceID uint) (checkerHealthVersion, error) {
-	var version checkerHealthVersion
+func currentCheckerHealthVersionWithDB(db *gorm.DB, workspaceID uint) (CheckerHealthVersion, error) {
+	var version CheckerHealthVersion
 	if db == nil {
 		return version, nil
 	}
@@ -448,11 +448,5 @@ func currentCheckerHealthVersionWithDB(db *gorm.DB, workspaceID uint) (checkerHe
 }
 
 func checkerProjectionPending(workspaceID uint) bool {
-	return currentCheckerHealthVersion(workspaceID).Dirty
-}
-
-type dashboardHealthCacheEntry[T any] struct {
-	version     checkerHealthVersion
-	value       T
-	completedAt time.Time
+	return CurrentCheckerHealthVersion(workspaceID).Dirty
 }

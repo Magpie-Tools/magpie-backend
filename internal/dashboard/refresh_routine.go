@@ -1,10 +1,8 @@
-package runtime
+package dashboard
 
 import (
 	"context"
 	"time"
-
-	"magpie/internal/database"
 
 	"github.com/charmbracelet/log"
 )
@@ -31,7 +29,7 @@ func StartDashboardCacheRoutine(ctx context.Context) {
 
 func refreshDashboardCaches(ctx context.Context) {
 	start := time.Now()
-	if err := database.RefreshRequestedDashboardCaches(ctx); err != nil {
+	if err := RefreshRequestedDashboardCaches(ctx); err != nil {
 		log.Warn("Dashboard cache refresh failed; serving the previous snapshot", "error", err)
 		return
 	}

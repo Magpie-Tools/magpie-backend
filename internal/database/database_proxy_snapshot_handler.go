@@ -43,7 +43,7 @@ func SaveProxySnapshots(ctx context.Context) error {
 		return err
 	}
 
-	scrapedCountByWorkspace, err := scrapedProxyCountByWorkspace(tx, workspaceIDs)
+	scrapedCountByWorkspace, err := ScrapedProxyCountByWorkspace(tx, workspaceIDs)
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func normalizeProxySnapshotLimit(limit int) int {
 	return limit
 }
 
-func scrapedProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]int64, error) {
+func ScrapedProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]int64, error) {
 	var rows []struct {
 		WorkspaceID  uint
 		ScrapedCount int64
@@ -166,7 +166,7 @@ func GetCurrentScrapedProxyCount(workspaceID uint) int64 {
 		return 0
 	}
 
-	counts, err := scrapedProxyCountByWorkspace(pg.DB, []uint{workspaceID})
+	counts, err := ScrapedProxyCountByWorkspace(pg.DB, []uint{workspaceID})
 	if err != nil {
 		return 0
 	}
@@ -174,20 +174,20 @@ func GetCurrentScrapedProxyCount(workspaceID uint) int64 {
 	return counts[workspaceID]
 }
 
-type proxySnapshotCountSummary struct {
+type ProxySnapshotCountSummary struct {
 	Current  int64
 	Increase int64
 	Found    bool
 }
 
-func getProxySnapshotCountSummary(workspaceID uint, metric string, since time.Time) proxySnapshotCountSummary {
-	summary, _ := getProxySnapshotCountSummaryWithDB(pg.DB, workspaceID, metric, since)
+func getProxySnapshotCountSummary(workspaceID uint, metric string, since time.Time) ProxySnapshotCountSummary {
+	summary, _ := GetProxySnapshotCountSummaryWithDB(pg.DB, workspaceID, metric, since)
 	return summary
 }
 
-func getProxySnapshotCountSummaryWithDB(db *gorm.DB, workspaceID uint, metric string, since time.Time) (proxySnapshotCountSummary, error) {
+func GetProxySnapshotCountSummaryWithDB(db *gorm.DB, workspaceID uint, metric string, since time.Time) (ProxySnapshotCountSummary, error) {
 	if db == nil || workspaceID == 0 {
-		return proxySnapshotCountSummary{}, nil
+		return ProxySnapshotCountSummary{}, nil
 	}
 
 	var latest domain.ProxySnapshot
@@ -197,7 +197,7 @@ func getProxySnapshotCountSummaryWithDB(db *gorm.DB, workspaceID uint, metric st
 		Limit(1).
 		Find(&latest)
 	if latestResult.Error != nil || latestResult.RowsAffected == 0 {
-		return proxySnapshotCountSummary{}, latestResult.Error
+		return ProxySnapshotCountSummary{}, latestResult.Error
 	}
 
 	var baseline domain.ProxySnapshot
@@ -212,7 +212,7 @@ func getProxySnapshotCountSummaryWithDB(db *gorm.DB, workspaceID uint, metric st
 		increase = latest.Count - baseline.Count
 	}
 
-	return proxySnapshotCountSummary{
+	return ProxySnapshotCountSummary{
 		Current:  latest.Count,
 		Increase: increase,
 		Found:    true,

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/dashboard"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 
@@ -39,7 +40,7 @@ func buildRecentProxyChecks(workspaceID uint, limit int) []map[string]interface{
 }
 
 func buildRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit int) ([]map[string]interface{}, error) {
-	entries, err := database.GetRecentProxyChecksContext(ctx, workspaceID, limit)
+	entries, err := dashboard.GetRecentProxyChecksContext(ctx, workspaceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +68,7 @@ func buildFastestAliveProxies(workspaceID uint, limit int) []map[string]interfac
 }
 
 func buildFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limit int) ([]map[string]interface{}, error) {
-	entries, err := database.GetFastestAliveProxiesContext(ctx, workspaceID, limit)
+	entries, err := dashboard.GetFastestAliveProxiesContext(ctx, workspaceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +316,7 @@ func dashboardViewerFields(types dashboardTypes) gql.Fields {
 			Type: gql.NewNonNull(dashboardType),
 			Resolve: func(p gql.ResolveParams) (interface{}, error) {
 				if data, ok := p.Source.(*viewerData); ok {
-					info, err := database.GetDashboardInfoContext(p.Context, data.workspace.ID)
+					info, err := dashboard.GetDashboardInfoContext(p.Context, data.workspace.ID)
 					if err != nil {
 						return nil, err
 					}

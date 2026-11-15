@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/log"
 
-	"magpie/internal/database"
+	"magpie/internal/dashboard"
 )
 
 const dashboardCachePrewarmTimeout = 5 * time.Second
@@ -14,7 +14,7 @@ const dashboardCachePrewarmTimeout = 5 * time.Second
 // Dashboard snapshots accelerate reads, but do not establish runtime readiness.
 // Wait for the refresh to stop rather than abandon its queries in a goroutine.
 func prewarmDashboardCaches(ctx context.Context) error {
-	return prewarmDashboardCachesWithin(ctx, dashboardCachePrewarmTimeout, database.RefreshRequestedDashboardCaches)
+	return prewarmDashboardCachesWithin(ctx, dashboardCachePrewarmTimeout, dashboard.RefreshRequestedDashboardCaches)
 }
 
 func prewarmDashboardCachesWithin(ctx context.Context, timeout time.Duration, refresh func(context.Context) error) error {

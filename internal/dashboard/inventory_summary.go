@@ -1,4 +1,4 @@
-package database
+package dashboard
 
 import (
 	"magpie/internal/domain"

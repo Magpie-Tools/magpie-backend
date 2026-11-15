@@ -17,6 +17,7 @@ import (
 	"magpie/internal/checkerconfig"
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
+	"magpie/internal/dashboard"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/geolite"
@@ -95,7 +96,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 		if err := checkerconfig.Initialize(ctx, redisClient, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
 			return fmt.Errorf("load fixture checker settings: %w", err)
 		}
-		if err := refreshDashboardCachesWithin(ctx, dashboardCachePrewarmTimeout, database.RefreshDashboardCaches); err != nil {
+		if err := refreshDashboardCachesWithin(ctx, dashboardCachePrewarmTimeout, dashboard.RefreshDashboardCaches); err != nil {
 			if parentErr := ctx.Err(); parentErr != nil {
 				return parentErr
 			}
@@ -105,7 +106,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 			return err
 		}
 		running.readModels.start(readmodel.StartReadModelRefreshRoutine)
-		running.producers.start(jobruntime.StartDashboardCacheRoutine)
+		running.producers.start(dashboard.StartDashboardCacheRoutine)
 		startupQueueBootstrapCompleted.Store(true)
 		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
 		return nil
@@ -236,7 +237,7 @@ func (running *Runtime) setup(ctx context.Context) error {
 	running.batchers.start(checkers.RunBatchers)
 	for _, routine := range []func(context.Context){
 		judges.StartJudgeRoutine,
-		jobruntime.StartDashboardCacheRoutine,
+		dashboard.StartDashboardCacheRoutine,
 		jobruntime.StartProxyStatisticsRetentionRoutine,
 		jobruntime.StartProxyTimelineRetentionRoutine,
 		jobruntime.StartProxyHistoryRoutine,

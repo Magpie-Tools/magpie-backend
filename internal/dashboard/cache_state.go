@@ -1,4 +1,4 @@
-package database
+package dashboard
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
 
@@ -221,7 +222,7 @@ func loadDashboardComponent(ctx context.Context, key dashboardCacheKey) (any, er
 	}
 }
 
-func cachedDashboardComponent(key dashboardCacheKey, version checkerHealthVersion) (any, bool) {
+func cachedDashboardComponent(key dashboardCacheKey, version database.CheckerHealthVersion) (any, bool) {
 	if version.Dirty {
 		return nil, false
 	}
@@ -251,17 +252,17 @@ func cachedDashboardComponent(key dashboardCacheKey, version checkerHealthVersio
 	return nil, false
 }
 
-func dashboardHealthVersionContext(ctx context.Context, workspaceID uint) (checkerHealthVersion, error) {
+func dashboardHealthVersionContext(ctx context.Context, workspaceID uint) (database.CheckerHealthVersion, error) {
 	if pg.DB == nil {
-		return checkerHealthVersion{}, nil
+		return database.CheckerHealthVersion{}, nil
 	}
 	return dashboardWorkspaceVersion(pg.DB.WithContext(ctx), workspaceID)
 }
 
 // dashboardWorkspaceVersion reads the committed checker generation and dirty
 // flag. A deleted workspace is an error, so no cached value of it is served.
-func dashboardWorkspaceVersion(db *gorm.DB, workspaceID uint) (checkerHealthVersion, error) {
-	var version checkerHealthVersion
+func dashboardWorkspaceVersion(db *gorm.DB, workspaceID uint) (database.CheckerHealthVersion, error) {
+	var version database.CheckerHealthVersion
 	result := db.Model(&domain.Workspace{}).Select("checker_generation, checker_dirty").Where("id = ?", workspaceID).Limit(1).Scan(&version)
 	if result.Error != nil {
 		return version, result.Error

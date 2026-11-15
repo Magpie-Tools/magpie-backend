@@ -60,7 +60,7 @@ responsibility in these files:
 | Proxy pages, sorting and response mapping | [database_proxy_list.go](../internal/database/database_proxy_list.go) |
 | List filters and available filter values | [database_proxy_filters.go](../internal/database/database_proxy_filters.go) |
 | Text, tag and IP search | [database_proxy_search.go](../internal/database/database_proxy_search.go) |
-| Recent checks, fastest routes and their caches | [database_proxy_dashboard.go](../internal/database/database_proxy_dashboard.go) |
+| Dashboard info, recent checks, fastest routes and their caches | [internal/dashboard](../internal/dashboard/doc.go) |
 | Route details, queue state and check history | [database_proxy_detail.go](../internal/database/database_proxy_detail.go) |
 | Managed proxy deletion, pausing and activation | [database_proxy_lifecycle.go](../internal/database/database_proxy_lifecycle.go) |
 | Failure/capacity cleanup and orphan route deletion | [database_proxy_cleanup.go](../internal/database/database_proxy_cleanup.go) |
