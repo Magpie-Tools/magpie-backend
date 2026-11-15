@@ -66,6 +66,7 @@ func DefaultMigrations() []any {
 		domain.ScrapeSourceTag{},
 		domain.ProxyScrapeSite{},
 		domain.Protocol{},
+		domain.DashboardSnapshot{},
 	}
 }
 
@@ -141,6 +142,7 @@ func EnsurePostMigrateSchemas(db *gorm.DB) error {
 		{name: "proxy query index schema", run: EnsureProxyQueryIndexSchema},
 		{name: "rotating proxy schema", run: ensureRotatingProxySchema},
 		{name: "blacklist schema", run: ensureBlacklistSchema},
+		{name: "dashboard snapshot schema", run: EnsureDashboardSnapshotSchema},
 	}
 
 	return runSchemaEnsureSteps(db, steps)

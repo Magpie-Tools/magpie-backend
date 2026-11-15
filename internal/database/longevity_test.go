@@ -89,30 +89,3 @@ func TestBackendLongevityEventLedgerStorage(t *testing.T) {
 		t.Fatalf("ledger count=%d", count)
 	}
 }
-
-func TestBackendLongevityDeletedProxyDailyCounters(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	a, _, proxy, judge := seedCheckerEvidenceTest(t, db)
-	stats := []domain.ProxyStatistic{}
-	for day := 0; day < 180; day++ {
-		stats = append(stats, domain.ProxyStatistic{ProxyID: proxy.ID, ProtocolID: 1, JudgeID: judge.ID, Alive: true, WorkspaceIDs: []uint{a.ID}, CreatedAt: time.Now().UTC().AddDate(0, 0, -day-1)})
-	}
-	if err := InsertProxyStatistics(context.Background(), stats, 500); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Exec("DELETE FROM user_proxies WHERE proxy_id = ?", proxy.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	deleted, err := DeleteOrphanProxies(context.Background())
-	if err != nil || deleted != 1 {
-		t.Fatalf("production orphan cleanup: removed=%d err=%v", deleted, err)
-	}
-	var rows int64
-	if err := db.Model(&domain.ProxyDailyCheck{}).Where("proxy_id = ?", proxy.ID).Count(&rows).Error; err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("deleted_proxy=%d orphan_daily_counter_rows=%d", proxy.ID, rows)
-	if rows != 0 {
-		t.Fatalf("deleted route still has %d daily counters with no owning route", rows)
-	}
-}

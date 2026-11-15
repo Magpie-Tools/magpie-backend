@@ -17,6 +17,7 @@ import (
 	"magpie/internal/checkerconfig"
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
+	"magpie/internal/dashboard"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/geolite"
@@ -84,9 +85,12 @@ func (running *Runtime) setup(ctx context.Context) error {
 		geolite.EnableRedisDistribution(ctx, redisClient)
 	}
 
-	if _, err := database.SetupDB(); err != nil {
+	db, err := database.SetupDB()
+	if err != nil {
 		return fmt.Errorf("failed to set up database: %w", err)
 	}
+	running.dashboards = dashboard.NewService(db, dashboard.ConfigFromEnv())
+	running.producers.start(running.dashboards.Run)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -95,17 +99,10 @@ func (running *Runtime) setup(ctx context.Context) error {
 		if err := checkerconfig.Initialize(ctx, redisClient, database.LoadCheckerWorkspace, database.ListCheckerWorkspaces); err != nil {
 			return fmt.Errorf("load fixture checker settings: %w", err)
 		}
-		if err := refreshDashboardCachesWithin(ctx, dashboardCachePrewarmTimeout, database.RefreshDashboardCaches); err != nil {
-			if parentErr := ctx.Err(); parentErr != nil {
-				return parentErr
-			}
-			return fmt.Errorf("prewarm fixture dashboard: %w", err)
-		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		running.readModels.start(readmodel.StartReadModelRefreshRoutine)
-		running.producers.start(jobruntime.StartDashboardCacheRoutine)
 		startupQueueBootstrapCompleted.Store(true)
 		log.Info("Development fixtures enabled; background jobs and rotating listeners are stopped")
 		return nil
@@ -202,10 +199,6 @@ func (running *Runtime) setup(ctx context.Context) error {
 	}
 	running.producers.start(monitorQueueState)
 
-	if err := prewarmDashboardCaches(ctx); err != nil {
-		return err
-	}
-
 	// Routines
 
 	if err := ctx.Err(); err != nil {
@@ -236,13 +229,14 @@ func (running *Runtime) setup(ctx context.Context) error {
 	running.batchers.start(checkers.RunBatchers)
 	for _, routine := range []func(context.Context){
 		judges.StartJudgeRoutine,
-		jobruntime.StartDashboardCacheRoutine,
 		jobruntime.StartProxyStatisticsRetentionRoutine,
 		jobruntime.StartProxyTimelineRetentionRoutine,
 		jobruntime.StartProxyHistoryRoutine,
 		jobruntime.StartProxySnapshotRoutine,
 		geolite.StartProxyGeoRefreshRoutine,
-		maintenance.StartOrphanCleanupRoutine,
+		func(ctx context.Context) {
+			maintenance.StartOrphanCleanupRoutine(ctx, maintenance.CleanupStep{Name: "dashboard snapshots", Run: running.dashboards.DeleteExpiredSnapshots})
+		},
 		maintenance.StartPasswordResetCleanupRoutine,
 		maintenance.StartWorkspaceInvitationCleanupRoutine,
 		geolite.StartGeoLiteUpdateRoutine,

@@ -88,7 +88,7 @@ Startup and changes to Default, judges, headers, or SOCKS judge routing still
 require a complete snapshot. Editing a rule that matches many routes necessarily
 processes all of those matches.
 
-The updated `TestCheckerRefreshAndRecentChecksScalePostgres` fixture gives every
+The updated `TestCheckerRefreshScalePostgres` fixture gives every
 one of 1,000,000 routes a checker-tag override. A second rule matches one route.
 The test measures real production mutation and loader calls, not writes alone:
 
@@ -108,6 +108,8 @@ using `idx_user_proxy_filter_recent_active` before fetching evidence. The actual
 refresh measured 7.27 ms end to end. Its `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`
 execution took 0.579 ms; each latest-evidence access executes at most ten times.
 The materialized limit prevents evidence aggregation across the whole workspace.
+This check now runs as `TestRecentChecksEvidenceLookupsAreBoundedPostgres` in
+`internal/dashboard`, on the same route fixture without checker tags.
 
 These changes add zero cryptographic operations, JSON encodes, Redis commands,
 or database queries per proxy check, including asynchronous result persistence.
@@ -134,16 +136,21 @@ mutation work preserves independent membership settings and never runs on an
 ordinary dequeue, check, or requeue. It performs no credential cryptography or
 queue payload rewrite beyond the existing ownership-change path.
 
-Dashboard cache reads verify the persisted generation with one API-side query.
-Refreshes read it before and after loading results, rejecting in-flight obsolete
-results. These queries support multiple backend instances and never run in
-checker workers. Stable reconciliation does not invalidate dashboard entries.
+Dashboard reads compare the snapshot's checker generation with the committed
+one in the same statement that reads the snapshot (ADR 0017). A build reads the
+generation after its claim and after its SQL, and stores health only when both
+match on a clean workspace. These queries support multiple backend instances and
+never run in checker workers. Stable reconciliation does not change the
+generation, so it leaves dashboard snapshots valid.
 
 Reproduce the regression cases and the larger source workload with:
 
 ```sh
 MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
-  go test ./internal/database -run 'TestCheckerTagProjectionWrites|TestCheckerMissed|TestDashboardRefreshRejects|TestSmallSource' -count=1 -v
+  go test ./internal/database -run 'TestCheckerTagProjectionWrites|TestCheckerMissed|TestSmallSource' -count=1 -v
+
+MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
+  go test ./internal/dashboard -run 'TestBuildDuringGenerationChange|TestGenerationChangeHidesHealth' -count=1 -v
 
 MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
 MAGPIE_TEST_CHECKER_SOURCE_ROUTES=1000000 \
@@ -151,7 +158,11 @@ MAGPIE_TEST_CHECKER_SOURCE_ROUTES=1000000 \
 
 MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
 MAGPIE_TEST_CHECKER_SCALE_ROUTES=1000000 \
-  go test ./internal/database -run '^TestCheckerRefreshAndRecentChecksScalePostgres$' -count=1 -v -timeout=20m
+  go test ./internal/database -run '^TestCheckerRefreshScalePostgres$' -count=1 -v -timeout=20m
+
+MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
+MAGPIE_TEST_CHECKER_SCALE_ROUTES=1000000 \
+  go test ./internal/dashboard -run '^TestRecentChecksEvidenceLookupsAreBoundedPostgres$' -count=1 -v -timeout=20m
 ```
 
 ## Operations per check

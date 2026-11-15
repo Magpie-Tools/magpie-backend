@@ -46,7 +46,7 @@ func setupSettingsAPITest(t *testing.T) (uint, uint) {
 func submitSettings(t *testing.T, api string, userID, workspaceID uint, input map[string]any) error {
 	t.Helper()
 	if api == "GraphQL" {
-		schema, err := gqlschema.NewSchema()
+		schema, err := gqlschema.NewSchema(nil)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -12,13 +12,13 @@
 
 app/bootstrap: 3
 app/releases: 1
-app/server: 41
+app/server: 38
 app/version: 2
 auth: 6
 blacklist: 6
 checkerconfig: 4
 config: 18
-database: 9
+database: 4
 domain: 9
 evidence: 2
 geolite: 18

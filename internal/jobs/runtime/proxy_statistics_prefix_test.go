@@ -42,15 +42,14 @@ func statisticsPrefixFixture(t *testing.T) (*gorm.DB, *redis.Client, proxyStatis
 
 func assertStatisticsEffects(t *testing.T, db *gorm.DB, want int64, owners int) {
 	t.Helper()
-	var rows, checks int64
+	// History and each owner's check attempts below witness every accepted
+	// result exactly once; memory results carry no replay-ledger identity.
+	var rows int64
 	if err := db.Model(&domain.ProxyStatistic{}).Count(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&domain.ProxyDailyCheck{}).Select("COALESCE(SUM(checks_count),0)").Scan(&checks).Error; err != nil {
-		t.Fatal(err)
-	}
-	if rows != want || checks != want {
-		t.Fatalf("history=%d checks=%d want=%d", rows, checks, want)
+	if rows != want {
+		t.Fatalf("history=%d want=%d", rows, want)
 	}
 	var usage []domain.WorkspaceUsagePeriod
 	if err := db.Order("workspace_id").Find(&usage).Error; err != nil {

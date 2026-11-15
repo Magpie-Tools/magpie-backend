@@ -193,10 +193,6 @@ func assertStatisticsTailState(t *testing.T, db *gorm.DB, workspaceID uint, prox
 			t.Fatalf("%T rows=%d want=%d err=%v", model, count, events, err)
 		}
 	}
-	var daily int64
-	if err := db.Model(&domain.ProxyDailyCheck{}).Select("COALESCE(SUM(checks_count),0)").Where("proxy_id=?", proxyID).Scan(&daily).Error; err != nil || daily != events {
-		t.Fatalf("daily count=%d want=%d err=%v", daily, events, err)
-	}
 	var usage domain.WorkspaceUsagePeriod
 	if err := db.First(&usage, "workspace_id=?", workspaceID).Error; err != nil || usage.CheckAttempts != uint64(attempts) {
 		t.Fatalf("usage=%+v want attempts=%d err=%v", usage, attempts, err)
@@ -225,7 +221,10 @@ func TestStatisticsConcurrentOppositeOrderOverlapPostgres(t *testing.T) {
 	if proxy.ID != 1 {
 		t.Fatal("unexpected seed proxy id", proxy.ID)
 	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
+	// Midday UTC keeps the batches' second offsets on one day and in one
+	// monthly usage period whenever the test runs.
+	today := time.Now().UTC()
+	now := time.Date(today.Year(), today.Month(), today.Day(), 12, 0, 0, 0, time.UTC)
 	makeStats := func(offset int, reverse bool) []domain.ProxyStatistic {
 		stats := make([]domain.ProxyStatistic, routes)
 		for i := range stats {
@@ -234,7 +233,7 @@ func TestStatisticsConcurrentOppositeOrderOverlapPostgres(t *testing.T) {
 				id = routes - i
 			}
 			stat := domain.ProxyStatistic{ProxyID: uint64(id), ProtocolID: 1, JudgeID: judge.ID, Alive: true,
-				CreatedAt: now.AddDate(0, 0, offset), WorkspaceIDs: append([]uint(nil), owners...), EventStream: "checks", EventID: fmt.Sprintf("%d-%d", 1000+offset, id)}
+				CreatedAt: now.Add(time.Duration(offset) * time.Second), WorkspaceIDs: append([]uint(nil), owners...), EventStream: "checks", EventID: fmt.Sprintf("%d-%d", 1000+offset, id)}
 			for j := range owners {
 				owner := owners[j]
 				if reverse {
@@ -249,9 +248,10 @@ func TestStatisticsConcurrentOppositeOrderOverlapPostgres(t *testing.T) {
 	if err := InsertProxyStatistics(context.Background(), makeStats(-2, false), 100); err != nil {
 		t.Fatal(err)
 	}
-	// Different days avoid the earlier daily-counter lock serializing the two
-	// batches. A tiny row trigger keeps their overlapping latest upserts live
-	// together, exercising the explicit conflict-key acquisition order.
+	// All three batches fall on the same UTC day, so nothing keyed by day
+	// serializes the two concurrent batches early. A tiny row trigger keeps
+	// their overlapping latest upserts live together, exercising the explicit
+	// conflict-key acquisition order.
 	if err := db.Exec(`CREATE FUNCTION slow_latest_order() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN PERFORM pg_sleep(0.0001); RETURN NEW; END $$;
 CREATE TRIGGER slow_latest_order BEFORE UPDATE ON proxy_latest_statistics
@@ -289,7 +289,7 @@ FOR EACH ROW EXECUTE FUNCTION slow_latest_order()`).Error; err != nil {
 	if err := db.Model(&domain.ProxyLatestStatistic{}).Where("checked_at=?", now).Count(&latest).Error; err != nil || latest != routes*8 {
 		t.Fatalf("newest evidence rows=%d want=%d err=%v", latest, routes*8, err)
 	}
-	for _, model := range []any{&domain.ProxyStatistic{}, &domain.ProxyStatisticEvent{}, &domain.ProxyDailyCheck{}} {
+	for _, model := range []any{&domain.ProxyStatistic{}, &domain.ProxyStatisticEvent{}} {
 		var count int64
 		if err := db.Model(model).Count(&count).Error; err != nil || count != routes*3 {
 			t.Fatalf("%T count=%d want=%d err=%v", model, count, routes*3, err)

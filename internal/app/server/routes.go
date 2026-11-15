@@ -11,6 +11,7 @@ import (
 
 	"magpie/internal/auth"
 	"magpie/internal/checkpace"
+	"magpie/internal/dashboard"
 )
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -63,8 +64,8 @@ type pacedRoutes struct {
 }
 
 // OpenRoutes serves the API on port until ctx ends. pace is the process's
-// Pacer, the one bootstrap runs.
-func OpenRoutes(ctx context.Context, port int, pace *checkpace.Pacer) error {
+// Pacer and views its dashboard service, the ones bootstrap runs.
+func OpenRoutes(ctx context.Context, port int, pace *checkpace.Pacer, views *dashboard.Service) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -81,7 +82,7 @@ func OpenRoutes(ctx context.Context, port int, pace *checkpace.Pacer) error {
 	router.Handle("GET /readyz", withObservabilityProtection(http.HandlerFunc(paced.readyz)))
 	router.Handle("GET /metrics", withObservabilityProtection(metricsHandler()))
 
-	gqlHandler, err := getGraphQLHandler()
+	gqlHandler, err := newGraphQLHandler(views)
 	if err != nil {
 		return fmt.Errorf("failed to initialize graphql handler: %w", err)
 	}
@@ -121,8 +122,6 @@ func OpenRoutes(ctx context.Context, port int, pace *checkpace.Pacer) error {
 	apiMux.Handle("GET /invitations", auth.RequireAuth(http.HandlerFunc(listUserWorkspaceInvitations)))
 	apiMux.Handle("POST /invitations/{invitationId}/accept", auth.RequireAuth(http.HandlerFunc(acceptWorkspaceInvitation)))
 	apiMux.Handle("POST /invitations/{invitationId}/decline", auth.RequireAuth(http.HandlerFunc(declineWorkspaceInvitation)))
-
-	apiMux.Handle("GET /getDashboardInfo", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getDashboardInfo))))
 
 	apiMux.Handle("GET /getProxyCount", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyCount))))
 	apiMux.Handle("GET /getProxyPage/{page}", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyPage))))

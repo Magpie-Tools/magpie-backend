@@ -11,7 +11,6 @@ import (
 	"magpie/internal/api/dto"
 	"magpie/internal/checkerconfig"
 	"magpie/internal/config"
-	"magpie/internal/database"
 	"magpie/internal/domain"
 	"magpie/internal/readmodel"
 	"magpie/internal/security"
@@ -285,7 +284,6 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 	statistics := make([]domain.ProxyStatistic, 0, 1000)
 	latest := make([]domain.ProxyLatestStatistic, 0, len(proxies)*4)
 	overall := make([]domain.ProxyOverallStatus, 0, len(proxies))
-	daily := make([]domain.ProxyDailyCheck, 0, len(proxies)*options.HistoryDays)
 	reputations := make([]domain.ProxyReputation, 0, len(proxies)*5)
 	flush := func() error {
 		if len(statistics) == 0 {
@@ -315,14 +313,18 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 		isAlive := false
 		checkedAt := options.Now.Add(-time.Duration(i%180+1) * time.Second)
 		for day := options.HistoryDays - 1; day >= 0; day-- {
-			dayChecks := int64(0)
 			for p, setting := range plan.Settings {
 				if !setting.Enabled {
 					continue
 				}
 				alive := i%10 < 6 || i%10 == 6 && (day+p)%2 == 0 || i%10 == 7 && day%3 != 1
 				responseTime := uint16(45 + (uint64(i*37+p*71+day*11)+uint64(options.Seed))%1800)
-				attempt := uint8(1)
+				// Attempt is zero-based like the checker's: zero is one request.
+				// Some successes need one retry; a failure used every retry.
+				attempt := uint8(0)
+				if i%5 == 1 && setting.Retries > 0 {
+					attempt = 1
+				}
 				if i%4 == 0 {
 					responseTime = uint16(50 + i%100)
 				}
@@ -330,7 +332,7 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 					responseTime = 3200
 				}
 				if !alive {
-					responseTime, attempt = setting.Timeout, setting.Retries+1
+					responseTime, attempt = setting.Timeout, setting.Retries
 				}
 				timestamp := checkedAt.Add(-time.Duration(day) * 24 * time.Hour)
 				judge := plan.Judges[p][i%len(plan.Judges[p])].Judge
@@ -351,7 +353,6 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 				statistics = append(statistics, stat)
 				metrics.TotalChecks++
 				metrics.LatestCheck = new(timestamp)
-				dayChecks++
 				if day == 0 && alive {
 					isAlive = true
 				}
@@ -361,7 +362,6 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 					}
 				}
 			}
-			daily = append(daily, domain.ProxyDailyCheck{ProxyID: proxy.ID, Day: database.StartOfUTCDay(checkedAt.Add(-time.Duration(day) * 24 * time.Hour)), ChecksCount: dayChecks, CreatedAt: options.Now, UpdatedAt: options.Now})
 		}
 		if !isAlive {
 			metrics.FailureStreak = 5
@@ -380,16 +380,12 @@ func seedDevelopmentMeasurements(tx *gorm.DB, workspace domain.Workspace, proxie
 	for _, batch := range []struct {
 		rows any
 		size int
-	}{{&latest, 500}, {&overall, 1000}, {&daily, 1000}, {&reputations, 500}} {
+	}{{&latest, 500}, {&overall, 1000}, {&reputations, 500}} {
 		if err := tx.Omit(clause.Associations).CreateInBatches(batch.rows, batch.size).Error; err != nil {
 			return err
 		}
 	}
-	ids := make([]uint64, 0, len(proxies))
-	for _, proxy := range proxies {
-		ids = append(ids, proxy.ID)
-	}
-	return database.MarkProxyDailyChecksBackfilled(tx, ids)
+	return nil
 }
 
 func seedDevelopmentTimeline(tx *gorm.DB, workspace domain.Workspace, access []domain.ManagedProxy, options DevelopmentSeedOptions) error {
@@ -420,15 +416,46 @@ func seedDevelopmentTimeline(tx *gorm.DB, workspace domain.Workspace, access []d
 	if err := tx.CreateInBatches(&snapshots, 1000).Error; err != nil {
 		return err
 	}
-	periodStart := time.Date(options.Now.Year(), options.Now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	var checkAttempts int64
-	if err := tx.Model(&domain.ProxyStatistic{}).Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").Where("up.workspace_id = ? AND proxy_statistics.created_at >= ?", workspace.ID, periodStart).Count(&checkAttempts).Error; err != nil {
-		return err
+	return seedDevelopmentUsage(tx, workspace, active, len(access), options)
+}
+
+// seedDevelopmentUsage writes one usage row per month of seeded history, as
+// the checker meter and statistics ingestion would have, plus one earlier
+// month from before the meter existed, which has check attempts only. The
+// dashboard's check figures read these rows.
+func seedDevelopmentUsage(tx *gorm.DB, workspace domain.Workspace, active uint64, routes int, options DevelopmentSeedOptions) error {
+	monthStart := func(t time.Time) time.Time {
+		t = t.UTC()
+		return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
 	}
-	usage := domain.WorkspaceUsagePeriod{WorkspaceID: workspace.ID, PeriodStart: periodStart, PeriodEnd: periodStart.AddDate(0, 1, 0),
-		ActiveRoutes: active, PeakActiveRoutes: active, CheckAttempts: uint64(checkAttempts),
-		ManagedRequests: uint64(len(access) * 240), ManagedBytes: uint64(len(access)) * 1250000, CreatedAt: periodStart, UpdatedAt: options.Now}
-	return tx.Create(&usage).Error
+	currentStart := monthStart(options.Now)
+	firstStart := monthStart(options.Now.Add(-time.Duration(options.HistoryDays) * 24 * time.Hour))
+	premeter := firstStart.AddDate(0, -1, 0)
+	periods := []domain.WorkspaceUsagePeriod{{WorkspaceID: workspace.ID, PeriodStart: premeter, PeriodEnd: firstStart,
+		ActiveRoutes: active, PeakActiveRoutes: active, CheckAttempts: uint64(routes) * 4 * 30, CreatedAt: premeter, UpdatedAt: firstStart}}
+	for start := firstStart; !start.After(currentStart); start = start.AddDate(0, 1, 0) {
+		end := start.AddDate(0, 1, 0)
+		// Each statistic is one protocol check of Attempt+1 requests, the
+		// unit both the checker meter (checks) and ingestion
+		// (check_attempts) charge.
+		var measured struct {
+			ProtocolChecks uint64
+			Requests       uint64
+		}
+		if err := tx.Model(&domain.ProxyStatistic{}).Joins("JOIN user_proxies up ON up.proxy_id = proxy_statistics.proxy_id").
+			Where("up.workspace_id = ? AND proxy_statistics.created_at >= ? AND proxy_statistics.created_at < ?", workspace.ID, start, end).
+			Select("COUNT(*) AS protocol_checks, COALESCE(SUM(proxy_statistics.attempt + 1), 0) AS requests").Scan(&measured).Error; err != nil {
+			return err
+		}
+		period := domain.WorkspaceUsagePeriod{WorkspaceID: workspace.ID, PeriodStart: start, PeriodEnd: end,
+			ActiveRoutes: active, PeakActiveRoutes: active, CheckAttempts: measured.Requests, Checks: measured.Requests,
+			ProtocolChecks: measured.ProtocolChecks, CreatedAt: start, UpdatedAt: options.Now}
+		if start.Equal(currentStart) {
+			period.ManagedRequests, period.ManagedBytes = uint64(routes*240), uint64(routes)*1250000
+		}
+		periods = append(periods, period)
+	}
+	return tx.Create(&periods).Error
 }
 
 func seedDevelopmentAlerts(tx *gorm.DB, workspace domain.Workspace, index int, options DevelopmentSeedOptions, result *DevelopmentSeedResult) error {

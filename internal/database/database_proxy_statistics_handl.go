@@ -65,8 +65,8 @@ func proxyStatisticColumnCount() int {
 	return numFields
 }
 
-// InsertProxyStatistics commits accepted history, replay identities, check/usage
-// counters, latest evidence and reputation-refresh requests in one transaction.
+// InsertProxyStatistics commits accepted history, replay identities, latest
+// evidence, reputation-refresh requests and workspace usage in one transaction.
 // Stream replays are filtered before any of those side effects. Nil means the
 // transaction succeeded or there was nothing new to write. Filter/source read
 // models are notified after commit and may still lag when this call returns.
@@ -94,9 +94,6 @@ func InsertProxyStatistics(ctx context.Context, statistics []domain.ProxyStatist
 			batchSize = CalculateProxyStatisticBatchSize(len(accepted))
 		}
 		if err := tx.CreateInBatches(&accepted, batchSize).Error; err != nil {
-			return err
-		}
-		if err := incrementProxyDailyChecks(tx, accepted); err != nil {
 			return err
 		}
 		latestEntries, legacyProxyIDs := latestProxyStatusEntries(accepted)

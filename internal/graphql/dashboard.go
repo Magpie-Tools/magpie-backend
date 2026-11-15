@@ -1,10 +1,10 @@
 package graphql
 
 import (
-	"context"
 	"time"
 
 	"magpie/internal/api/dto"
+	"magpie/internal/dashboard"
 	"magpie/internal/database"
 	"magpie/internal/domain"
 
@@ -33,16 +33,7 @@ func buildProxyHistory(workspaceID uint, limit int) []map[string]interface{} {
 	return result
 }
 
-func buildRecentProxyChecks(workspaceID uint, limit int) []map[string]interface{} {
-	value, _ := buildRecentProxyChecksContext(context.Background(), workspaceID, limit)
-	return value
-}
-
-func buildRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit int) ([]map[string]interface{}, error) {
-	entries, err := database.GetRecentProxyChecksContext(ctx, workspaceID, limit)
-	if err != nil {
-		return nil, err
-	}
+func recentProxyCheckMaps(entries []dto.ProxyRecentCheck) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -58,19 +49,10 @@ func buildRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit 
 			"latestCheck":  latestCheck,
 		})
 	}
-	return result, nil
+	return result
 }
 
-func buildFastestAliveProxies(workspaceID uint, limit int) []map[string]interface{} {
-	value, _ := buildFastestAliveProxiesContext(context.Background(), workspaceID, limit)
-	return value
-}
-
-func buildFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limit int) ([]map[string]interface{}, error) {
-	entries, err := database.GetFastestAliveProxiesContext(ctx, workspaceID, limit)
-	if err != nil {
-		return nil, err
-	}
+func fastestAliveProxyMaps(entries []dto.ProxyFastestAlive) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -88,7 +70,7 @@ func buildFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limi
 			"latestCheck":     latestCheck,
 		})
 	}
-	return result, nil
+	return result
 }
 
 func buildProxySnapshots(entries []dto.ProxySnapshotEntry) []map[string]interface{} {
@@ -106,25 +88,22 @@ func buildProxySnapshots(entries []dto.ProxySnapshotEntry) []map[string]interfac
 	return result
 }
 
-func ensureLatestAliveSnapshot(entries []dto.ProxySnapshotEntry, currentCount int64) []dto.ProxySnapshotEntry {
-	now := time.Now()
+// ensureLatestAliveSnapshot appends the dashboard snapshot's alive count at
+// the time its build started, unless the series already has a point at least
+// that recent. An equal count moves the last point forward instead.
+func ensureLatestAliveSnapshot(entries []dto.ProxySnapshotEntry, currentCount int64, recordedAt time.Time) []dto.ProxySnapshotEntry {
 	if len(entries) == 0 {
-		return append(entries, dto.ProxySnapshotEntry{
-			Count:      currentCount,
-			RecordedAt: now,
-		})
+		return append(entries, dto.ProxySnapshotEntry{Count: currentCount, RecordedAt: recordedAt})
 	}
-
 	lastIndex := len(entries) - 1
-	if entries[lastIndex].Count == currentCount {
-		entries[lastIndex].RecordedAt = now
+	if !recordedAt.After(entries[lastIndex].RecordedAt) {
 		return entries
 	}
-
-	return append(entries, dto.ProxySnapshotEntry{
-		Count:      currentCount,
-		RecordedAt: now,
-	})
+	if entries[lastIndex].Count == currentCount {
+		entries[lastIndex].RecordedAt = recordedAt
+		return entries
+	}
+	return append(entries, dto.ProxySnapshotEntry{Count: currentCount, RecordedAt: recordedAt})
 }
 
 func clampPositiveLimit(limit, max int) int {
@@ -137,58 +116,9 @@ func clampPositiveLimit(limit, max int) int {
 	return limit
 }
 
-func buildDashboard(info dto.DashboardInfo) map[string]interface{} {
-	countries := make([]map[string]interface{}, 0, len(info.CountryBreakdown))
-	for _, entry := range info.CountryBreakdown {
-		countries = append(countries, map[string]interface{}{
-			"country": entry.Country,
-			"count":   int(entry.Count),
-		})
-	}
-
-	reputation := map[string]interface{}{
-		"good":    int(info.ReputationBreakdown.Good),
-		"neutral": int(info.ReputationBreakdown.Neutral),
-		"poor":    int(info.ReputationBreakdown.Poor),
-		"unknown": int(info.ReputationBreakdown.Unknown),
-	}
-
-	entries := make([]map[string]interface{}, 0, len(info.JudgeValidProxies))
-	for _, entry := range info.JudgeValidProxies {
-		entries = append(entries, map[string]interface{}{
-			"judgeUrl":           entry.JudgeUrl,
-			"eliteProxies":       int(entry.EliteProxies),
-			"anonymousProxies":   int(entry.AnonymousProxies),
-			"transparentProxies": int(entry.TransparentProxies),
-		})
-	}
-
-	result := map[string]interface{}{
-		"totalChecks":         int(info.TotalChecks),
-		"totalScraped":        int(info.TotalScraped),
-		"totalChecksWeek":     int(info.TotalChecksWeek),
-		"totalScrapedWeek":    int(info.TotalScrapedWeek),
-		"reputationBreakdown": reputation,
-		"countryBreakdown":    countries,
-		"judgeValidProxies":   entries,
-	}
-
-	if info.TopReputationProxy != nil {
-		result["topReputationProxy"] = map[string]interface{}{
-			"proxyId": int(info.TopReputationProxy.ProxyID),
-			"ip":      info.TopReputationProxy.IP,
-			"port":    int(info.TopReputationProxy.Port),
-			"score":   info.TopReputationProxy.Score,
-			"label":   info.TopReputationProxy.Label,
-		}
-	}
-
-	return result
-}
-
 // dashboardTypes holds the GraphQL types of the dashboard fields of Viewer.
 type dashboardTypes struct {
-	dashboardType               *gql.Object
+	dashboardViewType           *gql.Object
 	fastestAliveProxyType       *gql.Object
 	proxyHistoryType            *gql.Object
 	proxySnapshotCollectionType *gql.Object
@@ -279,42 +209,23 @@ func newDashboardTypes() dashboardTypes {
 		},
 	})
 
-	dashboardType := gql.NewObject(gql.ObjectConfig{
-		Name: "DashboardInfo",
-		Fields: gql.Fields{
-			"totalChecks":      &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"totalScraped":     &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"totalChecksWeek":  &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"totalScrapedWeek": &gql.Field{Type: gql.NewNonNull(gql.Int)},
-			"reputationBreakdown": &gql.Field{
-				Type: gql.NewNonNull(dashboardReputationBreakdownType),
-			},
-			"countryBreakdown": &gql.Field{
-				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(countryBreakdownType))),
-			},
-			"judgeValidProxies": &gql.Field{
-				Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(judgeValidProxyType))),
-			},
-		},
-	})
-	return dashboardTypes{dashboardType: dashboardType, fastestAliveProxyType: fastestAliveProxyType, proxyHistoryType: proxyHistoryType, proxySnapshotCollectionType: proxySnapshotCollectionType, recentProxyCheckType: recentProxyCheckType}
+	dashboardViewType := newDashboardViewType(dashboardReputationBreakdownType, countryBreakdownType, judgeValidProxyType, recentProxyCheckType, fastestAliveProxyType)
+	return dashboardTypes{dashboardViewType: dashboardViewType, fastestAliveProxyType: fastestAliveProxyType, proxyHistoryType: proxyHistoryType, proxySnapshotCollectionType: proxySnapshotCollectionType, recentProxyCheckType: recentProxyCheckType}
 }
 
 // dashboardViewerFields are the fields this feature adds to the Viewer type.
-func dashboardViewerFields(types dashboardTypes) gql.Fields {
-	dashboardType, fastestAliveProxyType, proxyHistoryType, proxySnapshotCollectionType, recentProxyCheckType := types.dashboardType, types.fastestAliveProxyType, types.proxyHistoryType, types.proxySnapshotCollectionType, types.recentProxyCheckType
+func dashboardViewerFields(types dashboardTypes, views *dashboard.Service) gql.Fields {
+	proxyHistoryType, proxySnapshotCollectionType := types.proxyHistoryType, types.proxySnapshotCollectionType
 	return gql.Fields{
-		"dashboard": &gql.Field{
-			Type: gql.NewNonNull(dashboardType),
+		"dashboardView": &gql.Field{
+			Type:        gql.NewNonNull(types.dashboardViewType),
+			Description: "The workspace dashboard from its shared snapshot, with an explicit status.",
 			Resolve: func(p gql.ResolveParams) (interface{}, error) {
-				if data, ok := p.Source.(*viewerData); ok {
-					info, err := database.GetDashboardInfoContext(p.Context, data.workspace.ID)
-					if err != nil {
-						return nil, err
-					}
-					return buildDashboard(info), nil
+				data, ok := p.Source.(*viewerData)
+				if !ok {
+					return nil, nil
 				}
-				return nil, nil
+				return resolveDashboardView(p.Context, views, data.workspace.ID)
 			},
 		},
 		"proxyHistory": &gql.Field{
@@ -333,38 +244,6 @@ func dashboardViewerFields(types dashboardTypes) gql.Fields {
 				return []map[string]interface{}{}, nil
 			},
 		},
-		"recentProxyChecks": &gql.Field{
-			Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(recentProxyCheckType))),
-			Args: gql.FieldConfigArgument{
-				"limit": &gql.ArgumentConfig{Type: gql.Int},
-			},
-			Resolve: func(p gql.ResolveParams) (interface{}, error) {
-				limit := defaultRecentProxyChecksLimit
-				if raw, ok := p.Args["limit"].(int); ok && raw > 0 {
-					limit = clampPositiveLimit(raw, maxRecentProxyChecksLimit)
-				}
-				if data, ok := p.Source.(*viewerData); ok {
-					return buildRecentProxyChecksContext(p.Context, data.workspace.ID, limit)
-				}
-				return []map[string]interface{}{}, nil
-			},
-		},
-		"fastestAliveProxies": &gql.Field{
-			Type: gql.NewNonNull(gql.NewList(gql.NewNonNull(fastestAliveProxyType))),
-			Args: gql.FieldConfigArgument{
-				"limit": &gql.ArgumentConfig{Type: gql.Int},
-			},
-			Resolve: func(p gql.ResolveParams) (interface{}, error) {
-				limit := defaultFastestAliveProxyLimit
-				if raw, ok := p.Args["limit"].(int); ok && raw > 0 {
-					limit = clampPositiveLimit(raw, maxFastestAliveProxyLimit)
-				}
-				if data, ok := p.Source.(*viewerData); ok {
-					return buildFastestAliveProxiesContext(p.Context, data.workspace.ID, limit)
-				}
-				return []map[string]interface{}{}, nil
-			},
-		},
 		"proxySnapshots": &gql.Field{
 			Type: gql.NewNonNull(proxySnapshotCollectionType),
 			Args: gql.FieldConfigArgument{
@@ -376,8 +255,18 @@ func dashboardViewerFields(types dashboardTypes) gql.Fields {
 					limit = clampPositiveLimit(raw, maxViewerProxySnapshotLimit)
 				}
 				if data, ok := p.Source.(*viewerData); ok {
+					// The latest point is the dashboard snapshot's validated alive
+					// count, resolved once per request with dashboardView. No
+					// live alive aggregate runs here; without current health
+					// the series gets no synthetic point rather than a zero.
+					view, err := resolveDashboardView(p.Context, views, data.workspace.ID)
+					if err != nil {
+						return nil, err
+					}
 					alive := database.GetProxySnapshotEntries(data.workspace.ID, domain.ProxySnapshotMetricAlive, limit)
-					alive = ensureLatestAliveSnapshot(alive, database.GetCurrentAliveProxyCount(data.workspace.ID))
+					if count := view.AliveCount(); count != nil && view.CollectedAt != nil {
+						alive = ensureLatestAliveSnapshot(alive, *count, *view.CollectedAt)
+					}
 
 					scraped := database.GetProxySnapshotEntries(data.workspace.ID, domain.ProxySnapshotMetricScraped, limit)
 					return map[string]interface{}{

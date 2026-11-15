@@ -10,7 +10,7 @@ import (
 // NewSchema assembles the Viewer type and the mutations from the feature
 // files. Every feature's fields must reach the schema.
 func TestNewSchemaAssemblesEveryFeature(t *testing.T) {
-	schema, err := NewSchema()
+	schema, err := NewSchema(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,15 +23,15 @@ func TestNewSchemaAssemblesEveryFeature(t *testing.T) {
 		"id", "email", "role", "workspaceId", "workspaceName", "workspaceRole",
 		"settings",
 		"proxyCount", "proxyLimit", "proxies",
-		"dashboard", "proxyHistory", "recentProxyChecks", "fastestAliveProxies", "proxySnapshots",
+		"dashboardView", "proxyHistory", "proxySnapshots",
 		"scrapeSourceUrls", "scrapeSourceCount", "scrapeSources",
 	} {
 		if fields[name] == nil {
 			t.Errorf("Viewer.%s is missing", name)
 		}
 	}
-	if len(fields) != 18 {
-		t.Errorf("Viewer has %d fields, want 18", len(fields))
+	if len(fields) != 16 {
+		t.Errorf("Viewer has %d fields, want 16", len(fields))
 	}
 	if schema.MutationType() == nil || schema.MutationType().Fields()["updateUserSettings"] == nil {
 		t.Error("Mutation.updateUserSettings is missing")

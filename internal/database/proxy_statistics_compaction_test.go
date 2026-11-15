@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 	"magpie/internal/domain"
 	"magpie/internal/platform/pg"
+	testdb "magpie/internal/testkit/db"
 )
 
 func TestStatisticLedgerRetirementPreservesReplayProtection(t *testing.T) {
@@ -21,7 +22,7 @@ func TestStatisticLedgerRetirementPreservesReplayProtection(t *testing.T) {
 			if postgres {
 				db = setupProxyIngestionPostgresTest(t)
 			} else {
-				db = openDailyChecksSQLite(t)
+				db = testdb.OpenSQLite(t)
 				old := pg.DB
 				pg.DB = db
 				t.Cleanup(func() { pg.DB = old })
@@ -95,77 +96,6 @@ func TestStatisticLedgerRetirementWaitsForIngestTransaction(t *testing.T) {
 	}
 	if accepted, err := acceptProxyStatisticEvents(db, []domain.ProxyStatistic{stat}); err != nil || len(accepted) != 0 {
 		t.Fatalf("retired replay accepted: %v %v", accepted, err)
-	}
-}
-
-func TestDailyCompactionPreservesTotalsAndBackfill(t *testing.T) {
-	db := setupProxyIngestionPostgresTest(t)
-	workspace, _, proxy, judge := seedCheckerEvidenceTest(t, db)
-	now := time.Now().UTC()
-	stats := make([]domain.ProxyStatistic, 180)
-	for i := range stats {
-		stats[i] = domain.ProxyStatistic{ProxyID: proxy.ID, ProtocolID: 1, JudgeID: judge.ID, Alive: true, WorkspaceIDs: []uint{workspace.ID}, CreatedAt: now.AddDate(0, 0, -i-1)}
-	}
-	if err := InsertProxyStatistics(context.Background(), stats, 500); err != nil {
-		t.Fatal(err)
-	}
-	before, err := queryDashboardCheckCountsFromDaily(workspace.ID, now.AddDate(0, 0, -7))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		rows, err := CompactProxyDailyChecks(context.Background(), now.AddDate(0, 0, -30), 17)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if rows == 0 {
-			break
-		}
-	}
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, StartOfUTCDay(now))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	after, err := queryDashboardCheckCountsFromDaily(workspace.ID, now.AddDate(0, 0, -7))
-	if err != nil || after != before || after.TotalChecks != 180 {
-		t.Fatalf("counts changed: before=%+v after=%+v err=%v", before, after, err)
-	}
-	var rows int64
-	if err := db.Model(&domain.ProxyDailyCheck{}).Count(&rows).Error; err != nil || rows > 31 {
-		t.Fatalf("daily rows=%d err=%v", rows, err)
-	}
-	// Late completion for a compacted day counts once and is compacted later.
-	stats[0].ID = 0
-	stats[179].ID = 0
-	if err := InsertProxyStatistics(context.Background(), stats[:1], 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := InsertProxyStatistics(context.Background(), stats[179:], 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := CompactProxyDailyChecks(context.Background(), now.AddDate(0, 0, -30), 100); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		return backfillProxyDailyChecksForProxyIDsTx(tx, []uint64{proxy.ID}, StartOfUTCDay(now))
-	}); err != nil {
-		t.Fatal(err)
-	}
-	after, err = queryDashboardCheckCountsFromDaily(workspace.ID, now.AddDate(0, 0, -7))
-	if err != nil || after.TotalChecks != 182 {
-		t.Fatalf("late counts=%+v err=%v", after, err)
-	}
-	if err := db.Exec("DELETE FROM user_proxies WHERE proxy_id = ?", proxy.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if _, err := DeleteOrphanProxies(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	for _, table := range []string{"proxy_daily_checks", "proxy_daily_check_proxy_backfills", "proxy_check_totals"} {
-		if err := db.Table(table).Count(&rows).Error; err != nil || rows != 0 {
-			t.Fatalf("orphan %s rows=%d err=%v", table, rows, err)
-		}
 	}
 }
 

@@ -27,7 +27,6 @@ func ListCheckerWorkspaces(ctx context.Context) ([]uint, error) {
 // here would decrypt credentials and is deliberately unnecessary.
 func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig.Workspace, error) {
 	var snapshot *checkerconfig.Workspace
-	projectionChanged := false
 	err := pg.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var workspace domain.Workspace
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&workspace, workspaceID).Error; err != nil {
@@ -111,7 +110,6 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		if !defaultChanged && len(changedIDs) == 0 && !workspace.CheckerDirty {
 			return nil
 		}
-		projectionChanged = true
 		sort.Slice(changedIDs, func(i, j int) bool { return changedIDs[i] < changedIDs[j] })
 		workspace.CheckerGeneration++
 		snapshot.Generation = workspace.CheckerGeneration
@@ -164,9 +162,6 @@ func LoadCheckerWorkspace(ctx context.Context, workspaceID uint) (*checkerconfig
 		}
 		return nil
 	})
-	if err == nil && (projectionChanged || snapshot == nil) {
-		invalidateDashboardWorkspace(workspaceID)
-	}
 	return snapshot, err
 }
 
@@ -428,14 +423,14 @@ SELECT COUNT(*) FROM removed`, before, limit, before).Row().Scan(&count)
 // Health caches must not expose the preceding configuration while a committed
 // settings or membership change is waiting for projection. This is an API read,
 // never a checker-worker lookup. Database failures also suppress cached health.
-type checkerHealthVersion struct {
+type CheckerHealthVersion struct {
 	Generation uint64 `gorm:"column:checker_generation"`
 	Dirty      bool   `gorm:"column:checker_dirty"`
 }
 
 // Read the committed generation on API cache reads, including across instances.
 // A refresh records it before querying and rechecks it before publishing.
-func currentCheckerHealthVersion(workspaceID uint) checkerHealthVersion {
+func CurrentCheckerHealthVersion(workspaceID uint) CheckerHealthVersion {
 	version, err := currentCheckerHealthVersionWithDB(pg.DB, workspaceID)
 	if err != nil {
 		version.Dirty = true
@@ -443,8 +438,8 @@ func currentCheckerHealthVersion(workspaceID uint) checkerHealthVersion {
 	return version
 }
 
-func currentCheckerHealthVersionWithDB(db *gorm.DB, workspaceID uint) (checkerHealthVersion, error) {
-	var version checkerHealthVersion
+func currentCheckerHealthVersionWithDB(db *gorm.DB, workspaceID uint) (CheckerHealthVersion, error) {
+	var version CheckerHealthVersion
 	if db == nil {
 		return version, nil
 	}
@@ -453,11 +448,5 @@ func currentCheckerHealthVersionWithDB(db *gorm.DB, workspaceID uint) (checkerHe
 }
 
 func checkerProjectionPending(workspaceID uint) bool {
-	return currentCheckerHealthVersion(workspaceID).Dirty
-}
-
-type dashboardHealthCacheEntry[T any] struct {
-	version     checkerHealthVersion
-	value       T
-	completedAt time.Time
+	return CurrentCheckerHealthVersion(workspaceID).Dirty
 }

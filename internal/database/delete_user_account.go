@@ -116,9 +116,6 @@ func DeleteUserAccountWithResult(ctx context.Context, userID uint) (DeleteUserAc
 	if err != nil {
 		return DeleteUserAccountResult{}, err
 	}
-	for _, workspaceID := range result.DeletedWorkspaceIDs {
-		forgetDashboardWorkspace(workspaceID)
-	}
 	return result, nil
 }
 

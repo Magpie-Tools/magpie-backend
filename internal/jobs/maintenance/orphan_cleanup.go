@@ -24,23 +24,32 @@ const (
 	orphanCleanupLockKey  = "magpie:leader:orphan_cleanup"
 )
 
-func StartOrphanCleanupRoutine(ctx context.Context) {
+// CleanupStep is a deletion another package owns that each orphan cleanup
+// pass runs after its own deletions.
+type CleanupStep struct {
+	Name string
+	Run  func(context.Context) (int64, error)
+}
+
+// StartOrphanCleanupRoutine runs the orphan cleanup passes, and the extra
+// steps after each pass, on the leader instance until ctx ends.
+func StartOrphanCleanupRoutine(ctx context.Context, extra ...CleanupStep) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	err := support.RunWithLeader(ctx, orphanCleanupLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) {
-		runOrphanCleanupLoop(leaderCtx)
+		runOrphanCleanupLoop(leaderCtx, extra)
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("Orphan cleanup routine stopped", "error", err)
 	}
 }
 
-func runOrphanCleanupLoop(ctx context.Context) {
+func runOrphanCleanupLoop(ctx context.Context, extra []CleanupStep) {
 	interval := resolveCleanupInterval()
 	retry := resolveCleanupDuration(envCleanupRetryInterval, defaultCleanupRetry)
-	runOrphanCleanupPasses(ctx, interval, retry, runOrphanCleanup)
+	runOrphanCleanupPasses(ctx, interval, retry, func(ctx context.Context) error { return runOrphanCleanup(ctx, extra) })
 }
 
 func runOrphanCleanupPasses(ctx context.Context, interval, retry time.Duration, run func(context.Context) error) {
@@ -87,7 +96,7 @@ func resolveCleanupDuration(env string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-func runOrphanCleanup(ctx context.Context) error {
+func runOrphanCleanup(ctx context.Context, extra []CleanupStep) error {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, resolveCleanupDuration(envCleanupMaxRunDuration, defaultCleanupBudget))
 	defer cancel()
@@ -124,6 +133,16 @@ func runOrphanCleanup(ctx context.Context) error {
 		failures = append(failures, err)
 	} else {
 		siteRemoved = removed
+	}
+
+	for _, step := range extra {
+		removed, err := step.Run(ctx)
+		if err != nil {
+			log.Error("Failed to run cleanup step", "step", step.Name, "error", err)
+			failures = append(failures, err)
+		} else if removed > 0 {
+			log.Info("Cleanup step completed", "step", step.Name, "removed", removed)
+		}
 	}
 
 	err := errors.Join(failures...)

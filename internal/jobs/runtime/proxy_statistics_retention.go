@@ -57,7 +57,7 @@ func StartProxyStatisticsRetentionRoutine(ctx context.Context) {
 
 	cfg := resolveProxyStatisticsRetentionConfig()
 	if cfg.statRetentionDays <= 0 && cfg.responseRetentionDays <= 0 {
-		log.Info("Proxy statistics history retention disabled; partition and counter maintenance remain enabled")
+		log.Info("Proxy statistics history retention disabled; partition and route maintenance remain enabled")
 	}
 
 	err := support.RunWithLeader(ctx, proxyStatisticsRetentionLockKey, support.DefaultLeadershipTTL, func(leaderCtx context.Context) {
@@ -95,13 +95,6 @@ func runProxyStatisticsRetentionOnce(ctx context.Context, cfg proxyStatisticsRet
 	cancel()
 	if err != nil {
 		log.Error("Failed to maintain statistics partitions", "error", err)
-		return err
-	}
-	opCtx, cancel = context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)
-	_, err = database.CompactProxyDailyChecks(opCtx, now.AddDate(0, 0, -max(8, support.GetEnvInt("PROXY_DAILY_CHECK_RETENTION_DAYS", 30))), cfg.batchSize)
-	cancel()
-	if err != nil {
-		log.Error("Failed to compact daily check counters", "error", err)
 		return err
 	}
 	opCtx, cancel = context.WithTimeout(ctx, proxyStatisticsRetentionDBTimeout)

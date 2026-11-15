@@ -1,4 +1,4 @@
-package database
+package dashboard
 
 import (
 	"context"
@@ -82,19 +82,14 @@ SELECT w.id,w.checker_http_key,n,1,n,'2026-10-22 12:00:00+00',true,100,1,1 FROM 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	db = db.WithContext(ctx).Session(&gorm.Session{Logger: queryLog})
-	t.Cleanup(func() {
-		dashboardInfoCache.Delete(workspaceID)
-		dashboardRecentChecksCache.Delete(dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: defaultRecentProxyChecksLimit})
-		dashboardFastestAliveCache.Delete(dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: 3})
-	})
-	info, err := refreshDashboardInfoCache(db, workspaceID)
-	if err != nil || len(info.JudgeValidProxies) != 1 || info.JudgeValidProxies[0].EliteProxies != 10000 {
-		t.Fatal("whole-inventory judge result changed", info.JudgeValidProxies, err)
+	judges, err := queryJudgeBreakdown(db, workspaceID)
+	if err != nil || len(judges) != 1 || judges[0].EliteProxies != 10000 {
+		t.Fatal("whole-inventory judge result changed", judges, err)
 	}
-	if _, err := refreshRecentProxyChecksCache(db, workspaceID, defaultRecentProxyChecksLimit); err != nil {
+	if _, err := queryRecentProxyChecks(db, workspaceID, recentCandidateLimit); err != nil {
 		t.Fatal(err)
 	}
-	fastest, err := refreshFastestAliveProxiesCache(db, workspaceID, 3)
+	fastest, err := queryFastestAliveProxies(db, workspaceID, 3)
 	if err != nil || len(fastest) != 3 || fastest[0].ID != 1 || fastest[1].ID != 2 || fastest[2].ID != 3 {
 		t.Fatal("fastest ties changed", fastest, err)
 	}
