@@ -89,8 +89,9 @@ func buildProxySnapshots(entries []dto.ProxySnapshotEntry) []map[string]interfac
 }
 
 // ensureLatestAliveSnapshot appends the dashboard snapshot's alive count at
-// the time its build started, unless the series already has a point at least
-// that recent. An equal count moves the last point forward instead.
+// the time the build that computed it started, unless the series already has
+// a point at least that recent. An equal count moves the last point forward
+// instead.
 func ensureLatestAliveSnapshot(entries []dto.ProxySnapshotEntry, currentCount int64, recordedAt time.Time) []dto.ProxySnapshotEntry {
 	if len(entries) == 0 {
 		return append(entries, dto.ProxySnapshotEntry{Count: currentCount, RecordedAt: recordedAt})
@@ -255,17 +256,19 @@ func dashboardViewerFields(types dashboardTypes, views *dashboard.Service) gql.F
 					limit = clampPositiveLimit(raw, maxViewerProxySnapshotLimit)
 				}
 				if data, ok := p.Source.(*viewerData); ok {
-					// The latest point is the dashboard snapshot's validated alive
-					// count, resolved once per request with dashboardView. No
-					// live alive aggregate runs here; without current health
-					// the series gets no synthetic point rather than a zero.
+					// The latest point is the dashboard snapshot's alive count,
+					// resolved once per request with dashboardView and stamped
+					// with the start of the build that computed it, so an
+					// outdated count lands at its own time. No live alive
+					// aggregate runs here; without health the series gets no
+					// synthetic point rather than a zero.
 					view, err := resolveDashboardView(p.Context, views, data.workspace.ID)
 					if err != nil {
 						return nil, err
 					}
 					alive := database.GetProxySnapshotEntries(data.workspace.ID, domain.ProxySnapshotMetricAlive, limit)
-					if count := view.AliveCount(); count != nil && view.CollectedAt != nil {
-						alive = ensureLatestAliveSnapshot(alive, *count, *view.CollectedAt)
+					if count := view.AliveCount(); count != nil && view.HealthCollectedAt != nil {
+						alive = ensureLatestAliveSnapshot(alive, *count, *view.HealthCollectedAt)
 					}
 
 					scraped := database.GetProxySnapshotEntries(data.workspace.ID, domain.ProxySnapshotMetricScraped, limit)

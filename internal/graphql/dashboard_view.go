@@ -128,7 +128,7 @@ func newDashboardViewType(reputationType, countryType, judgeType, recentType, fa
 			},
 			"judgeValidProxies": &gql.Field{
 				Type:        gql.NewList(gql.NewNonNull(judgeType)),
-				Description: "Alive routes per judge and anonymity level. Empty while health is masked, null while it is not yet built.",
+				Description: "Alive routes per judge and anonymity level. Outdated while healthOutdated; null before any health is built.",
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					judges := p.Source.(dashboard.View).JudgeValidProxies()
 					if judges == nil {
@@ -170,16 +170,30 @@ func newDashboardViewType(reputationType, countryType, judgeType, recentType, fa
 					return p.Source.(dashboard.View).Rebuilding, nil
 				},
 			},
-			"healthMasked": &gql.Field{
+			"checkerSettingsPending": &gql.Field{
 				Type:        gql.NewNonNull(gql.Boolean),
-				Description: "Checker settings changed and are still being applied; health lists are empty until they are.",
+				Description: "The workspace's checker settings changed and are still being applied.",
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
-					return p.Source.(dashboard.View).HealthMasked, nil
+					return p.Source.(dashboard.View).CheckerSettingsPending, nil
+				},
+			},
+			"healthOutdated": &gql.Field{
+				Type:        gql.NewNonNull(gql.Boolean),
+				Description: "aliveCount, judgeValidProxies, recentProxyChecks and fastestAliveProxies are the previous result, computed under earlier checker settings, because results under the current settings are not built yet.",
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					return p.Source.(dashboard.View).HealthOutdated, nil
+				},
+			},
+			"healthCollectedAt": &gql.Field{
+				Type:        gql.DateTime,
+				Description: "When the build that computed aliveCount, judgeValidProxies, recentProxyChecks and fastestAliveProxies started. Earlier than collectedAt while healthOutdated.",
+				Resolve: func(p gql.ResolveParams) (interface{}, error) {
+					return optionalTime(p.Source.(dashboard.View).HealthCollectedAt), nil
 				},
 			},
 			"collectedAt": &gql.Field{
 				Type:        gql.DateTime,
-				Description: "When the snapshot's build started: its data is at least this old. It does not describe the live check figures.",
+				Description: "When the snapshot's latest build started: its data is at least this old. It does not describe the live check figures, or the health fields while healthOutdated (see healthCollectedAt).",
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					return optionalTime(p.Source.(dashboard.View).CollectedAt), nil
 				},
@@ -199,7 +213,7 @@ func newDashboardViewType(reputationType, countryType, judgeType, recentType, fa
 			},
 			"recentProxyChecks": &gql.Field{
 				Type:        gql.NewList(gql.NewNonNull(recentType)),
-				Description: "The most recently checked routes, alive first. Empty while health is masked, null while it is not yet built.",
+				Description: "The most recently checked routes, alive first. Outdated while healthOutdated; null before any health is built.",
 				Args:        gql.FieldConfigArgument{"limit": &gql.ArgumentConfig{Type: gql.Int}},
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					limit := defaultRecentProxyChecksLimit
@@ -215,7 +229,7 @@ func newDashboardViewType(reputationType, countryType, judgeType, recentType, fa
 			},
 			"fastestAliveProxies": &gql.Field{
 				Type:        gql.NewList(gql.NewNonNull(fastestType)),
-				Description: "Alive routes by their best response time under the current checker settings. Empty while health is masked, null while it is not yet built.",
+				Description: "Alive routes by their best response time under the current checker settings, or under earlier ones while healthOutdated; null before any health is built.",
 				Args:        gql.FieldConfigArgument{"limit": &gql.ArgumentConfig{Type: gql.Int}},
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					limit := defaultFastestAliveProxyLimit
@@ -231,7 +245,7 @@ func newDashboardViewType(reputationType, countryType, judgeType, recentType, fa
 			},
 			"aliveCount": &gql.Field{
 				Type:        gql.Float,
-				Description: "Alive routes under the current checker settings; null while health is masked or not yet built.",
+				Description: "Alive routes under the current checker settings, or under earlier ones while healthOutdated; null before any health is built.",
 				Resolve: func(p gql.ResolveParams) (interface{}, error) {
 					return optionalFloat(p.Source.(dashboard.View).AliveCount()), nil
 				},

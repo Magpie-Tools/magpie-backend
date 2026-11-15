@@ -9,10 +9,12 @@ import (
 	"magpie/internal/api/dto"
 )
 
-// payloadVersion is the format of the stored payload. A reader asks only for
-// rows of its own version, so instances of adjacent releases with different
-// formats build separate rows instead of misreading each other's.
-const payloadVersion int16 = 1
+// payloadVersion is the format of the stored payload and health columns. A
+// reader asks only for rows of its own version, so instances of adjacent
+// releases with different formats build separate rows instead of misreading
+// each other's. Version 2 moved the health parts out of the payload into
+// their own column, which outlives builds that cannot compute them.
+const payloadVersion int16 = 2
 
 const (
 	// recentCandidateLimit is how many recent-check candidates a build keeps,
@@ -23,13 +25,11 @@ const (
 	fastestLimit = 100
 )
 
-// payload is one published build. Inventory parts are valid at any checker
-// generation. Health parts were computed under the row's checker_generation
-// and are served only while it is the committed generation and the
-// workspace is not dirty; Health is nil when the build saw a dirty workspace.
+// payload is the inventory of one published build, valid at any checker
+// generation. The health parts are stored in their own column (see
+// healthPart).
 type payload struct {
 	Inventory inventoryPart `json:"inventory"`
-	Health    *healthPart   `json:"health,omitempty"`
 }
 
 type inventoryPart struct {
@@ -60,6 +60,10 @@ type topReputationProxy struct {
 	Label   string  `json:"label"`
 }
 
+// healthPart is the evidence-derived part of the dashboard. It was computed
+// under the row's checker_generation; it is current while that is the
+// committed generation and the workspace is not dirty, and is otherwise
+// served as the previous result, marked outdated.
 type healthPart struct {
 	AliveCount        int64                   `json:"alive_count"`
 	JudgeValidProxies []judgeCount            `json:"judge_valid_proxies"`
@@ -133,15 +137,23 @@ func (h *healthPart) fastestAlive(limit int) []dto.ProxyFastestAlive {
 	return append(make([]dto.ProxyFastestAlive, 0, len(selected)), selected...)
 }
 
-func encodePayload(value payload) ([]byte, error) {
+// encodeSnapshot encodes a build's inventory payload and, when it computed
+// them, its health parts. Together they are at most maxPayloadBytes.
+func encodeSnapshot(value payload, health *healthPart) ([]byte, []byte, error) {
 	encoded, err := json.Marshal(value)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if len(encoded) > maxPayloadBytes {
-		return nil, fmt.Errorf("dashboard: payload of %d bytes exceeds the %d byte limit", len(encoded), maxPayloadBytes)
+	var encodedHealth []byte
+	if health != nil {
+		if encodedHealth, err = json.Marshal(health); err != nil {
+			return nil, nil, err
+		}
 	}
-	return encoded, nil
+	if size := len(encoded) + len(encodedHealth); size > maxPayloadBytes {
+		return nil, nil, fmt.Errorf("dashboard: payload of %d bytes exceeds the %d byte limit", size, maxPayloadBytes)
+	}
+	return encoded, encodedHealth, nil
 }
 
 func decodePayload(encoded []byte) (*payload, error) {
@@ -151,6 +163,17 @@ func decodePayload(encoded []byte) (*payload, error) {
 	var value payload
 	if err := json.Unmarshal(encoded, &value); err != nil {
 		return nil, fmt.Errorf("dashboard: decode snapshot payload: %w", err)
+	}
+	return &value, nil
+}
+
+func decodeHealth(encoded []byte) (*healthPart, error) {
+	if len(encoded) == 0 {
+		return nil, nil
+	}
+	var value healthPart
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return nil, fmt.Errorf("dashboard: decode snapshot health: %w", err)
 	}
 	return &value, nil
 }
