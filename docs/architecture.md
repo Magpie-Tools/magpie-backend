@@ -60,7 +60,7 @@ responsibility in these files:
 | Proxy pages, sorting and response mapping | [database_proxy_list.go](../internal/database/database_proxy_list.go) |
 | List filters and available filter values | [database_proxy_filters.go](../internal/database/database_proxy_filters.go) |
 | Text, tag and IP search | [database_proxy_search.go](../internal/database/database_proxy_search.go) |
-| Dashboard info, recent checks, fastest routes and their caches | [internal/dashboard](../internal/dashboard/doc.go) |
+| Dashboard snapshots: on-demand builds, leases and the read path | [internal/dashboard](../internal/dashboard/doc.go) |
 | Route details, queue state and check history | [database_proxy_detail.go](../internal/database/database_proxy_detail.go) |
 | Managed proxy deletion, pausing and activation | [database_proxy_lifecycle.go](../internal/database/database_proxy_lifecycle.go) |
 | Failure/capacity cleanup and orphan route deletion | [database_proxy_cleanup.go](../internal/database/database_proxy_cleanup.go) |
@@ -87,9 +87,10 @@ flowchart TD
 | PostgreSQL routes, managed proxies, workspace settings, tags and rotator configuration | Durable resource state. Managed proxies contain encrypted credential copies and lifecycle state. |
 | PostgreSQL check history, stream event ledger, usage/check counters and latest evidence | A statistics transaction commits these together. Latest evidence is derived from history and scoped to workspace and configuration. |
 | PostgreSQL reputation and filter/source read models | Derived state refreshed after result persistence. It can lag committed history and latest evidence. |
+| PostgreSQL dashboard snapshots | Derived state built on demand by any instance under a fenced lease. Health parts are served only for the checker generation they were built under ([ADR 0017](adr/0017-serve-dashboards-from-shared-generation-stamped-snapshots.md)). |
 | Redis proxy payloads, sorted sets and queue heads | Runtime copies of active inventory, with due times and temporary worker leases. Startup and Redis-loss recovery reconstruct them from PostgreSQL. |
 | Redis statistics stream and its pending entries | Results awaiting database ingestion. This is a replayable handoff, not a PostgreSQL commit; surviving a Redis restart depends on Redis persistence. |
-| In-process checker snapshots, HTTP clients, dashboard caches and memory statistics buffers | Runtime state. Checker snapshots compile persisted settings; memory statistics remain volatile until their database transaction commits. |
+| In-process checker snapshots, HTTP clients and memory statistics buffers | Runtime state. Checker snapshots compile persisted settings; memory statistics remain volatile until their database transaction commits. |
 
 PostgreSQL is authoritative for resources and committed results. Reconstructing
 the proxy queue restores active inventory, but cannot recreate check results
@@ -312,11 +313,11 @@ These are intentional exclusions, so a successful flush does not imply every
 submitted result became a history row.
 
 `InsertProxyStatistics` commits replay-event identities, accepted history,
-check/usage counters, latest evidence and durable reputation-refresh requests
+usage counters, latest evidence and durable reputation-refresh requests
 in one PostgreSQL transaction. Latest pointers use workspace, configuration
 key, route and protocol. A delayed older result cannot replace newer evidence;
 obsolete configuration evidence remains history without defining current health.
-Filter/source read models (`internal/readmodel`), reputation calculation and dashboard cache refreshes
+Filter/source read models (`internal/readmodel`), reputation calculation and dashboard snapshot builds
 run asynchronously after this boundary and can lag it.
 During shutdown, producers stop first. Checker workers are producers; once the
 dispatcher has joined them, the checker's failure-tracking and ownership

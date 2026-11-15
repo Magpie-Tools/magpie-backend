@@ -1,10 +1,7 @@
 package dashboard
 
 import (
-	"context"
 	"database/sql"
-	"fmt"
-	"sync"
 	"time"
 
 	"magpie/internal/api/dto"
@@ -13,168 +10,6 @@ import (
 
 	"gorm.io/gorm"
 )
-
-const defaultRecentProxyChecksLimit = 8
-
-const maxRecentProxyChecksLimit = 50
-
-const dashboardFastestAliveLimit = 100
-
-type dashboardProxyListCacheKey struct {
-	WorkspaceID uint
-	Limit       int
-}
-
-var dashboardRecentChecksCache sync.Map
-
-var dashboardFastestAliveCache sync.Map
-
-func GetRecentProxyChecks(workspaceID uint, limit int) []dto.ProxyRecentCheck {
-	value, _ := GetRecentProxyChecksContext(context.Background(), workspaceID, limit)
-	return value
-}
-
-func GetRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit int) ([]dto.ProxyRecentCheck, error) {
-	if limit <= 0 {
-		limit = defaultRecentProxyChecksLimit
-	} else if limit > maxRecentProxyChecksLimit {
-		limit = maxRecentProxyChecksLimit
-	}
-
-	value, err := getDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: limit})
-	if err != nil {
-		return nil, err
-	}
-	return value.([]dto.ProxyRecentCheck), nil
-}
-
-func RefreshRecentProxyChecksCache(workspaceID uint, limit int) []dto.ProxyRecentCheck {
-	if limit <= 0 {
-		limit = defaultRecentProxyChecksLimit
-	} else if limit > maxRecentProxyChecksLimit {
-		limit = maxRecentProxyChecksLimit
-	}
-	value, err := refreshDashboardComponent(context.Background(), dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: limit})
-	if err != nil {
-		return nil
-	}
-	return value.([]dto.ProxyRecentCheck)
-}
-
-func refreshRecentProxyChecksCache(db *gorm.DB, workspaceID uint, limit int) ([]dto.ProxyRecentCheck, error) {
-	if db == nil {
-		return nil, fmt.Errorf("dashboard recent checks: database connection was not initialised")
-	}
-	version, err := dashboardWorkspaceVersion(db, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	if version.Dirty {
-		return []dto.ProxyRecentCheck{}, nil
-	}
-	if limit <= 0 {
-		limit = defaultRecentProxyChecksLimit
-	} else if limit > maxRecentProxyChecksLimit {
-		limit = maxRecentProxyChecksLimit
-	}
-	key := dashboardCacheKey{workspaceID: workspaceID, component: dashboardRecentComponent, limit: limit}
-
-	rows, err := queryRecentProxyChecks(db, workspaceID, limit)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]dto.ProxyRecentCheck, 0, len(rows))
-	for _, row := range rows {
-		latestCheck := time.Time{}
-		if row.LatestCheck.Valid {
-			latestCheck = row.LatestCheck.Time
-		}
-		result = append(result, dto.ProxyRecentCheck{
-			ID:           row.ID,
-			IP:           row.IPAddress,
-			Port:         row.Port,
-			ResponseTime: row.ResponseTime,
-			Alive:        row.Alive,
-			LatestCheck:  latestCheck,
-		})
-	}
-
-	currentVersion, err := dashboardWorkspaceVersion(db, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	if currentVersion != version {
-		return []dto.ProxyRecentCheck{}, nil
-	}
-	dashboardCaches.publish(key, func() {
-		dashboardRecentChecksCache.Store(
-			dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
-			dashboardHealthCacheEntry[[]dto.ProxyRecentCheck]{version: version, value: result, completedAt: dashboardCaches.now()},
-		)
-	})
-	return result, nil
-}
-
-func GetFastestAliveProxies(workspaceID uint, limit int) []dto.ProxyFastestAlive {
-	value, _ := GetFastestAliveProxiesContext(context.Background(), workspaceID, limit)
-	return value
-}
-
-func GetFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limit int) ([]dto.ProxyFastestAlive, error) {
-	if limit <= 0 {
-		return []dto.ProxyFastestAlive{}, nil
-	}
-	value, err := getDashboardComponent(ctx, dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit})
-	if err != nil {
-		return nil, err
-	}
-	return value.([]dto.ProxyFastestAlive), nil
-}
-
-func RefreshFastestAliveProxiesCache(workspaceID uint, limit int) []dto.ProxyFastestAlive {
-	value, err := refreshDashboardComponent(context.Background(), dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit})
-	if err != nil {
-		return nil
-	}
-	return value.([]dto.ProxyFastestAlive)
-}
-
-func refreshFastestAliveProxiesCache(db *gorm.DB, workspaceID uint, limit int) ([]dto.ProxyFastestAlive, error) {
-	if db == nil {
-		return nil, fmt.Errorf("dashboard fastest proxies: database connection was not initialised")
-	}
-	version, err := dashboardWorkspaceVersion(db, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	if limit <= 0 {
-		return []dto.ProxyFastestAlive{}, nil
-	}
-	if version.Dirty {
-		return []dto.ProxyFastestAlive{}, nil
-	}
-	key := dashboardCacheKey{workspaceID: workspaceID, component: dashboardFastestComponent, limit: limit}
-
-	result, err := queryFastestAliveProxies(db, workspaceID, limit)
-	if err != nil {
-		return nil, err
-	}
-
-	currentVersion, err := dashboardWorkspaceVersion(db, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	if currentVersion != version {
-		return []dto.ProxyFastestAlive{}, nil
-	}
-	dashboardCaches.publish(key, func() {
-		dashboardFastestAliveCache.Store(
-			dashboardProxyListCacheKey{WorkspaceID: workspaceID, Limit: limit},
-			dashboardHealthCacheEntry[[]dto.ProxyFastestAlive]{version: version, value: result, completedAt: dashboardCaches.now()},
-		)
-	})
-	return result, nil
-}
 
 type recentProxyCheckRow struct {
 	Ordinal      int          `gorm:"column:ordinal"`
@@ -297,4 +132,31 @@ ORDER BY latest.response_time ASC, latest.checked_at DESC, proxies.id ASC`, fast
 		})
 	}
 	return result, nil
+}
+
+type judgeBreakdownRow struct {
+	JudgeUrl           string `json:"judge_url"`
+	EliteProxies       uint   `json:"elite_proxies"`
+	AnonymousProxies   uint   `json:"anonymous_proxies"`
+	TransparentProxies uint   `json:"transparent_proxies"`
+}
+
+// queryJudgeBreakdown counts the workspace's alive current evidence per
+// assigned judge and anonymity level.
+func queryJudgeBreakdown(db *gorm.DB, workspaceID uint) ([]judgeBreakdownRow, error) {
+	var judges []judgeBreakdownRow
+	err := evidence.DashboardLatestStatistics(db, workspaceID).
+		Select(
+			"j.full_string AS judge_url, "+
+				"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+
+				"SUM(CASE WHEN al.name = 'anonymous' THEN 1 ELSE 0 END)   AS anonymous_proxies, "+
+				"SUM(CASE WHEN al.name = 'transparent' THEN 1 ELSE 0 END) AS transparent_proxies",
+		).
+		Joins("JOIN user_judges uj ON uj.judge_id = pls.judge_id AND uj.workspace_id = ?", workspaceID).
+		Joins("JOIN judges j ON j.id = pls.judge_id").
+		Joins("JOIN anonymity_levels al ON al.id = pls.level_id").
+		Where("pls.alive = TRUE").
+		Group("j.id, j.full_string").
+		Scan(&judges).Error
+	return judges, err
 }

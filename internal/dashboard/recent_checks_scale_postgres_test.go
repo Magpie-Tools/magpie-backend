@@ -57,7 +57,10 @@ func TestRecentChecksEvidenceLookupsAreBoundedPostgres(t *testing.T) {
 	pg.DB = db.Session(&gorm.Session{Logger: queries})
 	t.Cleanup(func() { pg.DB = db })
 	start := time.Now()
-	recent := RefreshRecentProxyChecksCache(a.ID, 10)
+	recent, err := queryRecentProxyChecks(pg.DB, a.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
 	elapsed := time.Since(start)
 	if len(recent) != 10 {
 		t.Fatal("recent-check query failed", len(recent))

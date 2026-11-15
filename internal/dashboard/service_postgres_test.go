@@ -3,6 +3,8 @@ package dashboard
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -551,5 +553,71 @@ func TestRetentionDeletesOnlyIdleRowsPostgres(t *testing.T) {
 	}
 	if deleted, err := store.DeleteExpired(ctx); err != nil || deleted != 0 {
 		t.Fatalf("retention under a held lock: %d %v", deleted, err)
+	}
+}
+
+// A build that reaches a blocked statement is canceled at its deadline: the
+// statement stops on the server, the failure is recorded with backoff, and
+// the previous snapshot keeps being served.
+func TestBuildDeadlineCancelsBlockedStatementsPostgres(t *testing.T) {
+	application := fmt.Sprintf("dashboard_deadline_%d", time.Now().UnixNano())
+	if dsn := os.Getenv("MAGPIE_TEST_POSTGRES_DSN"); dsn != "" {
+		t.Setenv("MAGPIE_TEST_POSTGRES_DSN", dsn+" application_name="+application)
+	}
+	db, workspaces := snapshotFixture(t)
+	owner := workspaces[0].ID
+	service := newTestService(db, Config{BuildDeadline: time.Second})
+	defer service.Stop()
+	if view, err := service.View(context.Background(), owner); err != nil || view.Status != StatusFresh {
+		t.Fatalf("first view: %+v %v", view, err)
+	}
+	var published time.Time
+	if err := db.Raw("SELECT computed_at FROM dashboard_snapshots WHERE workspace_id = ?", owner).Scan(&published).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("UPDATE dashboard_snapshots SET computed_at = computed_at - interval '2 minutes', next_eligible_at = NULL WHERE workspace_id = ?", owner).Error; err != nil {
+		t.Fatal(err)
+	}
+	blocker := db.Begin()
+	defer blocker.Rollback()
+	if err := blocker.Exec(`LOCK TABLE proxy_latest_statistics IN ACCESS EXCLUSIVE MODE`).Error; err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	view, err := service.View(context.Background(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("the request waited %s", elapsed)
+	}
+	if view.Status != StatusStale || view.AliveCount() == nil {
+		t.Fatalf("view during a blocked build: %+v", view)
+	}
+	var row struct {
+		FailureCount int
+		LeaseActive  bool
+		Unchanged    bool
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := db.Raw(`SELECT failure_count, lease_until IS NOT NULL AS lease_active, computed_at = CAST(? AS timestamptz) - interval '2 minutes' AS unchanged
+			FROM dashboard_snapshots WHERE workspace_id = ?`, published, owner).Scan(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		if row.FailureCount > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if row.FailureCount != 1 || row.LeaseActive || !row.Unchanged {
+		t.Fatalf("after the deadline: %+v", row)
+	}
+	var waiting int64
+	if err := db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE application_name = ? AND state = 'active' AND wait_event_type = 'Lock'`, application).Scan(&waiting).Error; err != nil || waiting != 0 {
+		t.Fatalf("blocked build statements remain: %d %v", waiting, err)
+	}
+	if view, err := service.View(context.Background(), owner); err != nil || view.Status != StatusStale {
+		t.Fatalf("view after the failure: %+v %v", view, err)
 	}
 }

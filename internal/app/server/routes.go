@@ -123,8 +123,6 @@ func OpenRoutes(ctx context.Context, port int, pace *checkpace.Pacer, views *das
 	apiMux.Handle("POST /invitations/{invitationId}/accept", auth.RequireAuth(http.HandlerFunc(acceptWorkspaceInvitation)))
 	apiMux.Handle("POST /invitations/{invitationId}/decline", auth.RequireAuth(http.HandlerFunc(declineWorkspaceInvitation)))
 
-	apiMux.Handle("GET /getDashboardInfo", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getDashboardInfo))))
-
 	apiMux.Handle("GET /getProxyCount", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyCount))))
 	apiMux.Handle("GET /getProxyPage/{page}", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyPage))))
 	apiMux.Handle("GET /proxyFilters", auth.RequireAuth(withWorkspaceViewer(http.HandlerFunc(getProxyFilters))))

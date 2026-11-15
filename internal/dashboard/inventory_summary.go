@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"strings"
+
 	"magpie/internal/domain"
 
 	"gorm.io/gorm"
@@ -81,4 +83,18 @@ func loadDashboardInventorySummary(db *gorm.DB, workspaceID uint) (dashboardInve
 		}
 	}
 	return summary, nil
+}
+
+func normalizeDashboardCountry(country string) string {
+	trimmed := strings.TrimSpace(country)
+	if trimmed == "" {
+		return "Unknown"
+	}
+
+	switch strings.ToLower(trimmed) {
+	case "n/a", "unknown", "unk":
+		return "Unknown"
+	default:
+		return trimmed
+	}
 }

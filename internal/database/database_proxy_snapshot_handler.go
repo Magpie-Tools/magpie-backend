@@ -147,20 +147,6 @@ func ScrapedProxyCountByWorkspace(tx *gorm.DB, workspaceIDs []uint) (map[uint]in
 	return counts, nil
 }
 
-// GetCurrentAliveProxyCount returns the workspace's latest alive proxy count based on proxy statistics.
-func GetCurrentAliveProxyCount(workspaceID uint) int64 {
-	if pg.DB == nil {
-		return 0
-	}
-
-	counts, err := evidence.AliveProxyCountByWorkspace(pg.DB, []uint{workspaceID})
-	if err != nil {
-		return 0
-	}
-
-	return counts[workspaceID]
-}
-
 func GetCurrentScrapedProxyCount(workspaceID uint) int64 {
 	if pg.DB == nil {
 		return 0

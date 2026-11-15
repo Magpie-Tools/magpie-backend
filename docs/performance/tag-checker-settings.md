@@ -136,10 +136,12 @@ mutation work preserves independent membership settings and never runs on an
 ordinary dequeue, check, or requeue. It performs no credential cryptography or
 queue payload rewrite beyond the existing ownership-change path.
 
-Dashboard cache reads verify the persisted generation with one API-side query.
-Refreshes read it before and after loading results, rejecting in-flight obsolete
-results. These queries support multiple backend instances and never run in
-checker workers. Stable reconciliation does not invalidate dashboard entries.
+Dashboard reads compare the snapshot's checker generation with the committed
+one in the same statement that reads the snapshot (ADR 0017). A build reads the
+generation after its claim and after its SQL, and stores health only when both
+match on a clean workspace. These queries support multiple backend instances and
+never run in checker workers. Stable reconciliation does not change the
+generation, so it leaves dashboard snapshots valid.
 
 Reproduce the regression cases and the larger source workload with:
 
@@ -148,7 +150,7 @@ MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=c
   go test ./internal/database -run 'TestCheckerTagProjectionWrites|TestCheckerMissed|TestSmallSource' -count=1 -v
 
 MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
-  go test ./internal/dashboard -run 'TestDashboardRefreshRejects' -count=1 -v
+  go test ./internal/dashboard -run 'TestBuildDuringGenerationChange|TestGenerationChangeHidesHealth' -count=1 -v
 
 MAGPIE_TEST_POSTGRES_DSN='host=127.0.0.1 port=55437 user=checker_test password=checker_test dbname=checker_test sslmode=disable' \
 MAGPIE_TEST_CHECKER_SOURCE_ROUTES=1000000 \

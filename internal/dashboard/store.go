@@ -78,6 +78,19 @@ func (s snapshotState) healthMissing() bool { return !s.WorkspaceDirty && !s.hea
 // read runs the read statement. full adds the payload and the two usage
 // figures; a re-read during a wait omits them.
 func (st *Store) read(ctx context.Context, workspaceID uint, full bool, now time.Time) (snapshotState, error) {
+	query, args := st.readStatement(workspaceID, full, now)
+	var states []snapshotState
+	if err := st.db.WithContext(ctx).Raw(query, args...).Scan(&states).Error; err != nil {
+		return snapshotState{}, err
+	}
+	if len(states) == 0 {
+		return snapshotState{}, fmt.Errorf("%w: %d", errWorkspaceNotFound, workspaceID)
+	}
+	return states[0], nil
+}
+
+// readStatement is the read statement and its arguments.
+func (st *Store) readStatement(workspaceID uint, full bool, now time.Time) (string, []any) {
 	payloadColumn, usageColumns := "NULL::bytea", "NULL::bigint AS total_checks, NULL::bigint AS checks_this_month"
 	args := []any{}
 	if full {
@@ -92,7 +105,7 @@ func (st *Store) read(ctx context.Context, workspaceID uint, full bool, now time
 		args = append(args, periodStart)
 	}
 	args = append(args, st.version, workspaceID)
-	query := `SELECT w.checker_generation AS workspace_generation, w.checker_dirty AS workspace_dirty,
+	return `SELECT w.checker_generation AS workspace_generation, w.checker_dirty AS workspace_dirty,
 	s.workspace_id IS NOT NULL AS row_exists,
 	s.checker_generation, s.health_valid, s.collected_at, s.computed_at, s.failed_at,
 	` + payloadColumn + ` AS payload,
@@ -102,15 +115,7 @@ func (st *Store) read(ctx context.Context, workspaceID uint, full bool, now time
 	` + usageColumns + `
 FROM workspaces w
 LEFT JOIN dashboard_snapshots s ON s.workspace_id = w.id AND s.payload_version = ?
-WHERE w.id = ?`
-	var states []snapshotState
-	if err := st.db.WithContext(ctx).Raw(query, args...).Scan(&states).Error; err != nil {
-		return snapshotState{}, err
-	}
-	if len(states) == 0 {
-		return snapshotState{}, fmt.Errorf("%w: %d", errWorkspaceNotFound, workspaceID)
-	}
-	return states[0], nil
+WHERE w.id = ?`, args
 }
 
 // ensureRow inserts the bare snapshot row. It runs in its own transaction, so

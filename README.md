@@ -54,7 +54,7 @@ uses one PostgreSQL transaction and reconciles only affected Redis queue
 entries. It never flushes Redis. Back up data you want to keep before resetting.
 
 Fixtures use documentation IP ranges and `.invalid` URLs. Alert destinations
-are disabled. `DEVELOPMENT_FIXTURES=true` keeps the API and dashboard cache
+are disabled. `DEVELOPMENT_FIXTURES=true` keeps the API and dashboard snapshots
 running while skipping background jobs and rotating listeners, so synthetic
 results survive restarts. Set it in the backend's local `.env` to keep using
 fixtures. API-created rotators are saved without opening TCP or UDP listeners.

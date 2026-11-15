@@ -23,15 +23,15 @@ func TestNewSchemaAssemblesEveryFeature(t *testing.T) {
 		"id", "email", "role", "workspaceId", "workspaceName", "workspaceRole",
 		"settings",
 		"proxyCount", "proxyLimit", "proxies",
-		"dashboard", "dashboardView", "proxyHistory", "recentProxyChecks", "fastestAliveProxies", "proxySnapshots",
+		"dashboardView", "proxyHistory", "proxySnapshots",
 		"scrapeSourceUrls", "scrapeSourceCount", "scrapeSources",
 	} {
 		if fields[name] == nil {
 			t.Errorf("Viewer.%s is missing", name)
 		}
 	}
-	if len(fields) != 19 {
-		t.Errorf("Viewer has %d fields, want 19", len(fields))
+	if len(fields) != 16 {
+		t.Errorf("Viewer has %d fields, want 16", len(fields))
 	}
 	if schema.MutationType() == nil || schema.MutationType().Fields()["updateUserSettings"] == nil {
 		t.Error("Mutation.updateUserSettings is missing")

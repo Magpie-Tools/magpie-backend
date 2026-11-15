@@ -12,14 +12,6 @@ import (
 func TestDashboardScopedReadsPreserveFastestAndJudgeResultsPostgres(t *testing.T) {
 	db := setupProxyIngestionPostgresTest(t)
 	workspaces := seedCurrentLatestReadTest(t, db)
-	t.Cleanup(func() {
-		for _, workspace := range workspaces {
-			dashboardInfoCache.Delete(workspace.ID)
-			for _, limit := range []int{1, 3, 100} {
-				dashboardFastestAliveCache.Delete(dashboardProxyListCacheKey{WorkspaceID: workspace.ID, Limit: limit})
-			}
-		}
-	})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	db = db.WithContext(ctx)
@@ -38,7 +30,7 @@ COALESCE(pr.score,0) AS reputation_score,latest.checked_at AS latest_check`).
 				Order("latest.response_time ASC,latest.checked_at DESC,p.id ASC").Limit(limit).Scan(&want).Error; err != nil {
 				t.Fatal(err)
 			}
-			got, err := refreshFastestAliveProxiesCache(db, workspace.ID, limit)
+			got, err := queryFastestAliveProxies(db, workspace.ID, limit)
 			if err != nil || len(got) != len(want) || len(got) > 0 && !reflect.DeepEqual(got, want) {
 				t.Fatalf("workspace=%d limit=%d fastest=%+v want=%+v error=%v", workspace.ID, limit, got, want, err)
 			}
@@ -60,13 +52,13 @@ SUM(CASE WHEN al.name='transparent' THEN 1 ELSE 0 END) AS transparent_proxies`).
 			Where("pls.checking_workspace_id=? AND pls.alive=TRUE", workspace.ID).Group("j.id,j.full_string").Scan(&want).Error; err != nil {
 			t.Fatal(err)
 		}
-		info, err := refreshDashboardInfoCache(db, workspace.ID)
+		judges, err := queryJudgeBreakdown(db, workspace.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		gotJSON, _ := json.Marshal(info.JudgeValidProxies)
+		gotJSON, _ := json.Marshal(judges)
 		wantJSON, _ := json.Marshal(want)
-		if len(info.JudgeValidProxies) != len(want) || len(want) > 0 && string(gotJSON) != string(wantJSON) {
+		if len(judges) != len(want) || len(want) > 0 && string(gotJSON) != string(wantJSON) {
 			t.Fatalf("workspace=%d judge buckets=%s want=%s", workspace.ID, gotJSON, wantJSON)
 		}
 	}
