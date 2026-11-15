@@ -3,23 +3,25 @@ package graphql
 import (
 	"fmt"
 
+	"magpie/internal/dashboard"
+
 	gql "github.com/graphql-go/graphql"
 )
 
 // NewSchema assembles the GraphQL schema. Each feature file defines its types
 // and the fields it adds to the Viewer type and to mutations; this function
-// only wires them together.
-func NewSchema() (gql.Schema, error) {
+// only wires them together. views serves viewer.dashboardView.
+func NewSchema(views *dashboard.Service) (gql.Schema, error) {
 	settings := newSettingsTypes()
 	proxies := newProxyTypes()
-	dashboard := newDashboardTypes()
+	dashboards := newDashboardTypes()
 	sources := newScrapeSourceTypes()
 
 	viewerFields, err := mergeFields("Viewer",
 		viewerIdentityFields(),
 		settingsViewerFields(settings),
 		proxyViewerFields(proxies),
-		dashboardViewerFields(dashboard),
+		dashboardViewerFields(dashboards, views),
 		scrapeSourceViewerFields(sources),
 	)
 	if err != nil {

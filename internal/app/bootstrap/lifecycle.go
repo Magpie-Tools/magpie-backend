@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"magpie/internal/checkpace"
+	"magpie/internal/dashboard"
 )
 
 type routineGroup struct {
@@ -52,7 +53,15 @@ type Runtime struct {
 	// pace is the process's Pacer, constructed by app. Setup configures it,
 	// runs it among the consumers and hands it to the checker and scraper.
 	pace *checkpace.Pacer
+	// dashboards serves dashboard views. Setup constructs it once the
+	// database is open and runs it among the producers, whose stop cancels
+	// its builds and clears their leases.
+	dashboards *dashboard.Service
 }
+
+// Dashboards returns the process's dashboard service, nil until Setup has
+// opened the database.
+func (r *Runtime) Dashboards() *dashboard.Service { return r.dashboards }
 
 func newRuntime(parent context.Context) *Runtime {
 	return &Runtime{

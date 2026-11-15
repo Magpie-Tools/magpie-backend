@@ -85,9 +85,12 @@ func (running *Runtime) setup(ctx context.Context) error {
 		geolite.EnableRedisDistribution(ctx, redisClient)
 	}
 
-	if _, err := database.SetupDB(); err != nil {
+	db, err := database.SetupDB()
+	if err != nil {
 		return fmt.Errorf("failed to set up database: %w", err)
 	}
+	running.dashboards = dashboard.NewService(db, dashboard.ConfigFromEnv())
+	running.producers.start(running.dashboards.Run)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -243,7 +246,9 @@ func (running *Runtime) setup(ctx context.Context) error {
 		jobruntime.StartProxyHistoryRoutine,
 		jobruntime.StartProxySnapshotRoutine,
 		geolite.StartProxyGeoRefreshRoutine,
-		maintenance.StartOrphanCleanupRoutine,
+		func(ctx context.Context) {
+			maintenance.StartOrphanCleanupRoutine(ctx, maintenance.CleanupStep{Name: "dashboard snapshots", Run: running.dashboards.DeleteExpiredSnapshots})
+		},
 		maintenance.StartPasswordResetCleanupRoutine,
 		maintenance.StartWorkspaceInvitationCleanupRoutine,
 		geolite.StartGeoLiteUpdateRoutine,

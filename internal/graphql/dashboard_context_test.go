@@ -10,7 +10,7 @@ import (
 )
 
 func TestDashboardResolversPassCanceledRequestContext(t *testing.T) {
-	schema, err := NewSchema()
+	schema, err := NewSchema(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

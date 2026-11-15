@@ -13,7 +13,7 @@ abuseipdb: domain platform/pg
 account: domain platform/pg
 alerts: api/dto domain evidence platform/pg security support
 api/dto: ipgeolocation
-app: app/bootstrap app/server auth checkpace config database jobs/queue/proxy jobs/queue/sites jobs/runtime platform/pg readmodel security support
+app: app/bootstrap app/server auth checkpace config dashboard database jobs/queue/proxy jobs/queue/sites jobs/runtime platform/pg readmodel security support
 app/bootstrap: alerts blacklist checkerconfig checkpace config dashboard database domain geolite jobs/checker jobs/checker/judges jobs/maintenance jobs/queue/proxy jobs/queue/sites jobs/runtime jobs/scraper judgestore mail readmodel rotatingproxy scrapestore support
 app/releases:
 app/server: account alerts api/dto app/bootstrap app/releases app/version auth blacklist checkpace config dashboard database domain geolite graphql jobs/checker/judges jobs/queue/proxy jobs/queue/sites jobs/runtime jobs/scraper judgestore mail platform/pg rotatingproxy scrapestore settings support workspace
@@ -24,7 +24,7 @@ blacklist: config database domain jobs/queue/proxy platform/pg support
 checkerconfig: api/dto domain
 checkpace: domain
 config:
-dashboard: api/dto checkpace database domain evidence platform/pg
+dashboard: api/dto checkpace database domain evidence platform/pg support
 database: alerts api/dto checkerconfig checkpace config domain evidence ipgeolocation jobs/checker/judges platform/pg platform/schema readmodel support support/reputation workspace
 devseed: api/dto checkerconfig config database domain readmodel security support support/reputation
 domain: api/dto instanceid security

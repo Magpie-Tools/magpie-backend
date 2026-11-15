@@ -129,17 +129,11 @@ func RefreshDashboardCaches(ctx context.Context) error {
 func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 	weekAgo := time.Now().AddDate(0, 0, -7)
 
-	type jvp struct {
-		JudgeUrl           string `json:"judge_url"`
-		EliteProxies       uint   `json:"elite_proxies"`
-		AnonymousProxies   uint   `json:"anonymous_proxies"`
-		TransparentProxies uint   `json:"transparent_proxies"`
-	}
 	var (
 		checks          dashboardUsageCounts
 		scrapedSnapshot database.ProxySnapshotCountSummary
 		inventory       dashboardInventorySummary
-		judges          []jvp
+		judges          []judgeBreakdownRow
 		wg              sync.WaitGroup
 	)
 	queryErrors := make(chan error, 4)
@@ -173,19 +167,8 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 
 	go func() {
 		defer wg.Done()
-		err := evidence.DashboardLatestStatistics(db, userid).
-			Select(
-				"j.full_string AS judge_url, "+
-					"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+
-					"SUM(CASE WHEN al.name = 'anonymous' THEN 1 ELSE 0 END)   AS anonymous_proxies, "+
-					"SUM(CASE WHEN al.name = 'transparent' THEN 1 ELSE 0 END) AS transparent_proxies",
-			).
-			Joins("JOIN user_judges uj ON uj.judge_id = pls.judge_id AND uj.workspace_id = ?", userid).
-			Joins("JOIN judges j ON j.id = pls.judge_id").
-			Joins("JOIN anonymity_levels al ON al.id = pls.level_id").
-			Where("pls.alive = TRUE").
-			Group("j.id, j.full_string").
-			Scan(&judges).Error
+		var err error
+		judges, err = queryJudgeBreakdown(db, userid)
 		recordError("judge anonymity", err)
 	}()
 
@@ -273,4 +256,31 @@ func loadDashboardInfo(db *gorm.DB, userid uint) (dto.DashboardInfo, error) {
 	}
 
 	return info, nil
+}
+
+type judgeBreakdownRow struct {
+	JudgeUrl           string `json:"judge_url"`
+	EliteProxies       uint   `json:"elite_proxies"`
+	AnonymousProxies   uint   `json:"anonymous_proxies"`
+	TransparentProxies uint   `json:"transparent_proxies"`
+}
+
+// queryJudgeBreakdown counts the workspace's alive current evidence per
+// assigned judge and anonymity level.
+func queryJudgeBreakdown(db *gorm.DB, workspaceID uint) ([]judgeBreakdownRow, error) {
+	var judges []judgeBreakdownRow
+	err := evidence.DashboardLatestStatistics(db, workspaceID).
+		Select(
+			"j.full_string AS judge_url, "+
+				"SUM(CASE WHEN al.name = 'elite' THEN 1 ELSE 0 END)       AS elite_proxies, "+
+				"SUM(CASE WHEN al.name = 'anonymous' THEN 1 ELSE 0 END)   AS anonymous_proxies, "+
+				"SUM(CASE WHEN al.name = 'transparent' THEN 1 ELSE 0 END) AS transparent_proxies",
+		).
+		Joins("JOIN user_judges uj ON uj.judge_id = pls.judge_id AND uj.workspace_id = ?", workspaceID).
+		Joins("JOIN judges j ON j.id = pls.judge_id").
+		Joins("JOIN anonymity_levels al ON al.id = pls.level_id").
+		Where("pls.alive = TRUE").
+		Group("j.id, j.full_string").
+		Scan(&judges).Error
+	return judges, err
 }

@@ -12,7 +12,7 @@
 
 app/bootstrap: 3
 app/releases: 1
-app/server: 41
+app/server: 38
 app/version: 2
 auth: 6
 blacklist: 6

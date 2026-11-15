@@ -44,6 +44,10 @@ func buildRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit 
 	if err != nil {
 		return nil, err
 	}
+	return recentProxyCheckMaps(entries), nil
+}
+
+func recentProxyCheckMaps(entries []dto.ProxyRecentCheck) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -59,7 +63,7 @@ func buildRecentProxyChecksContext(ctx context.Context, workspaceID uint, limit 
 			"latestCheck":  latestCheck,
 		})
 	}
-	return result, nil
+	return result
 }
 
 func buildFastestAliveProxies(workspaceID uint, limit int) []map[string]interface{} {
@@ -72,6 +76,10 @@ func buildFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limi
 	if err != nil {
 		return nil, err
 	}
+	return fastestAliveProxyMaps(entries), nil
+}
+
+func fastestAliveProxyMaps(entries []dto.ProxyFastestAlive) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
 		var latestCheck interface{}
@@ -89,7 +97,7 @@ func buildFastestAliveProxiesContext(ctx context.Context, workspaceID uint, limi
 			"latestCheck":     latestCheck,
 		})
 	}
-	return result, nil
+	return result
 }
 
 func buildProxySnapshots(entries []dto.ProxySnapshotEntry) []map[string]interface{} {
@@ -190,6 +198,7 @@ func buildDashboard(info dto.DashboardInfo) map[string]interface{} {
 // dashboardTypes holds the GraphQL types of the dashboard fields of Viewer.
 type dashboardTypes struct {
 	dashboardType               *gql.Object
+	dashboardViewType           *gql.Object
 	fastestAliveProxyType       *gql.Object
 	proxyHistoryType            *gql.Object
 	proxySnapshotCollectionType *gql.Object
@@ -305,13 +314,25 @@ func newDashboardTypes() dashboardTypes {
 			},
 		},
 	})
-	return dashboardTypes{dashboardType: dashboardType, fastestAliveProxyType: fastestAliveProxyType, proxyHistoryType: proxyHistoryType, proxySnapshotCollectionType: proxySnapshotCollectionType, recentProxyCheckType: recentProxyCheckType}
+	dashboardViewType := newDashboardViewType(dashboardReputationBreakdownType, countryBreakdownType, judgeValidProxyType, recentProxyCheckType, fastestAliveProxyType)
+	return dashboardTypes{dashboardType: dashboardType, dashboardViewType: dashboardViewType, fastestAliveProxyType: fastestAliveProxyType, proxyHistoryType: proxyHistoryType, proxySnapshotCollectionType: proxySnapshotCollectionType, recentProxyCheckType: recentProxyCheckType}
 }
 
 // dashboardViewerFields are the fields this feature adds to the Viewer type.
-func dashboardViewerFields(types dashboardTypes) gql.Fields {
+func dashboardViewerFields(types dashboardTypes, views *dashboard.Service) gql.Fields {
 	dashboardType, fastestAliveProxyType, proxyHistoryType, proxySnapshotCollectionType, recentProxyCheckType := types.dashboardType, types.fastestAliveProxyType, types.proxyHistoryType, types.proxySnapshotCollectionType, types.recentProxyCheckType
 	return gql.Fields{
+		"dashboardView": &gql.Field{
+			Type:        gql.NewNonNull(types.dashboardViewType),
+			Description: "The workspace dashboard from its shared snapshot, with an explicit status.",
+			Resolve: func(p gql.ResolveParams) (interface{}, error) {
+				data, ok := p.Source.(*viewerData)
+				if !ok {
+					return nil, nil
+				}
+				return resolveDashboardView(p.Context, views, data.workspace.ID)
+			},
+		},
 		"dashboard": &gql.Field{
 			Type: gql.NewNonNull(dashboardType),
 			Resolve: func(p gql.ResolveParams) (interface{}, error) {

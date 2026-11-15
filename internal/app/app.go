@@ -20,6 +20,7 @@ import (
 	"magpie/internal/auth"
 	"magpie/internal/checkpace"
 	"magpie/internal/config"
+	"magpie/internal/dashboard"
 	"magpie/internal/database"
 	proxyqueue "magpie/internal/jobs/queue/proxy"
 	sitequeue "magpie/internal/jobs/queue/sites"
@@ -115,7 +116,7 @@ func Run() error {
 		}
 	}()
 
-	err = serveAfterSetup(rootCtx, backendPort, setupErr, pace)
+	err = serveAfterSetup(rootCtx, backendPort, setupErr, pace, running.Dashboards())
 	stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), resolveBackgroundShutdownTimeout())
 	defer cancel()
@@ -134,7 +135,7 @@ func installPacedQueues(redisClient *redis.Client) *checkpace.Pacer {
 	return pace
 }
 
-func serveAfterSetup(ctx context.Context, port int, setupErr error, pace *checkpace.Pacer) error {
+func serveAfterSetup(ctx context.Context, port int, setupErr error, pace *checkpace.Pacer, views *dashboard.Service) error {
 	// A signal during optional startup work follows the normal graceful shutdown
 	// path. Preserve any separate setup failure, including a joined error.
 	if setupErr == context.Canceled && ctx.Err() == context.Canceled {
@@ -149,7 +150,7 @@ func serveAfterSetup(ctx context.Context, port int, setupErr error, pace *checkp
 		}
 		return err
 	}
-	err := server.OpenRoutes(ctx, port, pace)
+	err := server.OpenRoutes(ctx, port, pace, views)
 	if err == context.Canceled && ctx.Err() == context.Canceled {
 		return nil
 	}
