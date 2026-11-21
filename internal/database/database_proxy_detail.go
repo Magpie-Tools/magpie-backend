@@ -175,29 +175,11 @@ func GetProxyStatistics(workspaceID uint, proxyId uint64, limit int) ([]dto.Prox
 	if err := query.Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	var current []domain.ProxyLatestStatistic
-	if err := evidence.CurrentLatestStatistics(pg.DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Find(&current).Error; err != nil {
+	keys, err := currentStatisticConfigKeys(pg.DB, workspaceID, proxyId)
+	if err != nil {
 		return nil, err
 	}
-	keys := make(map[int]string, len(current))
-	for _, latest := range current {
-		keys[latest.ProtocolID] = latest.ConfigKey
-	}
-	stats := make([]dto.ProxyStatistic, 0, len(rows))
-	for index := range rows {
-		stat := mapProxyStatistic(&rows[index])
-		for _, evidence := range rows[index].CheckEvidence {
-			if evidence.WorkspaceID == workspaceID {
-				stat.Alive, stat.ConfigKey = evidence.Alive, evidence.ConfigKey
-				break
-			}
-		}
-		key, checked := keys[rows[index].ProtocolID]
-		stat.Current = checked && key == stat.ConfigKey
-		stats = append(stats, stat)
-	}
-
-	return stats, nil
+	return workspaceStatistics(rows, workspaceID, keys), nil
 }
 
 type proxyStatisticBodyRow struct {
