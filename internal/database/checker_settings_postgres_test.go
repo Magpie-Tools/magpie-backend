@@ -113,6 +113,13 @@ func TestCheckerHealthIsolatesWorkspaceConfigurationAndDelayedResultsPostgres(t 
 	if !history[0].Current || history[1].Current || history[2].Current {
 		t.Fatal("old history marked current", history)
 	}
+	// The history card's settings filter splits the same rows: one current, two previous or legacy.
+	for settings, want := range map[string]int64{"current": 1, "previous": 2} {
+		page, err := getProxyStatisticsPageWithDB(db, a.ID, proxy.ID, dto.ProxyStatisticsQuery{Page: 1, Settings: settings}, time.Now())
+		if err != nil || page.Total != want || (settings == "current" && !page.Statistics[0].Current) {
+			t.Fatal("settings filter", settings, page, err)
+		}
+	}
 	bHistory, err := GetProxyStatistics(b.ID, proxy.ID, 50)
 	if err != nil || len(bHistory) != 1 || bHistory[0].Alive {
 		t.Fatal("shared physical verdict leaked", bHistory, err)

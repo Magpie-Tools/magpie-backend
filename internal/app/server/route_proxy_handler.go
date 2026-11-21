@@ -555,6 +555,34 @@ func getProxyStatistics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A page parameter selects the paged, filtered history; without it the
+	// endpoint keeps returning the latest checks up to limit.
+	if params := r.URL.Query(); strings.TrimSpace(params.Get("page")) != "" {
+		atoi := func(key string) int {
+			value, _ := strconv.Atoi(strings.TrimSpace(params.Get(key)))
+			return value
+		}
+		page, pageErr := database.GetProxyStatisticsPage(workspaceID, proxyID, dto.ProxyStatisticsQuery{
+			Page:      atoi("page"),
+			PageSize:  atoi("page_size"),
+			Sort:      strings.TrimSpace(params.Get("sort")),
+			Order:     strings.TrimSpace(params.Get("order")),
+			Status:    strings.TrimSpace(params.Get("status")),
+			Protocol:  params.Get("protocol"),
+			Transport: params.Get("transport"),
+			JudgeID:   uint(max(atoi("judge_id"), 0)),
+			Settings:  strings.TrimSpace(params.Get("settings")),
+			Hours:     atoi("hours"),
+		})
+		if pageErr != nil {
+			log.Error("error retrieving proxy statistics page", "error", pageErr.Error(), "proxy_id", proxyID)
+			writeError(w, "Failed to retrieve proxy statistics", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+		return
+	}
+
 	limit := 100
 	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
 		if parsed, parseErr := strconv.Atoi(rawLimit); parseErr == nil && parsed > 0 {
