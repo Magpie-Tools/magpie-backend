@@ -44,6 +44,10 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 	if err := evidence.CurrentLatestStatistics(pg.DB, workspaceID).Where("pls.proxy_id = ?", proxyId).Order("pls.checked_at DESC, pls.statistic_id DESC").Find(&current).Error; err != nil {
 		return nil, err
 	}
+	protocols, err := proxyProtocolHealth(pg.DB, workspaceID, proxyId, current)
+	if err != nil {
+		return nil, err
+	}
 	var alive *bool
 	if len(current) > 0 {
 		value := false
@@ -75,6 +79,7 @@ func GetProxyDetail(workspaceID uint, proxyId uint64) (*dto.ProxyDetail, error) 
 		CreatedAt:       proxy.CreatedAt,
 		LatestCheck:     latestCheck,
 		LatestStatistic: latestStat,
+		Protocols:       protocols,
 	}
 
 	detail.Reputation = mapReputationsToBreakdown(proxy.Reputations)
